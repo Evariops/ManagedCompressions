@@ -8,9 +8,11 @@ in fully managed C#.
 - It writes the same frames as libzstd. At every compression level, ManagedCompressions.Zstd writes
   exactly the bytes that libzstd 1.5.7 writes, with dictionaries, with long-distance matching and in
   multithreaded compression.
-- It is fast. Decompression is 1.3–1.5× as fast as the libzstd that NativeCompressions and .NET ship,
-  and 1.11–1.21× as fast as libzstd built from source at `-O3` on the Silesia corpus. Compression of
-  large inputs is within a few percent of libzstd (see [Performance](#performance)).
+- It is fast. On arm64, decompression is 1.3–1.5× as fast as the libzstd that NativeCompressions and
+  .NET ship, and 1.11–1.21× as fast as libzstd built from source at `-O3` on the Silesia corpus. On
+  x64, where libzstd has a hand-written assembly Huffman decoder, it is 1.0–1.2× as fast as
+  NativeCompressions' libzstd. Compression of large inputs is within a few percent of libzstd, except
+  on x64 at levels 1 to 5, which are up to 13 % slower (see [Performance](#performance)).
 - A warm compressor or decompressor allocates nothing.
 
 ManagedCompressions.Zstd is an independent implementation of the format. It is not affiliated with the
@@ -142,8 +144,8 @@ The limitations are these:
 
 The ranges span compression levels 1 to 19. The reference here is libzstd built from source with Apple
 clang 21 at `-O3`, which decompresses some 20 % faster than the libzstd NativeCompressions and .NET ship:
-against those, decompression is 1.3–1.5× as fast, as the repository's
-[README](../../README.md#at-a-glance) shows.
+against those, decompression is 1.3–1.5× as fast on arm64. On x64 it is 1.0–1.2× as fast as
+NativeCompressions' libzstd, as the repository's [README](../../README.md#at-a-glance) shows.
 
 The measurements use the data of zstd's own benchmarks, which `bench/zstd-corpus.sh` downloads:
 
