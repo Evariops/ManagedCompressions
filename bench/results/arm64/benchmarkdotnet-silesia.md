@@ -5,7 +5,8 @@ silesia.tar (211,948,032 bytes) compressed or decompressed whole by one call. Ra
 its group's NativeCompressions case: below 1.00 is faster. Payload is the compressed size, or the
 content's. Every decoder reads NativeCompressions' output, which the managed compressors write too.
 
-**Machine: Apple M4 Pro, arm64 (AArch64), macOS.** Results on x86-64 (amd64) will follow.
+**Machine: Apple M4 Pro, arm64 (AArch64), macOS.** The x64 results are in
+[`../x64/benchmarkdotnet-silesia.md`](../x64/benchmarkdotnet-silesia.md).
 
 - **Zstandard:** levels 1, 3 (the default), 9 and 19, against NativeCompressions and .NET 11's
   `ZstandardEncoder` and `ZstandardDecoder`.

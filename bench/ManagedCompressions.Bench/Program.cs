@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -14,8 +15,9 @@ namespace ManagedCompressions.Bench;
 /// </summary>
 /// <remarks>
 /// Usage: <c>ManagedCompressions.Bench [--codecs zstd,lz4] [--sets silesia,github] [--levels 1,3]
-/// [--seconds S] [--directions compression,decompression] [--results file.tsv] [--markdown file.md]</c>,
-/// or <c>--report file.tsv [--markdown file.md]</c> to render results already measured. A direction
+/// [--seconds S] [--directions compression,decompression] [--results file.tsv] [--markdown file.md]
+/// [--core N]</c>, or <c>--report file.tsv [--markdown file.md]</c> to render results already measured.
+/// <c>--core N</c> keeps the timed thread on logical processor N (Windows). A direction
 /// is timed for some <c>--seconds</c> (3 by default), never fewer than three rounds. <c>--results</c>
 /// appends each level's measures as soon as they are taken, and the tables are rendered from the
 /// whole file, a later measure replacing an earlier one.
@@ -36,8 +38,19 @@ internal static class Program
 
     private const int QosClassUserInteractive = 0x21;
 
+    private const int ThreadPriorityHighest = 2;
+
     [DllImport("libSystem.dylib")]
     private static extern int pthread_set_qos_class_self_np(int qosClass, int relativePriority);
+
+    [DllImport("kernel32.dll")]
+    private static extern nint GetCurrentThread();
+
+    [DllImport("kernel32.dll")]
+    private static extern bool SetThreadPriority(nint thread, int priority);
+
+    [DllImport("kernel32.dll")]
+    private static extern nuint SetThreadAffinityMask(nint thread, nuint mask);
 
     public static int Main(string[] args)
     {
@@ -46,6 +59,17 @@ internal static class Program
         {
             // The timed thread on the performance cores, as an interactive application's would be.
             pthread_set_qos_class_self_np(QosClassUserInteractive, 0);
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            // The same on Windows: the process and the timed thread at a high priority, and with
+            // --core N the thread kept on logical processor N, which no migration then disturbs.
+            Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
+            _ = SetThreadPriority(GetCurrentThread(), ThreadPriorityHighest);
+            if (options.TryGetValue("core", out string? core))
+            {
+                _ = SetThreadAffinityMask(GetCurrentThread(), (nuint)1 << int.Parse(core, CultureInfo.InvariantCulture));
+            }
         }
 
         if (options.TryGetValue("report", out string? report))
