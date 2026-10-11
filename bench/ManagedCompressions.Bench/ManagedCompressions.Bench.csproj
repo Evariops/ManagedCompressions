@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.Bench</RootNamespace>
+    <AssemblyName>ManagedCompressions.Bench</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <!-- `dotnet publish -p:PublishAot=true` for the Native AOT measures; `dotnet run -c Release` for the JIT. -->
+    <IlcInstructionSet>native</IlcInstructionSet>
+    <UseLdClassicXCodeLinker>false</UseLdClassicXCodeLinker>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NativeCompressions.Zstandard" />
+    <PackageReference Include="NativeCompressions.LZ4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
+    <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+  </ItemGroup>
+
+</Project>
