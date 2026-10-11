@@ -1,3 +1,13 @@
+# Level by level, Apple M4 Pro (arm64), JIT
+
+`bench/ManagedCompressions.Bench`: NativeCompressions 1.1.0 (zstd 1.5.7, lz4 1.10.0) and the managed codecs,
+timed in alternating rounds on one thread, each figure the median of its rounds, in MB/s of uncompressed
+data. × is the managed speed over the native speed.
+
+```sh
+dotnet run -c Release --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4 --seconds 3
+```
+
 ### zstd, silesia
 
 | level | ratio native | ratio managed | compression native | compression managed | × | decompression native | decompression managed | × |

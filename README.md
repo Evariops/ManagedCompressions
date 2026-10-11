@@ -59,7 +59,7 @@ That exception is noise. Zstandard's level 19 and LZ4's level 12 take 12 to 45 s
 measured on three calls instead of ten, and at level 19 NativeCompressions' own time varied by 5 % from one
 job to the other (43.0 s, then 45.5 s) where .NET's and the managed code's varied by 1 to 2 %: read level
 19's compression row as on par. The full BenchmarkDotNet tables, with Brotli and GZip for scale, are in
-[`bench/results/benchmarkdotnet-silesia.md`](bench/results/benchmarkdotnet-silesia.md).
+[`bench/results/arm64/benchmarkdotnet-silesia.md`](bench/results/arm64/benchmarkdotnet-silesia.md).
 
 ## Quick start
 
@@ -190,13 +190,15 @@ strategy).
 
 - **Machine:** Apple M4 Pro (arm64), macOS 26.7, .NET 11.0.0-rc.1, one thread. x86-64 (amd64) results
   will follow.
-- **Native side:** NativeCompressions 1.1.0, which ships zstd 1.5.7 and lz4 1.10.0 built at `-O3`.
+- **Native side:** NativeCompressions 1.1.0, which ships zstd 1.5.7 and lz4 1.10.0 built at `-O3`. Its
+  libzstd decompresses at the speed of the one .NET ships. A libzstd built from source with Apple clang 21
+  decompresses some 20 % faster: against that one, Zstandard decompression is 1.11–1.21× as fast, as
+  [`src/ManagedCompressions.Zstd/README.md`](src/ManagedCompressions.Zstd/README.md#performance) shows.
 - **Level-by-level tables:** `bench/ManagedCompressions.Bench` times the native and the managed side in
   alternating rounds and reports each one's median, after a warm-up that gives the JIT its final, profiled
   code. Its first round checks that the managed output matches the native output byte for byte, and that
   everything decodes back. The raw results are in
-  [`bench/results/current-jit.md`](bench/results/current-jit.md). The code before the LZ4 work is measured
-  the same way in [`bench/results/baseline-jit.md`](bench/results/baseline-jit.md).
+  [`bench/results/arm64/levels.md`](bench/results/arm64/levels.md).
 - **At-a-glance tables:** `bench/ManagedCompressions.Benchmarks` runs BenchmarkDotNet the way
   NativeCompressions' README does, under the JIT and under Native AOT. Each case first runs the managed
   codec on the first MiB of silesia.tar, so that the JIT has given it its final, profiled code, as a
@@ -237,7 +239,10 @@ so that a single byte read or written out of bounds faults.
 | `tests/` | differential tests against the native libraries, golden files, fuzzing |
 | `bench/ManagedCompressions.Bench` | level-by-level comparison with NativeCompressions |
 | `bench/ManagedCompressions.Benchmarks` | BenchmarkDotNet on silesia.tar, JIT and Native AOT (`--check` verifies every case once) |
-| `bench/ManagedCompressions.Zstd.Perf`, `bench/jit-profile.sh` | micro-benchmarks and instruction-level profilers |
+| `bench/ManagedCompressions.Zstd.Perf` | Zstandard against libzstd built from source, and micro-benchmarks |
+| `bench/jit-profile.sh`, `bench/*-pcprofile.py` | instruction-level profilers, for the JIT and for Native AOT |
+| `bench/results/arm64` | the results above; x86-64 results will go beside them |
+| `tools/native-ref` | libzstd 1.5.7 built from source, and the generator of the test data |
 
 ## License
 
