@@ -9,8 +9,9 @@ using NativeOptions = NativeCompressions.ZstandardCompressionOptions;
 namespace ManagedCompressions.Benchmarks;
 
 /// <summary>
-/// Zstandard on silesia.tar, a level a group: NativeCompressions (the baseline), ManagedCompressions.Zstd, and
-/// .NET's own <c>System.IO.Compression</c> encoder and decoder. Every decoder reads NativeCompressions' frame.
+/// Zstandard on silesia.tar, a level a group: NativeCompressions (the baseline),
+/// ManagedCompressions.Zstd, and .NET's own <c>System.IO.Compression</c> encoder and decoder. Every
+/// decoder reads NativeCompressions' frame.
 /// </summary>
 public abstract class ZstandardBenchmarkBase : SilesiaBenchmarkBase
 {

@@ -16,11 +16,11 @@ namespace ManagedCompressions.Zstd.Perf;
 /// <summary>
 /// Throughput on the corpora of zstd's own benchmarks (bench/zstd-corpus.sh), level by level: libzstd 1.5.7
 /// freshly compiled, the reference; the platform's <see cref="ZstandardEncoder"/> and
-/// <see cref="ZstandardDecoder"/>, the libzstd the runtime ships; ManagedCompressions.Zstd. At each level the
-/// candidates compress the data set, then decode libzstd's frames, each direction in rounds that time
-/// every candidate once, in an order that rotates, so that whatever the machine does at that moment
-/// lands on all of them alike. The first round is also the check: every candidate must write libzstd's
-/// frames byte for byte, and give the content back from them.
+/// <see cref="ZstandardDecoder"/>, the libzstd the runtime ships; ManagedCompressions.Zstd. At each
+/// level the candidates compress the data set, then decode libzstd's frames, each direction in rounds
+/// that time every candidate once, in an order that rotates, so that whatever the machine does at that
+/// moment lands on all of them alike. The first round is also the check: every candidate must write
+/// libzstd's frames byte for byte, and give the content back from them.
 /// </summary>
 /// <remarks>
 /// Usage: <c>ManagedCompressions.Zstd.Perf --corpus silesia,github,github-dict [--levels 1,3,19] [--seconds S] [--only zstd] [--directions decompression]

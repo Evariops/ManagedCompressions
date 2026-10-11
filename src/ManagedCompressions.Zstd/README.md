@@ -5,16 +5,16 @@ in fully managed C#.
 
 - It contains no native code: no bundled library and no P/Invoke, so it runs wherever .NET runs, and
   it is compatible with trimming and Native AOT.
-- It writes the same frames as libzstd. At every compression level, ManagedCompressions.Zstd writes exactly the
-  bytes that libzstd 1.5.7 writes, with dictionaries, with long-distance matching and in multithreaded
-  compression.
-- It is fast. Decompression is 1.11–1.21× as fast as libzstd on the Silesia corpus, and 1.36–1.52× on
-  small frames with a dictionary. Compression of large inputs is within a few percent of libzstd (see
-  [Performance](#performance)).
+- It writes the same frames as libzstd. At every compression level, ManagedCompressions.Zstd writes
+  exactly the bytes that libzstd 1.5.7 writes, with dictionaries, with long-distance matching and in
+  multithreaded compression.
+- It is fast. Decompression is 1.3–1.5× as fast as the libzstd that NativeCompressions and .NET ship,
+  and 1.11–1.21× as fast as libzstd built from source at `-O3` on the Silesia corpus. Compression of
+  large inputs is within a few percent of libzstd (see [Performance](#performance)).
 - A warm compressor or decompressor allocates nothing.
 
-ManagedCompressions.Zstd is an independent implementation of the format. It is not affiliated with the zstd
-project or with Meta.
+ManagedCompressions.Zstd is an independent implementation of the format. It is not affiliated with the
+zstd project or with Meta.
 
 ## Requirements
 
@@ -74,9 +74,9 @@ var compressor = new ZstdCompressor(level: 3, dictionary);
 var decompressor = new ZstdDecompressor(dictionary);
 ```
 
-The dictionary is prepared once, in the constructor, and then used for every frame. ManagedCompressions.Zstd
-does not train dictionaries, so use `zstd --train`, or `ZstandardDictionary.Train` from
-`System.IO.Compression`.
+The dictionary is prepared once, in the constructor, and then used for every frame.
+ManagedCompressions.Zstd does not train dictionaries, so use `zstd --train`, or
+`ZstandardDictionary.Train` from `System.IO.Compression`.
 
 A decompressor can also take the dictionary with each frame, which lets one decompressor serve frames
 of any dictionary:
@@ -107,8 +107,8 @@ Instances are not thread-safe. Use one per thread, or one per concurrent operati
 ## Compatibility with libzstd
 
 Decompression follows libzstd's decoding and validation, so the two accept and reject the same frames.
-ManagedCompressions.Zstd also enforces RFC 8878's limit on the size of a block in every case, where libzstd only
-partly enforces it in one-shot decoding.
+ManagedCompressions.Zstd also enforces RFC 8878's limit on the size of a block in every case, where
+libzstd only partly enforces it in one-shot decoding.
 
 Compression reproduces libzstd 1.5.7's `ZSTD_compress` byte for byte, at every level from -131072 to
 22. This covers:
@@ -117,8 +117,8 @@ Compression reproduces libzstd 1.5.7's `ZSTD_compress` byte for byte, at every l
 - the pre- and post-block splitters
 - the long-distance matching that libzstd turns on at level 22 for sources over 64 MiB
 
-With a dictionary, ManagedCompressions.Zstd writes the frames libzstd writes when the dictionary is prepared at
-the same level (`ZSTD_createCDict`, then `ZSTD_CCtx_refCDict`), which is also how the
+With a dictionary, ManagedCompressions.Zstd writes the frames libzstd writes when the dictionary is
+prepared at the same level (`ZSTD_createCDict`, then `ZSTD_CCtx_refCDict`), which is also how the
 `ZstandardDictionary` of `System.IO.Compression` uses it. `CompressAsync` reproduces libzstd's
 multithreaded compression (zstdmt), dictionaries and long-distance matching included.
 
@@ -140,7 +140,10 @@ The limitations are these:
 | compression, small records | 0.87–1.00× | 0.89–0.98× |
 | compression, small records with a dictionary | 0.87–1.26× | 0.95–1.00× |
 
-The ranges span compression levels 1 to 19.
+The ranges span compression levels 1 to 19. The reference here is libzstd built from source with Apple
+clang 21 at `-O3`, which decompresses some 20 % faster than the libzstd NativeCompressions and .NET ship:
+against those, decompression is 1.3–1.5× as fast, as the repository's
+[README](../../README.md#at-a-glance) shows.
 
 The measurements use the data of zstd's own benchmarks, which `bench/zstd-corpus.sh` downloads:
 
@@ -157,8 +160,8 @@ Three implementations are compared:
 - `ZstandardEncoder` and `ZstandardDecoder` from .NET 11, which wrap the libzstd the runtime ships
 - ManagedCompressions.Zstd, compiled with Native AOT
 
-The machine is an Apple M4 Pro running macOS 26.7, on one thread. The three implementations run in one
-process and take turns, and each figure is the median of its rounds. MB/s means millions of bytes of
+The machine is an Apple M4 Pro (arm64) running macOS 26.7, on one thread. The three implementations run
+in one process and take turns, and each figure is the median of its rounds. MB/s means millions of bytes of
 uncompressed data per second. At every level the three write identical frames, which the benchmark
 checks, so one compression ratio holds for all of them. Decompression decodes libzstd's frames at each
 level.
@@ -244,9 +247,9 @@ artifacts/perf/ManagedCompressions.Zstd.Perf --core 2 --corpus silesia,github,gi
 
 Correctness is checked against libzstd itself:
 
-- Differential tests against the libzstd of .NET's `System.IO.Compression`: ManagedCompressions.Zstd must give
-  back the content libzstd decodes, and write libzstd's compressed frames byte for byte, with and
-  without dictionaries.
+- Differential tests against the libzstd of .NET's `System.IO.Compression`: ManagedCompressions.Zstd
+  must give back the content libzstd decodes, and write libzstd's compressed frames byte for byte, with
+  and without dictionaries.
 - zstd's golden files, for decompression, decompression errors and dictionaries.
 - A decodecorpus corpus: random valid frames from zstd's own generator. They exercise the modes an
   encoder rarely emits, such as RLE and repeated tables, treeless literals and direct Huffman weights.
@@ -256,8 +259,7 @@ Correctness is checked against libzstd itself:
 
 The golden files and the decodecorpus corpus are binary files that are generated rather than kept in
 the repository. `tools/native-ref/testdata.sh` writes them from zstd 1.5.7's sources into
-`tests/ManagedCompressions.Zstd.Tests/testdata/`. The tests that read them are skipped without them, and fail in
-CI, which writes them first.
+`tests/ManagedCompressions.Zstd.Tests/testdata/`. The tests that read them are skipped without them.
 
 ## Building
 
@@ -281,13 +283,13 @@ shared objects elsewhere.
 | `src/ManagedCompressions.Zstd` | the library |
 | `tests/ManagedCompressions.Zstd.Tests` | differential tests, golden files, unit tests, fuzzing |
 | `bench/ManagedCompressions.Zstd.Perf` | Native AOT benchmarks against libzstd and the platform, in turns (`--corpus`, `--compress`) |
-| `bench/ManagedCompressions.Zstd.Benchmarks` | BenchmarkDotNet benchmarks |
+| `bench/ManagedCompressions.Benchmarks` | BenchmarkDotNet benchmarks against NativeCompressions and .NET |
 | `bench/zstd-corpus.sh` | downloads the benchmark data into `tests/ManagedCompressions.Zstd.Tests/testdata/corpus` |
 | `tools/native-ref` | the native reference, libzstd 1.5.7 built from source with its timing harness (`build.sh`), and the test data's generator (`testdata.sh`) |
 | `tests/ManagedCompressions.Zstd.Tests/testdata` | generated, not kept: zstd's golden files and the decodecorpus corpus (`testdata.sh`), and the benchmark data (`zstd-corpus.sh`) |
 
 ## License
 
-ManagedCompressions.Zstd is licensed under the [MIT License](../../LICENSE). Its compressor is derived
-from libzstd 1.5.7, and that part remains under zstd's BSD license, as does the test data copied from
-the zstd repository. See [NOTICE](../../NOTICE).
+ManagedCompressions.Zstd is licensed under the [MIT License](../../LICENSE). Its compressor is
+derived from libzstd 1.5.7, and that part remains under zstd's BSD license, as does the test data
+copied from the zstd repository. See [NOTICE](../../NOTICE).

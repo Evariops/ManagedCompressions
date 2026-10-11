@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Writes the data ManagedCompressions.Zstd's tests read into tests/ManagedCompressions.Zstd.Tests/testdata/, which git
-# ignores: binary files, generated rather than kept. From the zstd 1.5.7 release (zstd-source.sh):
+# Writes the data ManagedCompressions.Zstd's tests read into
+# tests/ManagedCompressions.Zstd.Tests/testdata/, which git ignores: binary files, generated rather than
+# kept. From the zstd 1.5.7 release (zstd-source.sh):
 #
 #   golden-*        zstd's own golden files (its tests/golden-*): frames that must decode, frames that
 #                   must be refused, inputs whose compression once broke a decoder, and a dictionary.

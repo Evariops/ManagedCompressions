@@ -23,7 +23,8 @@ public sealed class BenchmarkConfig : ManualConfig
         Job measure = Job.Default.WithWarmupCount(3).WithIterationCount(10);
         AddJob(measure.WithId("JIT, dynamic PGO"));
         // The native link asks Xcode for its version to choose a linker flag; with the command line tools
-        // alone that question fails, so the flag is decided here, as ManagedCompressions.Zstd.Perf decides it.
+        // alone that question fails, so the flag is decided here, as ManagedCompressions.Zstd.Perf
+        // decides it.
         AddJob(measure.WithRuntime(NativeAotRuntime.Net11_0)
             .WithArguments([new MsBuildArgument("/p:UseLdClassicXCodeLinker=false")])
             .WithId("Native AOT"));

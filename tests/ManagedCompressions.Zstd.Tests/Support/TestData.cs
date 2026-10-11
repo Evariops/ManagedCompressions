@@ -8,8 +8,8 @@ using Xunit;
 namespace ManagedCompressions.Zstd.Tests.Support;
 
 /// <summary>
-/// <c>tests/ManagedCompressions.Zstd.Tests/testdata/</c>: zstd's golden files and a decodecorpus corpus, binary
-/// files that the repository does not keep and <c>tools/native-ref/testdata.sh</c> writes.
+/// <c>tests/ManagedCompressions.Zstd.Tests/testdata/</c>: zstd's golden files and a decodecorpus corpus,
+/// binary files that the repository does not keep and <c>tools/native-ref/testdata.sh</c> writes.
 /// </summary>
 /// <remarks>
 /// A test that reads them calls <see cref="Require"/> first: without them it is skipped, and in CI, whose

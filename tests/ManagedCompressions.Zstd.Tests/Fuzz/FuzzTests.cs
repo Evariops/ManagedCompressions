@@ -127,8 +127,8 @@ public sealed class FuzzTests
         Console.WriteLine(summary);
         Assert.True(failures.Count == 0, summary + Environment.NewLine + string.Join(Environment.NewLine, failures));
 
-        // The leniencies of libzstd one-shot that ManagedCompressions.Zstd does not share: when it picks its
-        // double-symbol Huffman decoder, the last symbol of a stream may overrun the stream by a few
+        // The leniencies of libzstd one-shot that ManagedCompressions.Zstd does not share: when it picks
+        // its double-symbol Huffman decoder, the last symbol of a stream may overrun the stream by a few
         // bits; and a block may regenerate more than Block_Maximum_Size, which RFC 8878 forbids and
         // libzstd's own streaming decoder refuses.
         Assert.True(divergences.Keys.All(e => e is ZstdError.HuffmanStream or ZstdError.BlockTooLarge), summary);
