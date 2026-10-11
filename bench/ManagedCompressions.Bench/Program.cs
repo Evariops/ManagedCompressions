@@ -34,9 +34,20 @@ internal static class Program
         ["lz4"] = ["silesia", "silesia-64k", "github"],
     };
 
+    private const int QosClassUserInteractive = 0x21;
+
+    [DllImport("libSystem.dylib")]
+    private static extern int pthread_set_qos_class_self_np(int qosClass, int relativePriority);
+
     public static int Main(string[] args)
     {
         Dictionary<string, string> options = Options(args);
+        if (OperatingSystem.IsMacOS() && options.GetValueOrDefault("qos", "1") != "0")
+        {
+            // The timed thread on the performance cores, as an interactive application's would be.
+            pthread_set_qos_class_self_np(QosClassUserInteractive, 0);
+        }
+
         if (options.TryGetValue("report", out string? report))
         {
             return Render(Read(report), options.GetValueOrDefault("markdown"));
@@ -77,7 +88,7 @@ internal static class Program
                 {
                     var release = new List<Action>();
                     List<Candidate> candidates = Candidates.For(codec, set, level, release);
-                    List<Row> measured = Harness.Measure(codec, set, level, candidates, budget, compress, decompress);
+                    List<Row> measured = Harness.Measure(codec, set, level, candidates, budget, compress, decompress, options.GetValueOrDefault("only"));
                     release.ForEach(r => r());
                     Print(measured);
                     rows.AddRange(measured);
@@ -112,7 +123,7 @@ internal static class Program
     {
         foreach (IGrouping<string, Row> direction in rows.GroupBy(r => r.Direction))
         {
-            Row reference = direction.First(r => r.Native);
+            Row reference = direction.FirstOrDefault(r => r.Native) ?? direction.First();
             var line = new StringBuilder(string.Create(CultureInfo.InvariantCulture, $"  L{reference.Level,-3} {direction.Key,-13}"));
             foreach (Row row in direction)
             {
