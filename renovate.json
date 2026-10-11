@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices", ":semanticCommits", ":timezone(Europe/Paris)"],
+  "schedule": ["before 7am on monday"],
+  "minimumReleaseAge": "2 days",
+  "labels": ["dependencies"],
+  "vulnerabilityAlerts": { "enabled": true, "schedule": ["at any time"], "labels": ["security"] },
+  "pre-commit": { "enabled": true },
+  "customManagers": [
+    {
+      "description": "CI pins zizmor inline (pipx run zizmor==X); the pre-commit manager cannot see it.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": ["zizmor==(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "zizmorcore/zizmor",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"]
+    },
+    {
+      "description": "Keep the inline CI pin and the pre-commit hook in one PR so they never drift.",
+      "matchPackageNames": ["zizmorcore/zizmor", "zizmorcore/zizmor-pre-commit"],
+      "groupName": "zizmor"
+    },
+    {
+      "description": "The native reference: both packages move together. A version that ships another zstd or lz4 than 1.5.7 and 1.10.0 fails the byte-for-byte tests, which is the point: the managed compressors follow those versions deliberately.",
+      "matchPackageNames": ["NativeCompressions.*"],
+      "groupName": "NativeCompressions"
+    }
+  ]
+}

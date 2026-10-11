@@ -230,6 +230,10 @@ check the decoders against every frame and block the native libraries write, and
 files and decodecorpus frames. Fuzzing runs with each buffer placed against an inaccessible memory page,
 so that a single byte read or written out of bounds faults.
 
+CI builds everything and runs the tests on every pull request, the benchmarks excepted: their figures
+mean something on a quiet machine only. It also runs the repository's [prek](https://github.com/j178/prek)
+hooks, betterleaks for secrets and zizmor for the workflows; `prek install` runs them before each commit.
+
 ## Repository
 
 | Path | Contents |
@@ -249,3 +253,6 @@ so that a single byte read or written out of bounds faults.
 ManagedCompressions is licensed under the [MIT License](LICENSE). The compressors are derived
 from libzstd (BSD-3-Clause) and lz4 (BSD-2-Clause), and those parts remain under their licenses: see
 [NOTICE](NOTICE). This project is not affiliated with the zstd or lz4 projects, nor with Cysharp.
+
+What the decoders guarantee on untrusted input, and how to report a vulnerability, is in
+[SECURITY.md](SECURITY.md).
