@@ -1,0 +1,81 @@
+# Release Drafter config, read by .github/workflows/release-drafter.yml.
+#
+# Every merge to main updates a draft release. Publishing the draft creates the tag and fires the
+# release run of ci.yml, which runs every check again on that tag and then pushes the packages
+# to nuget.org.
+#
+# Only merged pull requests reach the notes: a commit pushed straight to main never appears. A pull
+# request is filed by its title, read as a Conventional Commits header like the commit messages,
+# under the first category that matches it; the `skip-changelog` label leaves it out.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+# Below 1.0.0 a breaking change moves the minor version, as SemVer allows there; it moves the major
+# from 1.0 on. A category without `semver-increment` moves the patch.
+categories:
+  - type: pre-exclude
+    when:
+      label: skip-changelog
+  - title: '💥 Breaking changes'
+    exclusive: true
+    semver-increment: minor
+    when:
+      - conventional:
+          breaking: true
+      - label: breaking
+  - title: '🚀 Features'
+    exclusive: true
+    semver-increment: minor
+    when:
+      conventional:
+        type: feat
+  - title: '🐛 Bug fixes'
+    exclusive: true
+    when:
+      conventional:
+        type: fix
+  - title: '⚡ Performance'
+    exclusive: true
+    semver-increment: minor
+    when:
+      conventional:
+        type: perf
+  - title: '📚 Documentation'
+    exclusive: true
+    when:
+      conventional:
+        type: docs
+  - title: '📦 Dependencies'
+    exclusive: true
+    collapse-after: 3
+    when:
+      - conventional:
+          scope: deps
+      - label: dependencies
+  - title: '🔧 Build, CI and tooling'
+    exclusive: true
+    when:
+      conventional:
+        types: [build, ci]
+  - title: '🧹 Maintenance'
+    exclusive: true
+    collapse-after: 5
+    when:
+      conventional:
+        types: [refactor, test, chore, bench]
+  - title: 'Other changes'
+
+change-template: '- $TITLE (#$NUMBER)'
+change-title-escapes: '\<*_&' # markdown metacharacters in pull request titles
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ---
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+no-changes-template: '- No merged pull requests since the last release.'

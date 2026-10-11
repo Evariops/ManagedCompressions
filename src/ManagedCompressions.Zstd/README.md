@@ -21,8 +21,13 @@ zstd project or with Meta.
 ## Requirements
 
 ManagedCompressions.Zstd targets .NET 11 (`net11.0`). Its only dependency is `System.IO.Hashing`, for the
-XXH64 frame checksums. From source, reference
-`src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj`.
+XXH64 frame checksums.
+
+```sh
+dotnet add package ManagedCompressions.Zstd
+```
+
+From source, reference `src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj`.
 
 ## Usage
 
@@ -145,7 +150,7 @@ The limitations are these:
 The ranges span compression levels 1 to 19. The reference here is libzstd built from source with Apple
 clang 21 at `-O3`, which decompresses some 20 % faster than the libzstd NativeCompressions and .NET ship:
 against those, decompression is 1.3–1.5× as fast on arm64. On x64 it is 1.0–1.2× as fast as
-NativeCompressions' libzstd, as the repository's [README](../../README.md#at-a-glance) shows.
+NativeCompressions' libzstd, as the repository's [README](https://github.com/Evariops/ManagedCompressions#at-a-glance) shows.
 
 The measurements use the data of zstd's own benchmarks, which `bench/zstd-corpus.sh` downloads:
 
@@ -292,6 +297,8 @@ shared objects elsewhere.
 
 ## License
 
-ManagedCompressions.Zstd is licensed under the [MIT License](../../LICENSE). Its compressor is
+ManagedCompressions.Zstd is licensed under the
+[MIT License](https://github.com/Evariops/ManagedCompressions/blob/main/LICENSE). Its compressor is
 derived from libzstd 1.5.7, and that part remains under zstd's BSD license, as does the test data
-copied from the zstd repository. See [NOTICE](../../NOTICE).
+copied from the zstd repository. See [NOTICE](https://github.com/Evariops/ManagedCompressions/blob/main/NOTICE),
+which the package carries.

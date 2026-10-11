@@ -3,8 +3,15 @@
   <PropertyGroup>
     <RootNamespace>ManagedCompressions.Lz4</RootNamespace>
     <AssemblyName>ManagedCompressions.Lz4</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Description>The LZ4 block format in fully managed C#: no native code, no P/Invoke.</Description>
+    <PackageTags>lz4;compression;aot</PackageTags>
+    <!-- The compressors are derived from lz4 1.10.0 and remain under its BSD license: see NOTICE. -->
+    <PackageLicenseExpression>MIT AND BSD-2-Clause</PackageLicenseExpression>
   </PropertyGroup>
+
+  <!-- The package page shows the repository's readme, which covers LZ4 beside Zstandard. -->
 
   <ItemGroup>
     <InternalsVisibleTo Include="ManagedCompressions.Lz4.Tests" />

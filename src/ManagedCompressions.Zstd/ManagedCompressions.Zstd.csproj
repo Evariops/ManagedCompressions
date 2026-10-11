@@ -7,6 +7,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Description>A Zstandard (RFC 8878) decompressor and compressor in fully managed C#: no native code, no P/Invoke.</Description>
     <PackageTags>zstd;zstandard;compression;rfc8878;aot</PackageTags>
+    <!-- The compressor is derived from libzstd 1.5.7 and remains under its BSD license: see NOTICE. -->
+    <PackageLicenseExpression>MIT AND BSD-3-Clause</PackageLicenseExpression>
   </PropertyGroup>
 
   <!-- Its own readme on the package page, which covers Zstandard alone. -->
