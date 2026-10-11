@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.Benchmarks</RootNamespace>
+    <AssemblyName>ManagedCompressions.Benchmarks</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <!-- BenchmarkDotNet's generated bootstrapper trips analyzers the library's settings make errors. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="NativeCompressions.Zstandard" />
+    <PackageReference Include="NativeCompressions.LZ4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
+    <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+  </ItemGroup>
+
+</Project>

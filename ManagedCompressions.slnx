@@ -9,6 +9,7 @@
   </Folder>
   <Folder Name="/bench/">
     <Project Path="bench/ManagedCompressions.Bench/ManagedCompressions.Bench.csproj" />
+    <Project Path="bench/ManagedCompressions.Benchmarks/ManagedCompressions.Benchmarks.csproj" />
     <Project Path="bench/ManagedCompressions.Zstd.Perf/ManagedCompressions.Zstd.Perf.csproj" />
   </Folder>
 </Solution>
