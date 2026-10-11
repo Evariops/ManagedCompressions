@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.Zstd.Perf</RootNamespace>
+    <AssemblyName>ManagedCompressions.Zstd.Perf</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <!-- Native AOT, code for the machine it runs on: the library at its fastest. -->
+    <PublishAot>true</PublishAot>
+    <IlcInstructionSet>native</IlcInstructionSet>
+    <PublishTrimmed>true</PublishTrimmed>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- The native link asks Xcode for its version to choose a linker flag; with the command line
+         tools alone that question fails, so the flag is decided here. -->
+    <UseLdClassicXCodeLinker>false</UseLdClassicXCodeLinker>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
+    <Compile Include="../ManagedCompressions.Zstd.Shared/*.cs" LinkBase="Shared" />
+    <Compile Include="../../tests/ManagedCompressions.Zstd.Tests/Support/DataKinds.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+</Project>
