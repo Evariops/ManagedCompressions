@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>ManagedCompressions.Zstd</RootNamespace>
+    <AssemblyName>ManagedCompressions.Zstd</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>A Zstandard (RFC 8878) decompressor and compressor in fully managed C#: no native code, no P/Invoke.</Description>
+    <PackageTags>zstd;zstandard;compression;rfc8878;aot</PackageTags>
+  </PropertyGroup>
+
+  <!-- Its own readme on the package page, which covers Zstandard alone. -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)../../README.md" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Hashing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ManagedCompressions.Zstd.Tests" />
+    <InternalsVisibleTo Include="ManagedCompressions.Zstd.Perf" />
+  </ItemGroup>
+
+</Project>

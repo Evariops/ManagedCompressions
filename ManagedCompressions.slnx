@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ManagedCompressions.Zstd.Tests/ManagedCompressions.Zstd.Tests.csproj" />
+  </Folder>
+</Solution>
