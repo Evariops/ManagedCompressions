@@ -1,21 +1,20 @@
 using System;
-using System.Buffers.Binary;
 using System.IO;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.Intrinsics;
+using ManagedCompressions.Lz4.Internal;
 
 namespace ManagedCompressions.Lz4;
 
 /// <summary>
 /// The LZ4 block format (Parquet's <c>LZ4_RAW</c>): sequences of a token, literals and a match, as
-/// lz4's <c>lz4_Block_format.md</c> describes them, a page fed whole with no framing.
+/// lz4's <c>lz4_Block_format.md</c> describes them, a block fed whole with no framing.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The decoder writes into a destination of exactly the page's uncompressed length and refuses a
-/// literal or a match past either end, and an offset of zero or before the start; inside those
-/// checks it copies sixteen bytes at a time where both sides hold sixteen.
+/// The decoder reads any valid block, whatever wrote it, and refuses a literal or a match past either
+/// end, an offset of zero or before the start, and a block that does not end with literals. Its fast
+/// loop copies sixteen or thirty-two bytes at a time while the destination has room for it.
 /// </para>
 /// <para>
 /// The encoder is this library's own: a hash of four bytes into a table of positions, greedy
@@ -24,7 +23,7 @@ namespace ManagedCompressions.Lz4;
 /// input, and makes no claim to match lz4's bytes.
 /// </para>
 /// </remarks>
-public static class Lz4Block
+public static unsafe class Lz4Block
 {
     private const int MinMatch = 4;
     private const int LastLiterals = 5;
@@ -36,137 +35,42 @@ public static class Lz4Block
     public static int MaxCompressedLength(int length) => length + length / 255 + 16;
 
     /// <summary>Decompresses <paramref name="source"/> into all of <paramref name="destination"/>.</summary>
-    public static unsafe void Decompress(ReadOnlySpan<byte> source, Span<byte> destination)
+    /// <exception cref="InvalidDataException">The block is corrupt, or does not decode to exactly the destination's length.</exception>
+    public static void Decompress(ReadOnlySpan<byte> source, Span<byte> destination)
     {
-        fixed (byte* input = source)
-        fixed (byte* output = destination)
+        nint written;
+        fixed (byte* src = source)
+        fixed (byte* dst = destination)
         {
-            byte* ip = input;
-            byte* ipEnd = input + source.Length;
-            byte* op = output;
-            byte* opEnd = output + destination.Length;
-            while (true)
-            {
-                if (ip >= ipEnd)
-                {
-                    ThrowCorrupt();
-                }
+            written = Lz4Decoder.Decode(src, source.Length, dst, destination.Length);
+        }
 
-                uint token = *ip++;
-                nuint literals = token >> 4;
-                if (literals == 15)
-                {
-                    literals += ReadLength(ref ip, ipEnd);
-                }
+        if (written < 0)
+        {
+            ThrowCorrupt();
+        }
 
-                if ((nuint)(ipEnd - ip) < literals || (nuint)(opEnd - op) < literals)
-                {
-                    ThrowCorrupt();
-                }
-
-                if (literals <= 16 && ipEnd - ip >= 16 && opEnd - op >= 16)
-                {
-                    Vector128.Store(Vector128.Load(ip), op);
-                }
-                else
-                {
-                    Buffer.MemoryCopy(ip, op, literals, literals);
-                }
-
-                ip += literals;
-                op += literals;
-                if (ip == ipEnd)
-                {
-                    break;
-                }
-
-                if (ipEnd - ip < 2)
-                {
-                    ThrowCorrupt();
-                }
-
-                nuint offset = BinaryPrimitives.ReadUInt16LittleEndian(new ReadOnlySpan<byte>(ip, 2));
-                ip += 2;
-                nuint length = token & 15;
-                if (length == 15)
-                {
-                    length += ReadLength(ref ip, ipEnd);
-                }
-
-                length += MinMatch;
-                if (offset == 0 || offset > (nuint)(op - output) || length > (nuint)(opEnd - op))
-                {
-                    ThrowCorrupt();
-                }
-
-                op = Copy(op, opEnd, offset, length);
-            }
-
-            if (op != opEnd)
-            {
-                throw new InvalidDataException("An LZ4 block holds fewer bytes than its destination.");
-            }
+        if (written != destination.Length)
+        {
+            throw new InvalidDataException("An LZ4 block holds fewer bytes than its destination.");
         }
     }
 
-    /// <summary>An extended length: bytes of 255 continue it, the first byte below 255 ends it.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe nuint ReadLength(ref byte* ip, byte* ipEnd)
+    /// <summary>
+    /// Decompresses <paramref name="source"/>, a whole block, into <paramref name="destination"/>;
+    /// false when the block is corrupt or its content does not fit.
+    /// </summary>
+    public static bool TryDecompress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
     {
-        nuint length = 0;
-        uint part;
-        do
+        nint written;
+        fixed (byte* src = source)
+        fixed (byte* dst = destination)
         {
-            if (ip >= ipEnd)
-            {
-                ThrowCorrupt();
-            }
-
-            part = *ip++;
-            length += part;
-        }
-        while (part == 255);
-
-        return length;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe byte* Copy(byte* op, byte* opEnd, nuint offset, nuint length)
-    {
-        byte* from = op - offset;
-        byte* end = op + length;
-        if (offset >= 16 && (nuint)(opEnd - op) >= length + 16)
-        {
-            do
-            {
-                Vector128.Store(Vector128.Load(from), op);
-                from += 16;
-                op += 16;
-            }
-            while (op < end);
-
-            return end;
+            written = Lz4Decoder.Decode(src, source.Length, dst, destination.Length);
         }
 
-        if (offset >= 8 && (nuint)(opEnd - op) >= length + 8)
-        {
-            do
-            {
-                Unsafe.WriteUnaligned(op, Unsafe.ReadUnaligned<ulong>(from));
-                from += 8;
-                op += 8;
-            }
-            while (op < end);
-
-            return end;
-        }
-
-        while (op < end)
-        {
-            *op++ = *from++;
-        }
-
-        return end;
+        bytesWritten = written < 0 ? 0 : (int)written;
+        return written >= 0;
     }
 
     /// <summary>Compresses <paramref name="source"/> into <paramref name="destination"/>, which holds at least <see cref="MaxCompressedLength"/>, and returns the bytes written.</summary>
@@ -298,6 +202,5 @@ public static class Lz4Block
         return op;
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowCorrupt() => throw new InvalidDataException("An LZ4 block is corrupt: a literal or a match reaches past its data.");
 }
