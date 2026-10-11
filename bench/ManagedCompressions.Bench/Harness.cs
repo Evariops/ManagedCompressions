@@ -35,7 +35,7 @@ internal static class Harness
     private const int MinRounds = 3;
     private const int MaxRounds = 400;
 
-    public static List<Row> Measure(string codec, DataSet set, int level, List<Candidate> candidates, double budget, bool compress, bool decompress)
+    public static List<Row> Measure(string codec, DataSet set, int level, List<Candidate> candidates, double budget, bool compress, bool decompress, string? only = null)
     {
         int records = set.Records;
         int[] bounds = new int[records + 1];
@@ -65,7 +65,9 @@ internal static class Harness
         var ratio = new double[count];
         var compressionDiffers = new bool[count];
         double[] compression = new double[count];
-        List<int> compressing = Enumerable.Range(0, count).Where(c => candidates[c].Compress is not null).ToList();
+        // --only: the others are not timed (the reference still writes the records once).
+        List<int> timed = Enumerable.Range(0, count).Where(c => only is null || candidates[c].Name == only).ToList();
+        List<int> compressing = timed.Where(c => candidates[c].Compress is not null).ToList();
         if (compress)
         {
             compression = Time(candidates, compressing, budget, (c, round) =>
@@ -75,9 +77,9 @@ internal static class Harness
                 {
                     ratio[c] = (double)set.Content.Length / written.Sum(w => (long)w);
                     compressionDiffers[c] = !RoundTrips(referenceCandidate, set, scratch, bounds, written, decoded);
-                    if (codec == "zstd" && c != 0)
+                    if (c != 0)
                     {
-                        // The managed compressor claims libzstd's frames, byte for byte.
+                        // The managed compressors claim the native frames and blocks, byte for byte.
                         for (int i = 0; i < records && !compressionDiffers[c]; i++)
                         {
                             compressionDiffers[c] = written[i] != sizes[i] || !scratch.AsSpan(bounds[i], sizes[i]).SequenceEqual(reference.AsSpan(bounds[i], sizes[i]));
@@ -106,7 +108,7 @@ internal static class Harness
         double[] decompression = new double[count];
         if (decompress)
         {
-            decompression = Time(candidates, Enumerable.Range(0, count).ToList(), budget, (c, round) =>
+            decompression = Time(candidates, timed, budget, (c, round) =>
             {
                 if (round > 0)
                 {
@@ -133,7 +135,7 @@ internal static class Harness
                 set.Content.Length / compression[c] / 1e6, ratio[c], compressionDiffers[c]));
         }
 
-        for (int c = 0; c < count && decompress; c++)
+        foreach (int c in timed.Where(_ => decompress))
         {
             rows.Add(new Row(codec, set.Name, level, "decompression", candidates[c].Name, candidates[c].Label, candidates[c].Native,
                 set.Content.Length / decompression[c] / 1e6, referenceRatio, decompressionDiffers[c]));

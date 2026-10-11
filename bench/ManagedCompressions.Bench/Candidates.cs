@@ -104,14 +104,15 @@ internal static unsafe class Candidates
 
     /// <summary>
     /// lz4 1.10.0 as NativeCompressions ships it, the block format, its state allocated once: level 1
-    /// is <c>LZ4_compress_fast</c> at acceleration 1 (<c>LZ4_compress_default</c>), a negative level
-    /// <c>LZ4_compress_fast</c> at that acceleration, levels 2 to 12 <c>LZ4_compress_HC</c>. The
-    /// managed side has its one encoder, at level 1.
+    /// is <c>LZ4_compress_fast</c> at acceleration 1 (<c>LZ4_compress_default</c>), a level below 1
+    /// <c>LZ4_compress_fast</c> at acceleration 1 - level (lz4frame's convention), levels 2 to 12
+    /// <c>LZ4_compress_HC</c>.
     /// </summary>
     private static List<Candidate> Lz4(int level, List<Action> release)
     {
         bool fast = level <= 1;
-        int acceleration = level < 0 ? -level : 1;
+        int acceleration = level < 1 ? 1 - level : 1;
+        var compressor = new Lz4Compressor(level);
         void* state = NativeMemory.AlignedAlloc((nuint)(fast ? LZ4NativeMethods.LZ4_sizeofState() : LZ4NativeMethods.LZ4_sizeofStateHC()), 64);
         release.Add(() => NativeMemory.AlignedFree(state));
         return
@@ -137,7 +138,7 @@ internal static unsafe class Candidates
                     }
                 }),
             new("managed", $"ManagedCompressions.Lz4 ({Runtime})", false,
-                level == 1 ? (s, d) => Lz4Block.Compress(s, d) : null,
+                (s, d) => compressor.TryCompress(s, d, out int w) ? w : -1,
                 (s, d) =>
                 {
                     Lz4Block.Decompress(s, d);
