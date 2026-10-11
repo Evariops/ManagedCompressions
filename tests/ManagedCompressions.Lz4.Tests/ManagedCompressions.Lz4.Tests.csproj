@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.Lz4.Tests</RootNamespace>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <TestingPlatformCaptureOutput>false</TestingPlatformCaptureOutput>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <!-- lz4 1.10.0, the oracle: it must read every block this library writes, and this library every block it writes. -->
+    <PackageReference Include="NativeCompressions.LZ4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../xunit.runner.json" Link="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

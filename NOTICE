@@ -53,3 +53,9 @@ it under BSD-3-Clause, whose text, from zstd 1.5.7's LICENSE file, follows:
     ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+LZ4
+---
+
+src/ManagedCompressions.Lz4 is an independent implementation of the LZ4 block
+format (https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md).

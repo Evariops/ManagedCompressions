@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>ManagedCompressions.Lz4</RootNamespace>
+    <AssemblyName>ManagedCompressions.Lz4</AssemblyName>
+    <Description>The LZ4 block format in fully managed C#: no native code, no P/Invoke.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ManagedCompressions.Lz4.Tests" />
+  </ItemGroup>
+
+</Project>
