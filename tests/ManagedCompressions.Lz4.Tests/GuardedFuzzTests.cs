@@ -4,9 +4,9 @@ using Xunit;
 namespace ManagedCompressions.Lz4.Tests;
 
 /// <summary>
-/// The decoder's sources and destinations placed against inaccessible pages, so that one byte read or
+/// The codec's sources and destinations placed against inaccessible pages, so that one byte read or
 /// written past either end faults: blocks mutated a few bytes and decoded into destinations of the
-/// edge sizes.
+/// edge sizes, and every level compressing into exactly the bound and into less.
 /// </summary>
 public sealed class GuardedFuzzTests
 {
@@ -43,6 +43,47 @@ public sealed class GuardedFuzzTests
                     if (Lz4Block.TryDecompress(src, dst, out int written) && sourceLength == block.Length && capacity >= length)
                     {
                         Assert.True(written <= capacity);
+                    }
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(-5)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(9)]
+    [InlineData(11)]
+    [InlineData(12)]
+    public void EveryLevelCompressesWithoutTouchingPastEitherEnd(int level)
+    {
+        Random random = new(level + 1000);
+        var compressor = new Lz4Compressor(level);
+        using var source = new GuardedBuffer(1 << 19);
+        using var destination = new GuardedBuffer(1 << 20);
+        for (int trial = 0; trial < (level >= 10 ? 60 : 300); trial++)
+        {
+            int length = random.Next(3) == 0 ? random.Next(0, 100) : random.Next(0, 300_000);
+            byte[] data = Lz4BlockTests.Shaped(random, length, random.Next(5));
+            int bound = Lz4Compressor.GetMaxCompressedLength(length);
+            foreach (bool atEnd in new[] { true, false })
+            {
+                Span<byte> src = atEnd ? source.AtEnd(length) : source.AtStart(length);
+                data.CopyTo(src);
+                foreach (int capacity in new[] { bound, random.Next(bound + 1), Math.Max(0, bound - 20) })
+                {
+                    Span<byte> dst = atEnd ? destination.AtEnd(capacity) : destination.AtStart(capacity);
+                    if (compressor.TryCompress(src, dst, out int written))
+                    {
+                        byte[] read = new byte[length];
+                        Lz4Block.Decompress(dst[..written], read);
+                        Assert.True(data.AsSpan().SequenceEqual(read), $"level {level}, length {length}, capacity {capacity}");
+                    }
+                    else
+                    {
+                        Assert.True(capacity < bound, $"level {level}, length {length}: the bound did not fit");
                     }
                 }
             }

@@ -75,9 +75,9 @@ internal static class Harness
                 {
                     ratio[c] = (double)set.Content.Length / written.Sum(w => (long)w);
                     compressionDiffers[c] = !RoundTrips(referenceCandidate, set, scratch, bounds, written, decoded);
-                    if (codec == "zstd" && c != 0)
+                    if (c != 0)
                     {
-                        // The managed compressor claims libzstd's frames, byte for byte.
+                        // The managed compressors claim the native frames and blocks, byte for byte.
                         for (int i = 0; i < records && !compressionDiffers[c]; i++)
                         {
                             compressionDiffers[c] = written[i] != sizes[i] || !scratch.AsSpan(bounds[i], sizes[i]).SequenceEqual(reference.AsSpan(bounds[i], sizes[i]));
