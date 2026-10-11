@@ -10,15 +10,14 @@ using ManagedCompressions.Zstd.Bench;
 namespace ManagedCompressions.Zstd.Perf;
 
 /// <summary>
-/// Paired, alternated timings of the three decoders in one Native AOT process: ManagedCompressions.Zstd, the
-/// platform's <see cref="ZstandardDecoder"/>, and libzstd 1.5.7 freshly compiled. Each repetition
+/// Paired, alternated timings of the three decoders in one Native AOT process: ManagedCompressions.Zstd,
+/// the platform's <see cref="ZstandardDecoder"/>, and libzstd 1.5.7 freshly compiled. Each repetition
 /// times every candidate once, in an order that rotates, so that whatever the machine does at that
 /// moment lands on all of them alike. Several passes show how stable the figures are.
 /// </summary>
 /// <remarks>
 /// Usage: <c>ManagedCompressions.Zstd.Perf [--frames a,b] [--passes N] [--reps N] [--only zstd,libzstd-ref] [--ab] [--dump dir] [--no-check] [--no-pair | --pair]
-/// [--pmu default|EV1,EV2] [--compress] [--core N]</c>; <c>--pmu</c> counts hardware events per decode and sequence (macOS, under
-/// sudo); <c>--core N</c> keeps the timed thread on logical processor N (Windows, where the process and
+/// [--compress] [--core N]</c>; <c>--core N</c> keeps the timed thread on logical processor N (Windows, where the process and
 /// the thread also run at a high priority, as macOS's user-interactive QoS); <c>--ab</c>
 /// adds a "before" candidate that runs with the legacy switches of the point under work (see
 /// <see cref="AbSwitch"/>). <c>--compress</c> times compression instead: each frame's content, at the
@@ -97,27 +96,6 @@ public static class Program
             PcSampler.Function = Option(args, "--pcfunc");
             PcSampler.Callers = Option(args, "--pccaller");
             return Micro.Run(micro, frames, int.Parse(Option(args, "--repeat") ?? "1", CultureInfo.InvariantCulture));
-        }
-
-        if (Option(args, "--pmu") is string events)
-        {
-            // Hardware counters of ManagedCompressions.Zstd's decodes alone: sudo ManagedCompressions.Zstd.Perf --pmu default|EV1,EV2...
-            Pmu? pmu = Pmu.TryCreate(events == "default" ? Pmu.DefaultEvents : events.Split(','));
-            if (pmu is null)
-            {
-                return 1;
-            }
-
-            var decoder = new ZstdDecompressor();
-            foreach (string name in frames)
-            {
-                byte[] frame = BenchFrames.Load(name);
-                byte[] output = new byte[BenchFrames.ContentSize(frame)];
-                int pmuReps = int.Parse(Option(args, "--reps") ?? "1000", CultureInfo.InvariantCulture);
-                pmu.Measure(name, (f, o) => { decoder.Decompress(f, o, out _, out int w); return w; }, frame, output, pmuReps, Micro.CountSequences(frame), "sequence");
-            }
-
-            return 0;
         }
 
         int passes = int.Parse(Option(args, "--passes") ?? "5", CultureInfo.InvariantCulture);
@@ -275,11 +253,11 @@ public static class Program
     }
 
     /// <summary>
-    /// Compression of a frame's content by each candidate: ManagedCompressions.Zstd must write the platform's frame,
-    /// byte for byte, wherever its level is implemented; each frame's size is shown. A name ending in
-    /// <c>-ldm</c> turns the long-distance matcher on, and leaves the reference build out; one ending
-    /// in <c>-dict</c> compresses with a dictionary of the content's kind (<see cref="BenchFrames.Dictionary"/>),
-    /// prepared at the level, every candidate the same way.
+    /// Compression of a frame's content by each candidate: ManagedCompressions.Zstd must write the
+    /// platform's frame, byte for byte, wherever its level is implemented; each frame's size is shown. A
+    /// name ending in <c>-ldm</c> turns the long-distance matcher on, and leaves the reference build
+    /// out; one ending in <c>-dict</c> compresses with a dictionary of the content's kind
+    /// (<see cref="BenchFrames.Dictionary"/>), prepared at the level, every candidate the same way.
     /// </summary>
     private static bool RunCompress(string name, int passes, int reps, string? only, bool ab)
     {
@@ -360,8 +338,9 @@ public static class Program
     }
 
     /// <summary>
-    /// Compression in jobs (<c>-mt&lt;N&gt;</c>): ManagedCompressions.Zstd's CompressAsync at a degree of N, against
-    /// libzstd with N workers (the library built with threads), which must write the same frame.
+    /// Compression in jobs (<c>-mt&lt;N&gt;</c>): ManagedCompressions.Zstd's CompressAsync at a degree
+    /// of N, against libzstd with N workers (the library built with threads), which must write the same
+    /// frame.
     /// </summary>
     private static bool RunCompressInJobs(string name, string frameName, int workers, int passes, int reps, string? only, bool ab)
     {

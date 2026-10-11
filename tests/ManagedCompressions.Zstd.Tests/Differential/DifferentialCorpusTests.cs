@@ -8,10 +8,10 @@ using Xunit;
 namespace ManagedCompressions.Zstd.Tests.Differential;
 
 /// <summary>
-/// Every frame of the corpus is decoded by ManagedCompressions.Zstd and by the platform's libzstd, and both must
-/// give back the original bytes. The corpus is split across classes so that xUnit runs them in parallel.
-/// Frames across the block boundaries are the compression corpus's, which makes libzstd's own and
-/// decodes them; the frames of several blocks here are the large ones and the encoder options'.
+/// Every frame of the corpus is decoded by ManagedCompressions.Zstd and by the platform's libzstd, and
+/// both must give back the original bytes. The corpus is split across classes so that xUnit runs them in
+/// parallel. Frames across the block boundaries are the compression corpus's, which makes libzstd's own
+/// and decodes them; the frames of several blocks here are the large ones and the encoder options'.
 /// </summary>
 public static class Corpus
 {

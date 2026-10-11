@@ -9,8 +9,8 @@ internal delegate int SpanCodec(ReadOnlySpan<byte> source, Span<byte> destinatio
 
 /// <summary>
 /// libzstd 1.5.7 built with today's compiler (tools/native-ref/build.sh), called through function
-/// pointers: the speed a well-compiled C decoder reaches, measured in the same process as ManagedCompressions.Zstd.
-/// Native code belongs here, in the measurement, and never in the library.
+/// pointers: the speed a well-compiled C decoder reaches, measured in the same process as
+/// ManagedCompressions.Zstd. Native code belongs here, in the measurement, and never in the library.
 /// </summary>
 internal sealed unsafe class NativeReference
 {

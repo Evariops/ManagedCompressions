@@ -13,8 +13,8 @@ namespace ManagedCompressions.Zstd.Tests.Compression;
 /// <summary>
 /// Every case of the corpus is compressed by ManagedCompressions.Zstd and by the platform's libzstd. Wherever ManagedCompressions.Zstd
 /// implements the level's strategy, both frames must be the same bytes; whatever the level, ManagedCompressions.Zstd's
-/// frame must decode, with ManagedCompressions.Zstd and with libzstd, to the original. The corpus is split across
-/// classes so that xUnit runs them in parallel.
+/// frame must decode, with ManagedCompressions.Zstd and with libzstd, to the original. The corpus is
+/// split across classes so that xUnit runs them in parallel.
 /// </summary>
 public static class CompressionCorpus
 {
@@ -145,8 +145,9 @@ public static class CompressionCorpus
     }
 
     /// <summary>
-    /// The frame decodes to <paramref name="data"/> with ManagedCompressions.Zstd, and with libzstd unless
-    /// <paramref name="libzstds"/> says the frame is libzstd's own, compared byte for byte already.
+    /// The frame decodes to <paramref name="data"/> with ManagedCompressions.Zstd, and with libzstd
+    /// unless <paramref name="libzstds"/> says the frame is libzstd's own, compared byte for byte
+    /// already.
     /// </summary>
     public static void AssertDecodes(ReadOnlySpan<byte> frame, ReadOnlySpan<byte> data, string name, bool libzstds)
     {

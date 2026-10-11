@@ -5,10 +5,10 @@ using System.Runtime.InteropServices;
 namespace ManagedCompressions.Zstd.Tests.Support;
 
 /// <summary>
-/// libzstd 1.5.7 (tools/native-ref/build.sh) called one-shot, the semantics ManagedCompressions.Zstd mirrors: the
-/// fuzzing oracle. The platform's decoder is a streaming one, and its streaming path applies rules
-/// the one-shot path does not (a window cap, a per-block size check), so on corrupted frames it
-/// would disagree for reasons that are not bugs.
+/// libzstd 1.5.7 (tools/native-ref/build.sh) called one-shot, the semantics ManagedCompressions.Zstd
+/// mirrors: the fuzzing oracle. The platform's decoder is a streaming one, and its streaming path
+/// applies rules the one-shot path does not (a window cap, a per-block size check), so on corrupted
+/// frames it would disagree for reasons that are not bugs.
 /// </summary>
 internal sealed unsafe class LibzstdOracle
 {

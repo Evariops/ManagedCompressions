@@ -309,9 +309,9 @@ internal static class Micro
 
     /// <summary>
     /// The decoding of a corpus of <see cref="Corpus"/> (<c>--frames github-dict-L3</c>: the set, then
-    /// the level its frames are compressed at), every frame once per run, on one decoder: ManagedCompressions.Zstd
-    /// (dcorpus, dcorpusab with the legacy switches on one side) or libzstd (ndcorpus). Per frame, and
-    /// per byte of content.
+    /// the level its frames are compressed at), every frame once per run, on one decoder:
+    /// ManagedCompressions.Zstd (dcorpus, dcorpusab with the legacy switches on one side) or libzstd
+    /// (ndcorpus). Per frame, and per byte of content.
     /// </summary>
     private static void DecodeCorpus(string what, string name)
     {
@@ -369,8 +369,8 @@ internal static class Micro
 
     /// <summary>
     /// The compression of a corpus of <see cref="Corpus"/> (<c>--frames github-dict-L3</c>: the set, then
-    /// the level), every record a frame of its own, on one compressor: ManagedCompressions.Zstd (ccorpus) or
-    /// libzstd (nccorpus). Per frame, and per byte of content.
+    /// the level), every record a frame of its own, on one compressor: ManagedCompressions.Zstd
+    /// (ccorpus) or libzstd (nccorpus). Per frame, and per byte of content.
     /// </summary>
     private static void CompressCorpus(string what, string name)
     {
@@ -406,8 +406,8 @@ internal static class Micro
     }
 
     /// <summary>
-    /// The decoding of one benchmark frame, whole, by ManagedCompressions.Zstd (decode) or libzstd (ndecode):
-    /// per sequence, and per byte of content.
+    /// The decoding of one benchmark frame, whole, by ManagedCompressions.Zstd (decode) or libzstd
+    /// (ndecode): per sequence, and per byte of content.
     /// </summary>
     private static void DecodeFrame(string what, string name)
     {

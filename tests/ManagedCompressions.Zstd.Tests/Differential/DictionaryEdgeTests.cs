@@ -9,8 +9,8 @@ namespace ManagedCompressions.Zstd.Tests.Differential;
 /// <summary>
 /// Matches at the edges of a dictionary's content, which the fast sequence loop copies 16 bytes at a
 /// time: ending on its last byte or a few before, running on from it into the frame, starting on its
-/// first byte. libzstd writes the frames; ManagedCompressions.Zstd must give the content back, into a destination of
-/// its exact size and into a larger one.
+/// first byte. libzstd writes the frames; ManagedCompressions.Zstd must give the content back, into a
+/// destination of its exact size and into a larger one.
 /// </summary>
 public sealed class DictionaryEdgeTests
 {

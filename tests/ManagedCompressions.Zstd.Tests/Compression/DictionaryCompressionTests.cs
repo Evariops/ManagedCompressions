@@ -11,9 +11,9 @@ namespace ManagedCompressions.Zstd.Tests.Compression;
 /// <summary>
 /// Frames compressed with a dictionary, trained (the zstd format) or raw, against the platform's
 /// libzstd given the same dictionary prepared at the same level (<c>ZSTD_createCDict</c> and
-/// <c>ZSTD_CCtx_refCDict</c>): byte for byte, then decoded with ManagedCompressions.Zstd and with libzstd. The sizes
-/// cross the three ways libzstd uses a prepared dictionary: attached up to 8 to 32 KiB, copied, then
-/// loaded from 128 KiB and six times the dictionary.
+/// <c>ZSTD_CCtx_refCDict</c>): byte for byte, then decoded with ManagedCompressions.Zstd and with
+/// libzstd. The sizes cross the three ways libzstd uses a prepared dictionary: attached up to 8 to 32
+/// KiB, copied, then loaded from 128 KiB and six times the dictionary.
 /// </summary>
 public sealed class DictionaryCompressionTests
 {

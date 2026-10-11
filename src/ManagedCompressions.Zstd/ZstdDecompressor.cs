@@ -16,7 +16,8 @@ namespace ManagedCompressions.Zstd;
 /// </para>
 /// <para>
 /// Every block must regenerate at most the frame's <c>Block_Maximum_Size</c>, as RFC 8878 states.
-/// libzstd enforces this when it streams and only partly in one shot; ManagedCompressions.Zstd always does.
+/// libzstd enforces this when it streams and only partly in one shot; ManagedCompressions.Zstd always
+/// does.
 /// </para>
 /// <para>
 /// <see cref="Decompress(ReadOnlySpan{byte}, Span{byte}, out int, out int)"/> decodes one whole frame
