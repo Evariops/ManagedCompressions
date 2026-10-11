@@ -94,16 +94,16 @@ job to the other (43.0 s, then 45.5 s) where .NET's and the managed code's varie
 19's compression row as on par. On x64, .NET's libzstd is slower than NativeCompressions': 0.82× to 1.06×
 of it. Level 19 is as noisy there: NativeCompressions took 41.7 s, then 43.3 s, and .NET 43.4 s, then
 40.8 s. The full BenchmarkDotNet tables, with Brotli and GZip for scale, are in
-[`bench/results/arm64/benchmarkdotnet-silesia.md`](bench/results/arm64/benchmarkdotnet-silesia.md) and
-[`bench/results/x64/benchmarkdotnet-silesia.md`](bench/results/x64/benchmarkdotnet-silesia.md).
+[`bench/results/arm64/benchmarkdotnet-silesia.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/arm64/benchmarkdotnet-silesia.md) and
+[`bench/results/x64/benchmarkdotnet-silesia.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/benchmarkdotnet-silesia.md).
 
 ## Quick start
 
-The projects target .NET 11 and are not published on NuGet yet. Reference them from source:
+The packages target .NET 11:
 
-```xml
-<ProjectReference Include="path/to/ManagedCompressions/src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
-<ProjectReference Include="path/to/ManagedCompressions/src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+```sh
+dotnet add package ManagedCompressions.Zstd
+dotnet add package ManagedCompressions.Lz4
 ```
 
 ### Zstandard
@@ -123,7 +123,7 @@ decompressor.Decompress(frame.AsSpan(0, frameLength), content, out _, out _);
 
 Dictionaries (`new ZstdCompressor(level, dictionary)`), checksums (`AppendChecksum = true`) and parallel
 compression (`CompressAsync`, which writes the same frames as libzstd with worker threads) are covered in
-[`src/ManagedCompressions.Zstd/README.md`](src/ManagedCompressions.Zstd/README.md).
+[`src/ManagedCompressions.Zstd/README.md`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Zstd/README.md).
 
 ### LZ4
 
@@ -251,15 +251,15 @@ strategy).
 - **Native side:** NativeCompressions 1.1.0, which ships zstd 1.5.7 and lz4 1.10.0 built at `-O3`. On
   arm64, its libzstd decompresses at the speed of the one .NET ships. A libzstd built from source with
   Apple clang 21 decompresses some 20 % faster: against that one, Zstandard decompression is 1.11–1.21×
-  as fast, as [`src/ManagedCompressions.Zstd/README.md`](src/ManagedCompressions.Zstd/README.md#performance)
+  as fast, as [`src/ManagedCompressions.Zstd/README.md`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Zstd/README.md#performance)
   shows. On x64, NativeCompressions' libraries are built with GCC 16.2 (MSYS2). That libzstd has zstd's
   assembly Huffman decoder and its BMI2 code, which only exist for x86-64.
 - **Level-by-level tables:** `bench/ManagedCompressions.Bench` times the native and the managed side in
   alternating rounds and reports each one's median, after a warm-up that gives the JIT its final, profiled
   code. Its first round checks that the managed output matches the native output byte for byte, and that
   everything decodes back. The raw results are in
-  [`bench/results/arm64/levels.md`](bench/results/arm64/levels.md) and
-  [`bench/results/x64/levels.md`](bench/results/x64/levels.md).
+  [`bench/results/arm64/levels.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/arm64/levels.md) and
+  [`bench/results/x64/levels.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/levels.md).
 - **At-a-glance tables:** `bench/ManagedCompressions.Benchmarks` runs BenchmarkDotNet the way
   NativeCompressions' README does, under the JIT and under Native AOT. Each case first runs the managed
   codec on the first MiB of silesia.tar, so that the JIT has given it its final, profiled code, as a
@@ -299,6 +299,8 @@ so that a single byte read or written out of bounds faults.
 CI builds everything and runs the tests on every pull request, the benchmarks excepted: their figures
 mean something on a quiet machine only. It also runs the repository's [prek](https://github.com/j178/prek)
 hooks, betterleaks for secrets and zizmor for the workflows; `prek install` runs them before each commit.
+Each merged pull request updates a draft GitHub release; publishing it runs the same checks on its tag,
+then pushes the packages to nuget.org.
 
 ## Repository
 
@@ -316,9 +318,11 @@ hooks, betterleaks for secrets and zizmor for the workflows; `prek install` runs
 
 ## License
 
-ManagedCompressions is licensed under the [MIT License](LICENSE). The compressors are derived
-from libzstd (BSD-3-Clause) and lz4 (BSD-2-Clause), and those parts remain under their licenses: see
-[NOTICE](NOTICE). This project is not affiliated with the zstd or lz4 projects, nor with Cysharp.
+ManagedCompressions is licensed under the
+[MIT License](https://github.com/Evariops/ManagedCompressions/blob/main/LICENSE). The compressors are
+derived from libzstd (BSD-3-Clause) and lz4 (BSD-2-Clause), and those parts remain under their licenses:
+see [NOTICE](https://github.com/Evariops/ManagedCompressions/blob/main/NOTICE), which each package
+carries. This project is not affiliated with the zstd or lz4 projects, nor with Cysharp.
 
 What the decoders guarantee on untrusted input, and how to report a vulnerability, is in
-[SECURITY.md](SECURITY.md).
+[SECURITY.md](https://github.com/Evariops/ManagedCompressions/blob/main/SECURITY.md).

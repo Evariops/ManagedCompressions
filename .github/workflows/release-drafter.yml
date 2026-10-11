@@ -1,0 +1,38 @@
+name: Release Drafter
+
+# Keeps a draft release up to date on every push to main (config: .github/release-drafter.yml).
+# Publishing the draft fires the release run of ci.yml, which pushes the packages to nuget.org.
+#
+# With no published release the drafter resolves to 0.0.1, and every push to main puts that back
+# on the draft: set the version of a first release just before publishing it, or run this workflow
+# by hand with an explicit version.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Explicit version for the draft (e.g. 0.1.0); empty resolves it from the merged pull requests'
+        required: false
+        default: ''
+
+# Least privilege by default; the job raises only what it needs.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  draft:
+    name: Update release draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # create and update the draft release
+      pull-requests: read # list the merged pull requests for the notes
+    steps:
+      - uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          # Empty on push events; the action treats '' as unset.
+          version: ${{ inputs.version }}
