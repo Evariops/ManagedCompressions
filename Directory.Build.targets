@@ -1,0 +1,22 @@
+<Project>
+
+  <!-- Library-only properties, decided once the project has said what it is, and only where the
+       project has not decided them itself. An executable that wants the AOT and trim analyzers asks
+       for them itself. InvariantGlobalization is an application property and is set on the
+       executable projects (tests, benchmarks), never here: it has no effect on a class library, which
+       avoids culture-sensitive APIs by construction instead. -->
+  <PropertyGroup Condition="'$(OutputType)' != 'Exe'">
+    <IsAotCompatible Condition="'$(IsAotCompatible)' == ''">true</IsAotCompatible>
+    <IsTrimmable Condition="'$(IsTrimmable)' == ''">true</IsTrimmable>
+    <EnableAotAnalyzer Condition="'$(EnableAotAnalyzer)' == ''">true</EnableAotAnalyzer>
+    <EnableTrimAnalyzer Condition="'$(EnableTrimAnalyzer)' == ''">true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer Condition="'$(EnableSingleFileAnalyzer)' == ''">true</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <!-- Deterministic source paths are for what ships. Elsewhere they would rewrite every
+       [CallerFilePath] to /_/, and the tests find the corpus by walking up from their own source. -->
+  <PropertyGroup Condition="'$(IsPackable)' != 'true'">
+    <DeterministicSourcePaths>false</DeterministicSourcePaths>
+  </PropertyGroup>
+
+</Project>

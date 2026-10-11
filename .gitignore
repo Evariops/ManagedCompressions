@@ -1,0 +1,62 @@
+# ---- .NET build output ----
+bin/
+obj/
+artifacts/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+*.binlog
+project.lock.json
+project.fragment.lock.json
+
+# ---- NuGet ----
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# ---- Test and coverage output ----
+[Tt]est[Rr]esult*/
+TestResults/
+*.trx
+*.coverage
+*.coverxml
+coverage*.json
+coverage*.xml
+coverage*.info
+.coverlet/
+
+# ---- BenchmarkDotNet ----
+BenchmarkDotNet.Artifacts/
+
+# ---- Native artifacts ----
+*.dll
+*.so
+*.so.*
+*.dylib
+*.pdb
+*.exp
+*.ilk
+
+# ---- IDE ----
+.vs/
+.vscode/
+.idea/
+*.sln.iml
+*.DotSettings.user
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- What the native tools build and the data the tests and benchmarks read ----
+# libzstd 1.5.7 and its timing harness (tools/native-ref/build.sh); zstd's golden files and a
+# decodecorpus corpus (tools/native-ref/testdata.sh); zstd's benchmark data (bench/zstd-corpus.sh).
+# Binary files, written rather than kept.
+tools/native-ref/out/
+tests/ManagedCompressions.Zstd.Tests/testdata/
+
+# ---- Benchmark logs (the results, .tsv and .md, are kept) ----
+bench/results/**/*.log
