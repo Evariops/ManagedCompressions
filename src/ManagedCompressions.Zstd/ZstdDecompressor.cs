@@ -191,7 +191,7 @@ public sealed partial class ZstdDecompressor
     /// <see cref="OperationStatus.Done"/> once the destination is full or the frame decoded; otherwise
     /// what <see cref="Decompress(ReadOnlySpan{byte}, Span{byte}, ReadOnlySpan{byte}, out int, out int)"/> returns.
     /// </returns>
-    internal OperationStatus DecompressPrefix(
+    public OperationStatus DecompressPrefix(
         ReadOnlySpan<byte> source, Span<byte> destination, ReadOnlySpan<byte> dictionary, out int bytesWritten)
     {
         bytesWritten = 0;
