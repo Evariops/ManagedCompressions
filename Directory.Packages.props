@@ -5,7 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
-    <PackageVersion Include="System.IO.Hashing" Version="10.0.12" />
+    <PackageVersion Include="System.IO.Hashing" Version="10.0.14" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
     <!-- The native reference the managed codecs are measured against: zstd 1.5.7 and lz4 1.10.0. -->
     <PackageVersion Include="NativeCompressions.Zstandard" Version="1.1.0" />
