@@ -57,6 +57,7 @@ public sealed unsafe partial class ZstdCompressor
         : this(owner.Level)
     {
         _dictionary = owner._dictionary;
+        Experimental = owner.Experimental;
         JobSizeOverride = owner.JobSizeOverride;
         OverlapLogOverride = owner.OverlapLogOverride;
     }

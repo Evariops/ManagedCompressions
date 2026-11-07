@@ -66,8 +66,30 @@ public sealed unsafe partial class ZstdCompressor
         Level = level == 0 ? DefaultLevel : level;
     }
 
+    /// <summary>
+    /// Creates a compressor at <paramref name="level"/> with experimental features: its frames are
+    /// standard Zstandard frames, which any decoder reads back, but not libzstd's bytes (see
+    /// <see cref="ZstdExperimentalOptions"/>).
+    /// </summary>
+    /// <param name="level">From <see cref="MinLevel"/> to <see cref="MaxLevel"/>; 0 is the <see cref="DefaultLevel"/>.</param>
+    /// <param name="experimental">The features, named explicitly; <see cref="ZstdExperimentalOptions.None"/> is <see cref="ZstdCompressor(int)"/>.</param>
+    /// <exception cref="ArgumentOutOfRangeException">The level is out of range, or a feature is unknown.</exception>
+    public ZstdCompressor(int level, ZstdExperimentalOptions experimental)
+        : this(level)
+    {
+        if ((experimental & ~ZstdExperimentalOptions.EntropyAwareMatches) != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(experimental), experimental, "Unknown experimental feature.");
+        }
+
+        Experimental = experimental;
+    }
+
     /// <summary>The compression level.</summary>
     public int Level { get; }
+
+    /// <summary>The experimental features in use: <see cref="ZstdExperimentalOptions.None"/> for libzstd's bytes.</summary>
+    public ZstdExperimentalOptions Experimental { get; }
 
     /// <summary>Whether the frames end with a checksum of their content (the low 32 bits of its XXH64).</summary>
     public bool AppendChecksum { get; set; }

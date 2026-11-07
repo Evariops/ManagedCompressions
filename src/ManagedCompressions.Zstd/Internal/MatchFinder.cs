@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
@@ -102,6 +103,12 @@ internal unsafe struct MatchState
     /// so that the JIT keeps the loads.
     /// </summary>
     public uint Touched;
+
+    /// <summary>
+    /// The cost of a literal of the block, in sixteenths of a bit, as its bytes' entropy estimates it:
+    /// what an experimental match filter (<see cref="EntropyMatchFilter"/>) weighs a match against.
+    /// </summary>
+    public uint LiteralCost16;
 
     public CompressionParameters Parameters;
 
@@ -447,5 +454,105 @@ internal static unsafe class MatchFinder
         }
 
         return (nuint)(input - start);
+    }
+}
+
+/// <summary>
+/// Whether a match finder keeps every match it verifies, as libzstd does (<see cref="NoMatchFilter"/>), or
+/// only those that cost fewer bits than the literals they replace (<see cref="EntropyMatchFilter"/>, the
+/// experimental <see cref="ZstdExperimentalOptions.EntropyAwareMatches"/>): a type argument, so that the
+/// filter costs nothing where it is off.
+/// </summary>
+internal interface IMatchFilter
+{
+    static abstract bool Enabled { get; }
+}
+
+internal readonly struct NoMatchFilter : IMatchFilter
+{
+    public static bool Enabled => false;
+}
+
+internal readonly unsafe struct EntropyMatchFilter : IMatchFilter
+{
+    public static bool Enabled => true;
+
+    /// <summary>
+    /// What a sequence costs besides its offset's extra bits: the three codes through their tables and
+    /// the extra bits of short lengths, some eight bits on the blocks of the fast levels.
+    /// </summary>
+    public const int OverheadBits = 8;
+
+    /// <summary>The literal cost of a block not estimated yet: <see cref="Pays"/> estimates it at its first match.</summary>
+    public const uint Unknown = 0;
+
+    /// <summary>
+    /// Whether a match of <paramref name="length"/> bytes at <paramref name="offset"/> costs no more than
+    /// the literals it replaces, each of <paramref name="literalCost16"/> sixteenths of a bit: its offset
+    /// takes about its logarithm in extra bits, and the sequence <see cref="OverheadBits"/> more.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool Pays(nuint length, uint offset, uint literalCost16) =>
+        (ulong)length * literalCost16 >= (ulong)(BitOperations.Log2(offset) + OverheadBits) << 4;
+
+    /// <summary>
+    /// The block's literal cost, estimated at its first match (<see cref="Unknown"/> until then): a
+    /// block in which nothing matches, such as random data, does not pay for the estimate.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static uint Estimate(ref MatchState state, byte* source, nuint size) =>
+        state.LiteralCost16 = size < MinFilteredBlock ? 8 << 4 : Math.Max(1, LiteralCost16(source, size));
+
+    /// <summary>
+    /// The smallest block the filter weighs: in a smaller one, matches by chance are rare, and the
+    /// estimate would cost more than the search; its literals count as bytes, which every match pays.
+    /// </summary>
+    public const int MinFilteredBlock = 4096;
+
+    /// <summary>
+    /// The entropy of a block's bytes, in sixteenths of a bit a byte: Shannon's, from their histogram,
+    /// which a Huffman code of the block's literals approaches (when matches leave them alike). Every
+    /// fourth byte of a block of 4 KiB or more, two counters a byte so that a run does not chain the
+    /// increments: a quarter of the cost, an estimate within a few hundredths of a bit.
+    /// </summary>
+    public static uint LiteralCost16(byte* source, nuint size)
+    {
+        if (size == 0)
+        {
+            return 8 << 4;
+        }
+
+        uint* count = stackalloc uint[512];
+        new Span<uint>(count, 512).Clear();
+        nuint stride = size >= 4096 ? 4u : 1u;
+        byte* end = source + size;
+        uint samples = 0;
+        byte* p = source;
+        for (; p + stride < end; p += 2 * stride)
+        {
+            count[p[0]]++;
+            count[256 + p[stride]]++;
+            samples += 2;
+        }
+
+        for (; p < end; p += stride)
+        {
+            count[*p]++;
+            samples++;
+        }
+
+        double total = samples;
+        double bits = 0;
+        for (int s = 0; s < 256; s++)
+        {
+            uint c = count[s] + count[256 + s];
+            if (c != 0)
+            {
+                double probability = c / total;
+                bits -= probability * Math.Log2(probability);
+            }
+        }
+
+        return (uint)Math.Round(bits * 16);
     }
 }

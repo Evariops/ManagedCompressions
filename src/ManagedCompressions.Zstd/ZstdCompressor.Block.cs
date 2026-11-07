@@ -448,7 +448,7 @@ public sealed unsafe partial class ZstdCompressor
         nuint lastLiterals = _parameters.Strategy switch
         {
             Strategy.Fast => FastMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size),
-            Strategy.DoubleFast => DoubleFastMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size),
+            Strategy.DoubleFast => DoubleFastMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size, FiltersMatches()),
             < Strategy.BinaryTreeOptimal => LazyMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size),
             _ => OptimalMatchFinder.CompressBlock(ref _matchState, _optimal!, _store, rep, source, (nuint)size),
         };
@@ -468,6 +468,21 @@ public sealed unsafe partial class ZstdCompressor
         {
             _optimal!.LongDistance.Advance((uint)size, _jobSequenceCount);
         }
+    }
+
+    /// <summary>
+    /// Whether the experimental match filter is on (<see cref="ZstdExperimentalOptions.EntropyAwareMatches"/>):
+    /// then the block's literal cost is to be estimated, at its first match.
+    /// </summary>
+    private bool FiltersMatches()
+    {
+        if ((Experimental & ZstdExperimentalOptions.EntropyAwareMatches) == 0)
+        {
+            return false;
+        }
+
+        _matchState.LiteralCost16 = EntropyMatchFilter.Unknown;
+        return true;
     }
 
     /// <summary>libzstd's <c>ZSTD_isRLE</c>: whether every byte equals the first.</summary>

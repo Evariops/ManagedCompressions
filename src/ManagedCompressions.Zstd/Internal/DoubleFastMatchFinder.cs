@@ -49,13 +49,17 @@ internal static unsafe partial class DoubleFastMatchFinder
 
     /// <summary>The block's sequences into <paramref name="store"/>, by minimum match length.</summary>
     /// <returns>The size of the literals after the last sequence.</returns>
-    public static nuint CompressBlock(ref MatchState state, SequenceStore store, uint* rep, byte* source, nuint size) =>
-        state.Parameters.MinMatch switch
+    public static nuint CompressBlock(ref MatchState state, SequenceStore store, uint* rep, byte* source, nuint size, bool filter = false) =>
+        (state.Parameters.MinMatch, filter) switch
         {
-            5 => CompressBlock<Hash5>(ref state, store, rep, source, size),
-            6 => CompressBlock<Hash6>(ref state, store, rep, source, size),
-            7 => CompressBlock<Hash7>(ref state, store, rep, source, size),
-            _ => CompressBlock<Hash4>(ref state, store, rep, source, size),
+            (5, false) => CompressBlock<Hash5, NoMatchFilter>(ref state, store, rep, source, size),
+            (6, false) => CompressBlock<Hash6, NoMatchFilter>(ref state, store, rep, source, size),
+            (7, false) => CompressBlock<Hash7, NoMatchFilter>(ref state, store, rep, source, size),
+            (_, false) => CompressBlock<Hash4, NoMatchFilter>(ref state, store, rep, source, size),
+            (5, true) => CompressBlock<Hash5, EntropyMatchFilter>(ref state, store, rep, source, size),
+            (6, true) => CompressBlock<Hash6, EntropyMatchFilter>(ref state, store, rep, source, size),
+            (7, true) => CompressBlock<Hash7, EntropyMatchFilter>(ref state, store, rep, source, size),
+            (_, true) => CompressBlock<Hash4, EntropyMatchFilter>(ref state, store, rep, source, size),
         };
 
     /// <summary>
@@ -92,8 +96,9 @@ internal static unsafe partial class DoubleFastMatchFinder
     /// and written once a sequence, the end of the block among them.
     /// </para>
     /// </remarks>
-    private static nuint CompressBlock<THash>(ref MatchState state, SequenceStore store, uint* rep, byte* source, nuint size)
+    private static nuint CompressBlock<THash, TFilter>(ref MatchState state, SequenceStore store, uint* rep, byte* source, nuint size)
         where THash : IMatchHash
+        where TFilter : IMatchFilter
     {
         uint* hashLong = state.HashTable;
         int hashLogLong = state.Parameters.HashLog;
@@ -277,6 +282,16 @@ internal static unsafe partial class DoubleFastMatchFinder
                 ip--;
                 match--;
                 matchLength++;
+            }
+
+            if (TFilter.Enabled && !EntropyMatchFilter.Pays(
+                matchLength, offset, state.LiteralCost16 != EntropyMatchFilter.Unknown ? state.LiteralCost16 : EntropyMatchFilter.Estimate(ref state, istart, size)))
+            {
+                // A match that costs more than its literals (the experimental filter): its bytes stay
+                // literals, and the search starts again past them, as past a match: no more positions
+                // searched than libzstd searches.
+                ip += matchLength;
+                goto Start;
             }
 
             cold.Offset2 = offset1;

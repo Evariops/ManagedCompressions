@@ -21,6 +21,9 @@ namespace ManagedCompressions.Zstd.Perf;
 /// </remarks>
 internal static class Micro
 {
+    /// <summary>The experimental features the managed compressor of <c>ccorpus</c> takes (<c>--experimental</c>).</summary>
+    public static ZstdExperimentalOptions Experimental { get; set; }
+
 
     private sealed record Table(SequenceCode Code, short[] Norm, int TableLog, byte[] Description);
 
@@ -387,10 +390,11 @@ internal static class Micro
         }
         else
         {
-            var compressor = dictionary is null ? new ZstdCompressor(level) : new ZstdCompressor(level, dictionary);
+            var compressor = dictionary is null ? new ZstdCompressor(level, Experimental) : new ZstdCompressor(level, dictionary);
             compress = (s, d) => compressor.Compress(s, d, out _, out int written) == OperationStatus.Done ? written : -1;
         }
 
+        int total = 0;
         void Body()
         {
             int at = 0;
@@ -398,10 +402,12 @@ internal static class Micro
             {
                 at += compress(content.AsSpan(offsets[i], offsets[i + 1] - offsets[i]), frames.AsSpan(at));
             }
+
+            total = at;
         }
 
         Body();
-        string title = $"{(what == "nccorpus" ? "libzstd " : string.Empty)}compression, {records} frames, {content.Length} bytes, per frame";
+        string title = $"{(what == "nccorpus" ? "libzstd " : Experimental != ZstdExperimentalOptions.None ? Experimental + " " : string.Empty)}compression, {records} frames, {content.Length} bytes -> {total} (ratio {(double)content.Length / total:F4}), per frame";
         Report(name, title, records, content.Length, Body);
     }
 

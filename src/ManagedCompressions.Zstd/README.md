@@ -129,6 +129,21 @@ prepared at the same level (`ZSTD_createCDict`, then `ZSTD_CCtx_refCDict`), whic
 `ZstandardDictionary` of `System.IO.Compression` uses it. `CompressAsync` reproduces libzstd's
 multithreaded compression (zstdmt), dictionaries and long-distance matching included.
 
+### Experimental compression
+
+A compressor created with `ZstdExperimentalOptions` trades libzstd's exact bytes for speed or ratio on
+some data. Its frames are standard Zstandard frames, which libzstd and this library decode back
+exactly (the tests decode every one of them with both), but they are not the frames libzstd writes, and
+may change from one version of this library to the next. Nothing changes unless a feature is named:
+
+```csharp
+var compressor = new ZstdCompressor(level: 3, ZstdExperimentalOptions.EntropyAwareMatches);
+```
+
+| feature | what it does | where it helps, and what it costs |
+|:--|:--|:--|
+| `EntropyAwareMatches` | levels 3 and 4 keep a match only when it costs fewer bits than the literals it replaces, weighed against the entropy of the block's bytes | hexadecimal hashes and identifiers: 16 MiB of random hexadecimal compress at level 3 to 1.985 instead of 1.922 (5 % slower), and at level 4 to 1.986 instead of 1.815 (as fast), level 4's frames decoding twice as fast; on general data it costs ratio and speed (Silesia: 0.3 % less, 7 % slower; text-like data: up to 4 % less) |
+
 The limitations are these:
 
 - There is no streaming API. A frame is compressed or decompressed in one call, from and into memory.
