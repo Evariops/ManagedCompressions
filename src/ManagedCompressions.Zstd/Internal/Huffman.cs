@@ -74,6 +74,13 @@ internal sealed class HuffmanTable
         int size = ReadWeights(source, weights, rankCount, out int symbols, out int log);
         nint symbolCount = symbols;
         int tableLog = log;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            FillBySearch(weights, rankCount, symbolCount, tableLog);
+            TableLog = tableLog;
+            _hasDouble = false;
+            return size;
+        }
 
         // ---- the symbols of the table sorted by weight, stable. Weight 0 has no entry: its symbols,
         // which come in long runs, are skipped rather than sorted, since each would wait on the
@@ -142,6 +149,61 @@ internal sealed class HuffmanTable
         TableLog = tableLog;
         _hasDouble = false;
         return size;
+    }
+
+    /// <summary>
+    /// <see cref="Read"/>'s entries where 256-bit vectors are accelerated: for each weight present, from
+    /// the lowest, its symbols in increasing order, found by comparing 32 weights at a time with it and
+    /// walking the bits of the matches. No sort: the counting sort the other path takes chains each
+    /// symbol on the store of the one before through their weight's counter, and a tree's equal
+    /// weights come in runs. Its writes are the other path's.
+    /// </summary>
+    private void FillBySearch(Span<byte> weights, ReadOnlySpan<int> rankCount, nint symbolCount, int tableLog)
+    {
+        // The weights past the last symbol read as 0, which no weight searched for is.
+        weights.Slice((int)symbolCount).Clear();
+        nint chunks = (symbolCount + 31) >> 5;
+        ref byte weight = ref MemoryMarshal.GetReference(weights);
+        ref ushort table = ref MemoryMarshal.GetArrayDataReference(Entries);
+        nint position = 0;
+        for (int w = 1; w <= tableLog; w++)
+        {
+            if (rankCount[w] == 0)
+            {
+                continue;
+            }
+
+            nint length = (nint)1 << (w - 1);
+            uint nbBits = (uint)(tableLog + 1 - w);
+            Vector256<byte> wanted = Vector256.Create((byte)w);
+            for (nint c = 0; c < chunks; c++)
+            {
+                uint matches = Vector256.Equals(Vector256.LoadUnsafe(ref weight, (nuint)(c << 5)), wanted).ExtractMostSignificantBits();
+                while (matches != 0)
+                {
+                    nint s = (c << 5) + BitOperations.TrailingZeroCount(matches);
+                    matches &= matches - 1;
+                    ref byte at = ref Unsafe.As<ushort, byte>(ref Unsafe.Add(ref table, position));
+                    if (length <= 4)
+                    {
+                        // Four entries in one store: the next symbol's overwrite the excess.
+                        Unsafe.WriteUnaligned(ref at, (((ulong)s << 8) | nbBits) * 0x0001000100010001UL);
+                    }
+                    else
+                    {
+                        var entries = Vector128.Create((ushort)((s << 8) | (nint)nbBits));
+                        for (nint i = 0; i < length; i += 8)
+                        {
+                            Unsafe.WriteUnaligned(ref Unsafe.Add(ref at, 2 * i), entries);
+                        }
+                    }
+
+                    position += length;
+                }
+            }
+        }
+
+        Debug.Assert(position == 1 << tableLog);
     }
 
     /// <summary>
