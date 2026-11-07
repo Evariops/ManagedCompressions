@@ -46,10 +46,11 @@ internal sealed unsafe class HuffmanCTable
 internal sealed unsafe class HuffmanWorkspace
 {
     /// <summary>
-    /// The room for one of four streams: a quarter of the largest block at 12 bits a symbol, and the
-    /// eight bytes a flush writes past the stream's end. One stream of a whole block fits the four.
+    /// The room for one of four streams of a block of <paramref name="blockSize"/> bytes: a quarter of
+    /// it, rounded up, at 12 bits a symbol, and the eight bytes a flush writes past the stream's end. One
+    /// stream of the whole block fits the four.
     /// </summary>
-    public const int StreamCapacity = (((FrameFormat.MaxBlockSize / 4) * HuffmanTable.MaxTableLog) / 8) + 64;
+    public static int StreamCapacityFor(int blockSize) => ((((blockSize + 3) / 4) * HuffmanTable.MaxTableLog) / 8) + 64;
 
     /// <summary>The trees the search of the optimal depth tries; the new tree is built into a block state's table.</summary>
     public readonly HuffmanCTable Table = new();
@@ -57,15 +58,30 @@ internal sealed unsafe class HuffmanWorkspace
     /// <summary>The encoding table of the tree's weights.</summary>
     public readonly FseCTable Weights = new(HuffmanEncoder.WeightsMaxTableLog, HuffmanTable.MaxTableLog);
 
-    private readonly byte[] _streams = GC.AllocateUninitializedArray<byte>(4 * StreamCapacity, pinned: true);
+    private byte[] _streams = [];
 
-    public HuffmanWorkspace()
+    /// <summary>
+    /// Grows the streams' room to the blocks of <paramref name="blockSize"/> bytes, as the sequence store
+    /// grows (see <see cref="SequenceStore.EnsureCapacity"/>): never shrunk.
+    /// </summary>
+    public void EnsureCapacity(int blockSize)
     {
+        int capacity = StreamCapacityFor(blockSize);
+        if (capacity <= StreamCapacity)
+        {
+            return;
+        }
+
+        _streams = GC.AllocateUninitializedArray<byte>(4 * capacity, pinned: true);
         Streams = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_streams));
+        StreamCapacity = capacity;
     }
 
+    /// <summary>The room for each of the four streams, one after the other in <see cref="Streams"/>.</summary>
+    public int StreamCapacity { get; private set; }
+
     /// <summary>Four streams of <see cref="StreamCapacity"/> bytes, which the streams are encoded into.</summary>
-    public byte* Streams { get; }
+    public byte* Streams { get; private set; }
 }
 
 /// <summary>libzstd's <c>huf_compress.c</c>: the Huffman trees and streams of the literals.</summary>
@@ -739,7 +755,7 @@ internal static unsafe class HuffmanEncoder
         nuint segment = (size + 3) / 4;
         nuint* bits = stackalloc nuint[4];
         byte* streams = workspace.Streams;
-        EncodeFourStreams(source, segment, size - (3 * segment), table.Elements, streams, bits);
+        EncodeFourStreams(source, segment, size - (3 * segment), table.Elements, streams, (nuint)workspace.StreamCapacity, bits);
 
         byte* op = destination + 6;
         byte* oend = destination + capacity;
@@ -764,7 +780,7 @@ internal static unsafe class HuffmanEncoder
                 Unsafe.WriteUnaligned(destination + (2 * k), (ushort)sizes[k]);
             }
 
-            Buffer.MemoryCopy(streams + ((nuint)k * HuffmanWorkspace.StreamCapacity), op, sizes[k], sizes[k]);
+            Buffer.MemoryCopy(streams + ((nuint)k * (nuint)workspace.StreamCapacity), op, sizes[k], sizes[k]);
             op += sizes[k];
         }
 
@@ -821,16 +837,16 @@ internal static unsafe class HuffmanEncoder
     /// The four streams of <see cref="Compress4X"/> together: four containers, each symbol a shift, an
     /// or and an add on its stream's chain, so that the four chains run side by side. Stream k takes
     /// the symbols of segment k from its last, into the buffer at k x
-    /// <see cref="HuffmanWorkspace.StreamCapacity"/>; the three first segments are one to three
+    /// <paramref name="stride"/> (<see cref="HuffmanWorkspace.StreamCapacity"/>); the three first segments are one to three
     /// symbols longer than the last, which their streams take first.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void EncodeFourStreams(byte* source, nuint segment, nuint lastLength, ulong* elements, byte* output, nuint* bits)
+    private static void EncodeFourStreams(byte* source, nuint segment, nuint lastLength, ulong* elements, byte* output, nuint stride, nuint* bits)
     {
         byte* out0 = output;
-        byte* out1 = output + HuffmanWorkspace.StreamCapacity;
-        byte* out2 = output + (2 * HuffmanWorkspace.StreamCapacity);
-        byte* out3 = output + (3 * HuffmanWorkspace.StreamCapacity);
+        byte* out1 = output + stride;
+        byte* out2 = output + (2 * stride);
+        byte* out3 = output + (3 * stride);
         byte* ptr0 = out0;
         byte* ptr1 = out1;
         byte* ptr2 = out2;

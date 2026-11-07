@@ -92,6 +92,7 @@ public static class Program
 
         if (Option(args, "--micro") is string micro)
         {
+            Micro.Experimental = Option(args, "--experimental") is string experimental ? Enum.Parse<ZstdExperimentalOptions>(experimental) : ZstdExperimentalOptions.None;
             PcSampler.Path = Option(args, "--pcprofile");
             PcSampler.Function = Option(args, "--pcfunc");
             PcSampler.Callers = Option(args, "--pccaller");

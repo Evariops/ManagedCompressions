@@ -74,6 +74,7 @@ public sealed unsafe class EncoderUnitTests
     {
         var random = new Random(seed);
         var workspace = new HuffmanWorkspace();
+        workspace.EnsureCapacity(FrameFormat.MaxBlockSize);
         var previous = new HuffmanCTable();
         var fresh = new HuffmanCTable();
         var table = new HuffmanTable();

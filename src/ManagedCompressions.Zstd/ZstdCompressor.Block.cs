@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ManagedCompressions.Zstd.Internal;
@@ -9,10 +10,13 @@ namespace ManagedCompressions.Zstd;
 public sealed unsafe partial class ZstdCompressor
 {
     /// <summary>
-    /// Room for a block's compressed form: a block that does not fit the largest block, less the
-    /// minimum gain, is written raw, so this only needs the margin its sections may overrun by.
+    /// Room for a block's compressed form past its size: a block that does not fit its own size, less
+    /// the minimum gain, is written raw, so the room only needs the margin its sections may overrun by.
     /// </summary>
-    private const int BlockBufferSize = FrameFormat.MaxBlockSize + 2048;
+    private const int BlockBufferMargin = 2048;
+
+    /// <summary>The smallest block the buffers are sized for: frames smaller than this share it.</summary>
+    private const int MinBlockCapacity = 1 << 10;
 
     /// <summary>libzstd's <c>MIN_CBLOCK_SIZE</c>.</summary>
     private const int MinCompressedBlockSize = 2;
@@ -23,8 +27,11 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>libzstd's <c>SUSPECT_UNCOMPRESSIBLE_LITERAL_RATIO</c>.</summary>
     private const int SuspectUncompressibleLiteralRatio = 20;
 
-    private readonly byte[] _blockBuffer;
-    private readonly byte* _blockStart;
+    // The block buffer, sized as the sequence store for the largest block so far (see
+    // EnsureBlockCapacity), and the room a block's compressed form is given: its size and the margin.
+    private byte[] _blockBuffer = [];
+    private byte* _blockStart;
+    private int _blockBufferSize;
     private readonly SequenceStore _store = new();
     private readonly HuffmanWorkspace _huffmanWorkspace = new();
     private BlockState _previous = new();
@@ -173,6 +180,7 @@ public sealed unsafe partial class ZstdCompressor
     /// <returns>The size of the blocks, or -1 when they do not fit.</returns>
     private int CompressBlocks(byte* source, int sourceSize, byte* destination, int capacity, int blockSizeMax, bool lastChunk, long savings)
     {
+        EnsureBlockCapacity(Math.Min(blockSizeMax, sourceSize));
         int remaining = sourceSize;
         byte* ip = source;
         int op = 0;
@@ -211,8 +219,8 @@ public sealed unsafe partial class ZstdCompressor
                 continue;
             }
 
-            byte* compressed = _blockStart + FrameFormat.BlockHeaderSize;
-            nuint size = CompressBlock(compressed, BlockBufferSize - FrameFormat.BlockHeaderSize, ip, blockSize);
+            byte* compressed = BlockOutput(destination + op, capacity - op);
+            nuint size = CompressBlock(compressed, (nuint)(_blockBufferSize - FrameFormat.BlockHeaderSize), ip, blockSize);
             if (size == 0)
             {
                 // Raw: the block as it is.
@@ -246,7 +254,7 @@ public sealed unsafe partial class ZstdCompressor
                 }
 
                 WriteBlockHeader(destination + op, lastBlock, (2 << 1) | ((int)size << 3));
-                Buffer.MemoryCopy(compressed, destination + op + FrameFormat.BlockHeaderSize, size, size);
+                CopyBlockOutput(compressed, destination + op, size);
             }
 
             // The savings so far allow the next blocks to be split: see OptimalBlockSize.
@@ -258,6 +266,46 @@ public sealed unsafe partial class ZstdCompressor
         }
 
         return op;
+    }
+
+    /// <summary>
+    /// Sizes the buffers of a block, the block buffer, the sequence store and the Huffman streams, for
+    /// blocks of up to <paramref name="blockSize"/> bytes: a power of two from <see cref="MinBlockCapacity"/>
+    /// to the largest block, grown with the frames, never shrunk. A compressor of small records keeps
+    /// buffers of their size, some kilobytes, where the largest block takes more than a megabyte.
+    /// </summary>
+    private void EnsureBlockCapacity(int blockSize)
+    {
+        if (blockSize <= _store.Capacity)
+        {
+            return;
+        }
+
+        int capacity = (int)Math.Min(FrameFormat.MaxBlockSize, BitOperations.RoundUpToPowerOf2((uint)Math.Max(blockSize, MinBlockCapacity)));
+        _blockBufferSize = capacity + BlockBufferMargin;
+        _blockBuffer = GC.AllocateUninitializedArray<byte>(_blockBufferSize, pinned: true);
+        _blockStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_blockBuffer));
+        _store.EnsureCapacity(capacity);
+        _huffmanWorkspace.EnsureCapacity(capacity);
+    }
+
+    /// <summary>
+    /// Where a block's compressed form is written: after its header in the destination, when the
+    /// destination has the room the block buffer has (the block is then compressed in place, as
+    /// libzstd compresses it, and is not copied); else the block buffer, copied out once its size is
+    /// known to fit. A block emitted raw or RLE instead is written over whatever was compressed.
+    /// </summary>
+    private byte* BlockOutput(byte* blockHeader, int capacity) =>
+        capacity >= _blockBufferSize ? blockHeader + FrameFormat.BlockHeaderSize : _blockStart + FrameFormat.BlockHeaderSize;
+
+    /// <summary>A compressed block's content after its header, unless <see cref="BlockOutput"/> put it there already.</summary>
+    private static void CopyBlockOutput(byte* compressed, byte* blockHeader, nuint size)
+    {
+        byte* content = blockHeader + FrameFormat.BlockHeaderSize;
+        if (compressed != content)
+        {
+            Buffer.MemoryCopy(compressed, content, size, size);
+        }
     }
 
     /// <summary>
@@ -400,7 +448,7 @@ public sealed unsafe partial class ZstdCompressor
         nuint lastLiterals = _parameters.Strategy switch
         {
             Strategy.Fast => FastMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size),
-            Strategy.DoubleFast => DoubleFastMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size),
+            Strategy.DoubleFast => DoubleFastMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size, FiltersMatches()),
             < Strategy.BinaryTreeOptimal => LazyMatchFinder.CompressBlock(ref _matchState, _store, rep, source, (nuint)size),
             _ => OptimalMatchFinder.CompressBlock(ref _matchState, _optimal!, _store, rep, source, (nuint)size),
         };
@@ -420,6 +468,21 @@ public sealed unsafe partial class ZstdCompressor
         {
             _optimal!.LongDistance.Advance((uint)size, _jobSequenceCount);
         }
+    }
+
+    /// <summary>
+    /// Whether the experimental match filter is on (<see cref="ZstdExperimentalOptions.EntropyAwareMatches"/>):
+    /// then the block's literal cost is to be estimated, at its first match.
+    /// </summary>
+    private bool FiltersMatches()
+    {
+        if ((Experimental & ZstdExperimentalOptions.EntropyAwareMatches) == 0)
+        {
+            return false;
+        }
+
+        _matchState.LiteralCost16 = EntropyMatchFilter.Unknown;
+        return true;
     }
 
     /// <summary>libzstd's <c>ZSTD_isRLE</c>: whether every byte equals the first.</summary>

@@ -63,10 +63,12 @@ public sealed unsafe partial class ZstdCompressor
 
         // The literals, and the source bytes, before each sequence: libzstd counts them again for
         // each part it derives.
-        if (_literalPrefix.Length < SequenceStore.MaxSequences + 1)
+        // As many as the store holds sequences, and one.
+        int prefixes = (_store.Capacity / 3) + 2;
+        if (_literalPrefix.Length < prefixes)
         {
-            _literalPrefix = GC.AllocateArray<uint>(SequenceStore.MaxSequences + 1, pinned: true);
-            _sourcePrefix = GC.AllocateArray<uint>(SequenceStore.MaxSequences + 1, pinned: true);
+            _literalPrefix = GC.AllocateArray<uint>(prefixes, pinned: true);
+            _sourcePrefix = GC.AllocateArray<uint>(prefixes, pinned: true);
         }
 
         uint literalTotal = 0;
@@ -225,8 +227,8 @@ public sealed unsafe partial class ZstdCompressor
             SequenceStore.CountCodes(section.SequencesStart, section.SequenceCount, section.Counts);
         }
 
-        byte* compressed = _blockStart + FrameFormat.BlockHeaderSize;
-        nuint size = EntropyCompress(section, compressed, BlockBufferSize - FrameFormat.BlockHeaderSize, (nuint)sourceSize);
+        byte* compressed = BlockOutput(destination, capacity);
+        nuint size = EntropyCompress(section, compressed, (nuint)(_blockBufferSize - FrameFormat.BlockHeaderSize), (nuint)sourceSize);
         if (!_isFirstBlock && size < RleMaxLength && IsRle(source, sourceSize))
         {
             size = 1;
@@ -264,7 +266,7 @@ public sealed unsafe partial class ZstdCompressor
 
             (_previous, _next) = (_next, _previous);
             WriteBlockHeader(destination, lastBlock, (2 << 1) | ((int)size << 3));
-            Buffer.MemoryCopy(compressed, destination + FrameFormat.BlockHeaderSize, size, size);
+            CopyBlockOutput(compressed, destination, size);
         }
 
         if (_previous.OffsetRepeat == FseRepeat.Valid)
