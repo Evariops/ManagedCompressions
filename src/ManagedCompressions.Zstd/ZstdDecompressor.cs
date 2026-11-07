@@ -63,7 +63,6 @@ public sealed partial class ZstdDecompressor
     /// <summary>Creates a decoder without a dictionary.</summary>
     public ZstdDecompressor()
     {
-        _literals = new byte[FrameFormat.MaxBlockSize + LiteralsMargin];
         _huffman = new HuffmanTable();
         _sequenceTables = new SequenceTableSet();
         _currentHuffman = _huffman;
@@ -402,6 +401,8 @@ public sealed partial class ZstdDecompressor
             Throw.Error(ZstdError.DestinationTooSmall);
         }
 
+        // The literals of a block fit the block and the destination (DecodeLiterals refuses more).
+        EnsureLiterals(ref _literals, _prefix ? header.BlockSizeMax : Math.Min(header.BlockSizeMax, destination.Length));
         BeginFrame(entropy);
 
         int ip = header.HeaderSize;

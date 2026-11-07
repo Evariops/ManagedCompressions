@@ -197,7 +197,10 @@ public sealed partial class ZstdDecompressor
 
         // ---- B, read before A executes: with the room A leaves at most, rechecked once A is done
         _sequenceEntropy = true;
-        _pairLiterals ??= new byte[FrameFormat.MaxBlockSize + LiteralsMargin];
+        // B's literals fit what A's buffer was sized for: the frame's blocks and its destination.
+        byte[] pairLiterals = _pairLiterals ?? [];
+        EnsureLiterals(ref pairLiterals, _literals.Length - LiteralsMargin);
+        _pairLiterals = pairLiterals;
         _pairShortBitstream ??= new byte[8];
         _pairTables ??= new SequenceTableSet();
         SequenceTableSet tablesB = _pairTables;

@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Numerics;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -10,7 +11,11 @@ public sealed partial class ZstdDecompressor
     private const int LiteralsMargin = 32;
 
     // ---- the state a frame carries from one block to the next
-    private readonly byte[] _literals;
+    /// <summary>
+    /// The literals of the block being decoded, when they are not read in place: sized for the largest
+    /// block of the frames so far, as far as their destinations allow (see <see cref="EnsureLiterals"/>).
+    /// </summary>
+    private byte[] _literals = [];
     private readonly HuffmanTable _huffman;
     private SequenceTableSet _sequenceTables;
     private HuffmanTable _currentHuffman;
@@ -19,6 +24,20 @@ public sealed partial class ZstdDecompressor
     private uint _rep0;
     private uint _rep1;
     private uint _rep2;
+
+    /// <summary>
+    /// Grows <paramref name="buffer"/> to hold the literals of a block of <paramref name="literals"/>
+    /// bytes and the <see cref="LiteralsMargin"/> after them: a power of two from 1 KiB, never shrunk,
+    /// so that a decoder of small frames keeps a buffer of their size.
+    /// </summary>
+    private static void EnsureLiterals(ref byte[] buffer, int literals)
+    {
+        if (buffer.Length - LiteralsMargin < literals)
+        {
+            int size = (int)Math.Min(FrameFormat.MaxBlockSize, BitOperations.RoundUpToPowerOf2((uint)Math.Max(literals, 1 << 10)));
+            buffer = new byte[size + LiteralsMargin];
+        }
+    }
 
     /// <summary>
     /// libzstd's <c>ZSTD_decompressBlock_internal</c>: a literals section, then a sequences section

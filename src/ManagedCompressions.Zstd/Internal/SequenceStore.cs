@@ -63,27 +63,50 @@ internal sealed unsafe class SequenceStore
     /// <summary>The size of the common arrays: the 53 match length codes last.</summary>
     public const int AllCodes = MatchLengthCodes + SequenceCodes.MaxMatchLength + 1;
 
-    private readonly byte[] _literals = GC.AllocateUninitializedArray<byte>(FrameFormat.MaxBlockSize + WildCopyOverlength, pinned: true);
-    private readonly SequenceRecord[] _sequences = GC.AllocateUninitializedArray<SequenceRecord>(MaxSequences + 1, pinned: true);
-    private readonly uint[] _counts = GC.AllocateArray<uint>(AllCodes, pinned: true);
+    // The buffers of a block, sized for the largest block so far (see <see cref="EnsureCapacity"/>).
+    private byte[] _literals = [];
+    private SequenceRecord[] _sequences = [];
+    private readonly uint[] _counts = GC.AllocateArray<uint>(CountsCapacity, pinned: true);
 
     public SequenceStore()
     {
+        Counts = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_counts));
+        Reset();
+    }
+
+    /// <summary>The largest block the buffers hold: 0 until <see cref="EnsureCapacity"/> first sizes them.</summary>
+    public int Capacity { get; private set; }
+
+    /// <summary>
+    /// Grows the buffers to hold a block of <paramref name="blockSize"/> bytes: its literals, and its
+    /// sequences, a third of its size at most (a match is three bytes at least). They are sized for the
+    /// largest block so far, never shrunk, so that a compressor of small frames keeps small buffers;
+    /// growing them resets the store.
+    /// </summary>
+    public void EnsureCapacity(int blockSize)
+    {
+        if (blockSize <= Capacity)
+        {
+            return;
+        }
+
+        _literals = GC.AllocateUninitializedArray<byte>(blockSize + WildCopyOverlength, pinned: true);
+        _sequences = GC.AllocateUninitializedArray<SequenceRecord>((blockSize / 3) + 1, pinned: true);
         LiteralsStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_literals));
         SequencesStart = (SequenceRecord*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_sequences));
-        Counts = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_counts));
+        Capacity = blockSize;
         Reset();
     }
 
     /// <summary>The counts of the codes, at their places in the common arrays.</summary>
     public uint* Counts { get; }
 
-    public byte* LiteralsStart { get; }
+    public byte* LiteralsStart { get; private set; }
 
     /// <summary>Where the next literal goes.</summary>
     public byte* Literals;
 
-    public SequenceRecord* SequencesStart { get; }
+    public SequenceRecord* SequencesStart { get; private set; }
 
     /// <summary>Where the next sequence goes.</summary>
     public SequenceRecord* Sequences;
@@ -186,11 +209,131 @@ internal sealed unsafe class SequenceStore
         uint* counts = Counts;
         SequenceRecord* record = SequencesStart;
         SequenceRecord* end = Sequences;
+        if (VectorizesCodes && end - record >= VectorCodesMinimum)
+        {
+            record = ComputeCodesVector512(record, end, counts);
+        }
+
         while (record < end)
         {
             ulong lengths = record->Extras;
             StoreCoded(ref record, counts, (nuint)(uint)lengths, record->OffBase, (nuint)(lengths >> 32));
         }
+    }
+
+    /// <summary>
+    /// Whether <see cref="ComputeCodes"/> takes eight records a step in 512-bit vectors: with AVX-512's
+    /// foundation, its 16-bit permutes (BW) and its leading-zero counts (CD), all of x86-64-v4.
+    /// </summary>
+    internal static bool VectorizesCodes => Avx512F.IsSupported && Avx512BW.IsSupported && Avx512CD.IsSupported;
+
+    /// <summary>The fewest records for which the vector loop is worth its setup.</summary>
+    private const int VectorCodesMinimum = 64;
+
+    /// <summary>The counters of the common arrays, rounded up to whole 512-bit vectors.</summary>
+    private const int CountsCapacity = (AllCodes + 15) & ~15;
+
+    /// <summary>
+    /// <see cref="StoreCoded"/> on the records from <paramref name="record"/>, eight at a time, the same
+    /// records and counts as one at a time: the two lengths and the offset gathered from the four
+    /// records' two halves, the codes and extra bits of the small lengths from the 64 and 128 entries
+    /// of <see cref="LiteralLengthCodeTable"/> and <see cref="MatchLengthCodeTable"/> by 16-bit
+    /// permutes, those of the large ones and the offset's from their leading zeros; then the records
+    /// written back whole, and their codes counted in two sets of counters, one for each half of the
+    /// step, so that a code that comes back at once does not wait on its last increment.
+    /// </summary>
+    /// <returns>Where the records left, fewer than eight, start.</returns>
+    private static SequenceRecord* ComputeCodesVector512(SequenceRecord* record, SequenceRecord* end, uint* counts)
+    {
+        ushort* llTable = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(LiteralLengthCodeTable));
+        ushort* mlTable = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(MatchLengthCodeTable));
+        Vector512<ushort> llLow = Vector512.Load(llTable);
+        Vector512<ushort> llHigh = Vector512.Load(llTable + 32);
+        Vector512<ushort> mlLow = Vector512.Load(mlTable);
+        Vector512<ushort> mlHigh = Vector512.Load(mlTable + 32);
+        Vector512<ushort> mlLow2 = Vector512.Load(mlTable + 64);
+        Vector512<ushort> mlHigh2 = Vector512.Load(mlTable + 96);
+        Vector512<ulong> evens = Vector512.Create(0UL, 2, 4, 6, 8, 10, 12, 14);
+        Vector512<ulong> odds = Vector512.Create(1UL, 3, 5, 7, 9, 11, 13, 15);
+        Vector512<ulong> firstHalf = Vector512.Create(0UL, 8, 1, 9, 2, 10, 3, 11);
+        Vector512<ulong> secondHalf = Vector512.Create(4UL, 12, 5, 13, 6, 14, 7, 15);
+        Vector512<ulong> low32 = Vector512.Create(0xFFFF_FFFFUL);
+        Vector512<ulong> one = Vector512<ulong>.One;
+        Vector512<ulong> sixtyThree = Vector512.Create(63UL);
+
+        uint* second = stackalloc uint[CountsCapacity];
+        for (int i = 0; i < CountsCapacity; i += 16)
+        {
+            Vector512<uint>.Zero.Store(second + i);
+        }
+        SequenceRecord* first = record;
+        for (; end - record >= 8; record += 8)
+        {
+            // ---- the records' two halves apart: lengths (ll | ml << 32), then (codes | offBase << 32)
+            Vector512<ulong> a = Vector512.Load((ulong*)record);
+            Vector512<ulong> b = Vector512.Load((ulong*)(record + 4));
+            Vector512<ulong> lengths = Avx512F.PermuteVar8x64x2(a, evens, b);
+            Vector512<ulong> offBase = Avx512F.PermuteVar8x64x2(a, odds, b) >>> 32;
+            Vector512<ulong> ll = lengths & low32;
+            Vector512<ulong> mlBase = (lengths >>> 32) - Vector512.Create(3UL);
+
+            // ---- the small lengths' codes and bits from the tables, code | bits << 8, by 16-bit
+            // permutes of the indices clamped into them; the large ones' from their logarithms
+            Vector512<ushort> llIndex = Avx512F.ConvertToVector128UInt16(Vector512.Min(ll, sixtyThree)).ToVector256Unsafe().ToVector512Unsafe();
+            Vector512<ushort> mlIndex = Avx512F.ConvertToVector128UInt16(Vector512.Min(mlBase, Vector512.Create(127UL))).ToVector256Unsafe().ToVector512Unsafe();
+            Vector512<ulong> llEntry = Avx512F.ConvertToVector512UInt64(Avx512BW.PermuteVar32x16x2(llLow, llIndex, llHigh).GetLower().GetLower());
+            Vector512<ushort> mlFirst = Avx512BW.PermuteVar32x16x2(mlLow, mlIndex, mlHigh);
+            Vector512<ushort> mlSecond = Avx512BW.PermuteVar32x16x2(mlLow2, mlIndex, mlHigh2);
+            Vector512<ushort> mlUpper = Vector512.GreaterThan(mlIndex, Vector512.Create((ushort)63));
+            Vector512<ulong> mlEntry = Avx512F.ConvertToVector512UInt64(Vector512.ConditionalSelect(mlUpper, mlSecond, mlFirst).GetLower().GetLower());
+
+            Vector512<ulong> llLog = sixtyThree - Avx512CD.LeadingZeroCount(ll | one);
+            Vector512<ulong> mlLog = sixtyThree - Avx512CD.LeadingZeroCount(mlBase | one);
+            Vector512<ulong> ofCode = sixtyThree - Avx512CD.LeadingZeroCount(offBase);
+            Vector512<ulong> llLarge = Vector512.GreaterThan(ll, sixtyThree);
+            Vector512<ulong> mlLarge = Vector512.GreaterThan(mlBase, Vector512.Create(127UL));
+            Vector512<ulong> llBits = Vector512.ConditionalSelect(llLarge, llLog, llEntry >>> 8);
+            Vector512<ulong> llCode = Vector512.ConditionalSelect(llLarge, llLog + Vector512.Create(19UL), llEntry & Vector512.Create(0xFFUL));
+            Vector512<ulong> mlBits = Vector512.ConditionalSelect(mlLarge, mlLog, mlEntry >>> 8);
+            Vector512<ulong> mlCode = Vector512.ConditionalSelect(mlLarge, mlLog + Vector512.Create(36UL), mlEntry & Vector512.Create(0xFFUL));
+
+            // ---- the extra bits in the stream's order, and the codes at their places in the common arrays
+            Vector512<ulong> llExtra = ll & (Avx512F.ShiftLeftLogicalVariable(one, llBits) - one);
+            Vector512<ulong> mlExtra = mlBase & (Avx512F.ShiftLeftLogicalVariable(one, mlBits) - one);
+            Vector512<ulong> ofExtra = offBase ^ Avx512F.ShiftLeftLogicalVariable(one, ofCode);
+            Vector512<ulong> lengthBits = llBits + mlBits;
+            Vector512<ulong> extras = llExtra
+                | Avx512F.ShiftLeftLogicalVariable(mlExtra, llBits)
+                | Avx512F.ShiftLeftLogicalVariable(ofExtra, lengthBits);
+            Vector512<ulong> codes = llCode
+                | ((ofCode + Vector512.Create((ulong)OffsetCodes)) << 8)
+                | ((mlCode + Vector512.Create((ulong)MatchLengthCodes)) << 16)
+                | ((lengthBits + ofCode) << 24)
+                | (offBase << 32);
+
+            Avx512F.PermuteVar8x64x2(extras, firstHalf, codes).Store((ulong*)record);
+            Avx512F.PermuteVar8x64x2(extras, secondHalf, codes).Store((ulong*)(record + 4));
+        }
+
+        // ---- the counts: the even records' into the store's counters, the odd ones' into the second set
+        for (SequenceRecord* r = first; r < record; r += 2)
+        {
+            uint c0 = r[0].Codes;
+            uint c1 = r[1].Codes;
+            counts[c0 & 0x7F]++;
+            second[c1 & 0x7F]++;
+            counts[(c0 >> 8) & 0x7F]++;
+            second[(c1 >> 8) & 0x7F]++;
+            counts[(c0 >> 16) & 0x7F]++;
+            second[(c1 >> 16) & 0x7F]++;
+        }
+
+        for (int i = 0; i < CountsCapacity; i += 16)
+        {
+            (Vector512.Load(counts + i) + Vector512.Load(second + i)).Store(counts + i);
+        }
+
+        return record;
     }
 
     /// <summary>

@@ -64,8 +64,6 @@ public sealed unsafe partial class ZstdCompressor
         ArgumentOutOfRangeException.ThrowIfLessThan(level, MinLevel);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(level, MaxLevel);
         Level = level == 0 ? DefaultLevel : level;
-        _blockBuffer = GC.AllocateUninitializedArray<byte>(BlockBufferSize, pinned: true);
-        _blockStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_blockBuffer));
     }
 
     /// <summary>The compression level.</summary>
