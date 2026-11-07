@@ -487,6 +487,22 @@ internal static class Corpus
                 return new DataSet(name, "silesia sample", $"1 MiB every 16 MiB of silesia.tar, {content.Length:N0} bytes, one frame", content, [0, content.Length], null);
             }
 
+            case "silesia-sample-64k":
+            {
+                // The sample in pages of 64 KiB, each a frame of its own, as a columnar file writes
+                // them: what a frame costs beyond its content (tables, headers) weighs more there.
+                DataSet sample = Load("silesia-sample");
+                const int Page = 64 << 10;
+                var offsets = new List<int>();
+                for (int at = 0; at < sample.Content.Length; at += Page)
+                {
+                    offsets.Add(at);
+                }
+
+                offsets.Add(sample.Content.Length);
+                return new DataSet(name, "silesia sample, 64 KiB pages", $"the sample in {offsets.Count - 1} pages of 64 KiB, a frame each", sample.Content, offsets.ToArray(), null);
+            }
+
             case "github":
             case "github-dict":
             {

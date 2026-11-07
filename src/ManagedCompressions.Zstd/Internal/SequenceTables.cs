@@ -570,6 +570,7 @@ internal static class SequenceCodes
         Span<ushort> symbolNext = stackalloc ushort[MaxMatchLength + 1];
         Span<ulong> template = stackalloc ulong[MaxMatchLength + 1];
         Span<byte> spread = stackalloc byte[(1 << LiteralLengthMaxLog) + 8];
+        Span<byte> spreadWithHoles = stackalloc byte[(1 << LiteralLengthMaxLog) + 8];
         Span<byte> symbols = stackalloc byte[1 << LiteralLengthMaxLog];
         Span<byte> lowSymbols = stackalloc byte[MaxMatchLength + 1];
         ref ushort next = ref MemoryMarshal.GetReference(symbolNext);
@@ -623,28 +624,17 @@ internal static class SequenceCodes
         nint highThreshold = tableSize - 1 - lowCount;
         Debug.Assert(laid == highThreshold + 1);
 
-        // ---- the scatter, four cells a step: see the remarks
-        nint mask = tableSize - 1;
+        // ---- the scatter, four cells a step: see the remarks. The cells of the symbols below one unit,
+        // above the threshold, are holes in the step's order, at the indices their positions times the
+        // step's inverse give: the laid-down symbols, moved past them, then take every index in turn.
         nint step = Fse.TableStep((int)tableSize);
-        nint at = 0;
-        nint taken = 0;
-        for (nint k = 0; k < tableSize; k += 4, at += 4 * step)
+        if (lowCount != 0)
         {
-            nint p0 = at & mask;
-            nint p1 = (at + step) & mask;
-            nint p2 = (at + (2 * step)) & mask;
-            nint p3 = (at + (3 * step)) & mask;
-            Unsafe.Add(ref cells, p0) = Unsafe.Add(ref spreadStart, taken);
-            taken += p0 <= highThreshold ? 1 : 0;
-            Unsafe.Add(ref cells, p1) = Unsafe.Add(ref spreadStart, taken);
-            taken += p1 <= highThreshold ? 1 : 0;
-            Unsafe.Add(ref cells, p2) = Unsafe.Add(ref spreadStart, taken);
-            taken += p2 <= highThreshold ? 1 : 0;
-            Unsafe.Add(ref cells, p3) = Unsafe.Add(ref spreadStart, taken);
-            taken += p3 <= highThreshold ? 1 : 0;
+            WithHoles(ref spreadStart, ref MemoryMarshal.GetReference(spreadWithHoles), tableSize, step, highThreshold);
+            spreadStart = ref MemoryMarshal.GetReference(spreadWithHoles);
         }
 
-        Debug.Assert(taken == laid);
+        Scatter(ref cells, ref spreadStart, tableSize, step);
         for (nint i = 0; i < lowCount; i++)
         {
             Unsafe.Add(ref cells, tableSize - 1 - i) = Unsafe.Add(ref low, i);
@@ -684,11 +674,130 @@ internal static class SequenceCodes
         }
 
         ref ulong output = ref Unsafe.As<SeqSymbol, ulong>(ref MemoryMarshal.GetReference(entries));
+        if (code == SequenceCode.Offset)
+        {
+            Entries<OffsetLayout>(ref cells, ref next, ref next2, ref templates, ref output, half, bitsOffset, stateBase);
+        }
+        else
+        {
+            Entries<LengthLayout>(ref cells, ref next, ref next2, ref templates, ref output, half, bitsOffset, stateBase);
+        }
+        return weighted >> tableLog;
+    }
+
+    /// <summary>
+    /// The scatter of <see cref="BuildTable"/>: the symbols of <paramref name="spread"/>, one for each
+    /// index of the step's order, into <paramref name="cells"/> at the positions of that order. Every
+    /// index takes the next symbol (the cells of the symbols below one unit are holes in
+    /// <paramref name="spread"/>, see <see cref="WithHoles"/>): four independent copies a step, each
+    /// position from the one before, so that the step is the only constant the loop holds. A method of
+    /// its own for its registers: inside the table's build, the JIT spilled the positions of every step
+    /// and read them back, and counting the symbols taken made a chain of them, six cycles a cell.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Scatter(ref byte cells, ref byte spread, nint tableSize, nint step)
+    {
+        nint mask = tableSize - 1;
+        nint at = 0;
+        ref byte end = ref Unsafe.Add(ref spread, tableSize);
+        do
+        {
+            uint four = Unsafe.ReadUnaligned<uint>(ref spread);
+            nint p1 = (at + step) & mask;
+            nint p2 = (p1 + step) & mask;
+            nint p3 = (p2 + step) & mask;
+            Unsafe.Add(ref cells, at) = (byte)four;
+            Unsafe.Add(ref cells, p1) = (byte)(four >> 8);
+            Unsafe.Add(ref cells, p2) = (byte)(four >> 16);
+            Unsafe.Add(ref cells, p3) = (byte)(four >> 24);
+            at = (p3 + step) & mask;
+            spread = ref Unsafe.Add(ref spread, 4);
+        }
+        while (Unsafe.IsAddressLessThan(ref spread, ref end));
+    }
+
+    /// <summary>
+    /// The laid-down symbols of <paramref name="spread"/> into <paramref name="withHoles"/>, with a hole
+    /// at each index of the step's order whose position is above <paramref name="highThreshold"/>,
+    /// a cell the symbols below one unit take afterwards: the order the scatter then fills without a
+    /// test. The step is odd, so invertible modulo the table's size: position p is index p times its
+    /// inverse. The holes, a few, are sorted; the runs of symbols between them are copied whole.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void WithHoles(ref byte spread, ref byte withHoles, nint tableSize, nint step, nint highThreshold)
+    {
+        nint mask = tableSize - 1;
+
+        // The inverse modulo 2^64 by Newton's iteration, 3 bits correct from the start, 24 after three.
+        nint inverse = step;
+        inverse *= 2 - (step * inverse);
+        inverse *= 2 - (step * inverse);
+        inverse *= 2 - (step * inverse);
+        Debug.Assert(((step * inverse) & mask) == 1);
+
+        nint holeCount = mask - highThreshold;
+        Span<ushort> holes = stackalloc ushort[MaxMatchLength + 1];
+        for (nint j = 0; j < holeCount; j++)
+        {
+            // Insertion in order: the holes are a few.
+            ushort hole = (ushort)(((highThreshold + 1 + j) * inverse) & mask);
+            nint at = j;
+            while (at > 0 && holes[(int)at - 1] > hole)
+            {
+                holes[(int)at] = holes[(int)at - 1];
+                at--;
+            }
+
+            holes[(int)at] = hole;
+        }
+
+        nint from = 0;
+        nint to = 0;
+        for (nint j = 0; j < holeCount; j++)
+        {
+            nint run = holes[(int)j] - to;
+            Unsafe.CopyBlockUnaligned(ref Unsafe.Add(ref withHoles, to), ref Unsafe.Add(ref spread, from), (uint)run);
+            from += run;
+            to += run + 1;
+        }
+
+        Unsafe.CopyBlockUnaligned(ref Unsafe.Add(ref withHoles, to), ref Unsafe.Add(ref spread, from), (uint)(tableSize - to));
+    }
+
+    /// <summary>Where an entry of a code keeps its state's bits: in the low byte for the lengths, the second for the offsets.</summary>
+    private interface ILayout
+    {
+        static abstract int NbBitsShift { get; }
+    }
+
+    private readonly struct LengthLayout : ILayout
+    {
+        public static int NbBitsShift => 0;
+    }
+
+    private readonly struct OffsetLayout : ILayout
+    {
+        public static int NbBitsShift => 8;
+    }
+
+    /// <summary>
+    /// The states of <see cref="BuildTable"/>, in table order, its two halves side by side, each with
+    /// its counters (<paramref name="next"/>, <paramref name="next2"/>): a method of its own, for the
+    /// registers, as <see cref="Scatter"/>, and one for each layout of the entries, whose shift is then
+    /// a constant rather than a ninth argument read from the stack at every cell.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Entries<TLayout>(
+        ref byte cells, ref ushort next, ref ushort next2, ref ulong templates, ref ulong output, nint half, nint bitsOffset,
+        nint stateBase)
+        where TLayout : ILayout
+    {
         ref ulong output2 = ref Unsafe.Add(ref output, 2 * half);
+        ref byte cells2 = ref Unsafe.Add(ref cells, half);
         for (nint u = 0; u < half; u++)
         {
-            ulong first = Entry(ref cells, ref next, ref templates, u, bitsOffset, stateBase, nbBitsShift);
-            ulong second = Entry(ref cells, ref next2, ref templates, u + half, bitsOffset, stateBase, nbBitsShift);
+            ulong first = Entry(ref next, ref templates, Unsafe.Add(ref cells, u), bitsOffset, stateBase);
+            ulong second = Entry(ref next2, ref templates, Unsafe.Add(ref cells2, u), bitsOffset, stateBase);
             output = first;
             Unsafe.Add(ref output, 1) = first;
             output2 = second;
@@ -697,17 +806,14 @@ internal static class SequenceCodes
             output2 = ref Unsafe.Add(ref output2, 2);
         }
 
-        return weighted >> tableLog;
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static ulong Entry(ref byte cells, ref ushort next, ref ulong templates, nint u, nint bitsOffset, nint stateBase, int nbBitsShift)
+        static ulong Entry(ref ushort next, ref ulong templates, nint symbol, nint bitsOffset, nint stateBase)
         {
-            nint symbol = Unsafe.Add(ref cells, u);
             nint nextState = Unsafe.Add(ref next, symbol);
             Unsafe.Add(ref next, symbol) = (ushort)(nextState + 1);
             nint doubling = (nint)BitOperations.LeadingZeroCount((ulong)nextState) - bitsOffset;
             nint state = (nextState << (int)doubling) + stateBase;
-            return Unsafe.Add(ref templates, symbol) + ((ulong)doubling << nbBitsShift) + ((ulong)state << 48);
+            return Unsafe.Add(ref templates, symbol) + ((ulong)doubling << TLayout.NbBitsShift) + ((ulong)state << 48);
         }
     }
 }
