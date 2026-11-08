@@ -89,6 +89,18 @@ frame that declares its content size, and room for it, decodes it in place, as `
 whatever its window, as libzstd does too. The decoder accepts and refuses what libzstd's
 `ZSTD_decompressStream` does.
 
+`ZstdStream` reads Zstandard from another stream through a `ZstdDecoder`, as System.IO.Compression's
+`ZstandardStream` does:
+
+```csharp
+using var zstd = new ZstdStream(File.OpenRead("data.zst"), CompressionMode.Decompress);
+zstd.CopyTo(destination);
+```
+
+It decompresses only, for now. A read returns as soon as it has content. The end of the underlying
+stream ends it between frames; inside a frame, the read throws `InvalidDataException`, as it does for
+data that is not Zstandard.
+
 ### Compression
 
 ```csharp
