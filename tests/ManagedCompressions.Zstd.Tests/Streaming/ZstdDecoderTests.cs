@@ -45,10 +45,10 @@ public sealed class ZstdDecoderTests
 
                     AssertDecodes(decoder(), frame, content, Pieces.Whole, Pieces.Whole, name + " whole");
                     var random = new Random(variant);
-                    AssertDecodes(decoder(), frame, content, () => Pieces.Random(random), () => Pieces.Random(random), name + " random");
+                    AssertDecodes(decoder(), frame, content, () => Pieces.Random(random), () => Pieces.Random(random), name + " random", guards: random);
                     if (size <= 70_000)
                     {
-                        AssertDecodes(decoder(), frame, content, Pieces.One, Pieces.One, name + " one byte");
+                        AssertDecodes(decoder(), frame, content, Pieces.One, Pieces.One, name + " one byte", guards: random);
                     }
                 }
             }
@@ -65,7 +65,7 @@ public sealed class ZstdDecoderTests
         byte[] content = DataKinds.Generate("mixed", 400_000, level);
         byte[] frame = NativeZstd.CompressStream(content, new NativeZstdOptions { Quality = level, AppendChecksum = true }, flushEvery, flush: true, pledge: false);
         var random = new Random(level);
-        AssertDecodes(new ZstdDecoder(), frame, content, () => Pieces.Random(random), () => Pieces.Random(random), $"L{level}, flushed every {flushEvery}");
+        AssertDecodes(new ZstdDecoder(), frame, content, () => Pieces.Random(random), () => Pieces.Random(random), $"L{level}, flushed every {flushEvery}", guards: random);
         AssertDecodes(new ZstdDecoder(), frame, content, Pieces.Whole, Pieces.Whole, $"L{level}, flushed every {flushEvery}, whole");
     }
 
@@ -100,7 +100,7 @@ public sealed class ZstdDecoderTests
 
         Func<ZstdDecoder> decoder = () => withDictionary ? new ZstdDecoder(dictionary) : new ZstdDecoder();
         var random = new Random(windowLog);
-        AssertDecodes(decoder(), frame, content, () => Pieces.Random(random), () => Pieces.Random(random), $"window 2^{windowLog}");
+        AssertDecodes(decoder(), frame, content, () => Pieces.Random(random), () => Pieces.Random(random), $"window 2^{windowLog}", guards: random);
         AssertDecodes(decoder(), frame, content, Pieces.Whole, Pieces.Whole, $"window 2^{windowLog}, whole");
     }
 
@@ -153,14 +153,14 @@ public sealed class ZstdDecoderTests
         Corpus.AssertSameBytes(content, native, "libzstd");
 
         var random = new Random(5);
-        foreach ((Func<int> source, Func<int> destination, string how) in new (Func<int>, Func<int>, string)[]
+        foreach ((Func<int> source, Func<int> destination, Random? guards, string how) in new (Func<int>, Func<int>, Random?, string)[]
         {
-            (Pieces.Whole, Pieces.Whole, "whole"),
-            (() => Pieces.Random(random), () => Pieces.Random(random), "random"),
-            (Pieces.One, Pieces.One, "one byte"),
+            (Pieces.Whole, Pieces.Whole, null, "whole"),
+            (() => Pieces.Random(random), () => Pieces.Random(random), random, "random"),
+            (Pieces.One, Pieces.One, random, "one byte"),
         })
         {
-            (OperationStatus status, byte[] decoded, int frames) = Pieces.Decode(new ZstdDecoder(), stream, source, destination);
+            (OperationStatus status, byte[] decoded, int frames) = Pieces.Decode(new ZstdDecoder(), stream, source, destination, guards);
             Assert.Equal(OperationStatus.Done, status);
             Assert.Equal(5, frames);
             Corpus.AssertSameBytes(content, decoded, how);
@@ -371,9 +371,9 @@ public sealed class ZstdDecoderTests
         Assert.Equal(0, least);
     }
 
-    private static void AssertDecodes(ZstdDecoder decoder, byte[] frame, byte[] content, Func<int> source, Func<int> destination, string name)
+    private static void AssertDecodes(ZstdDecoder decoder, byte[] frame, byte[] content, Func<int> source, Func<int> destination, string name, Random? guards = null)
     {
-        (OperationStatus status, byte[] decoded, int frames) = Pieces.Decode(decoder, frame, source, destination);
+        (OperationStatus status, byte[] decoded, int frames) = Pieces.Decode(decoder, frame, source, destination, guards);
         Assert.True(status == OperationStatus.Done, $"{name}: {status} ({decoder.LastError})");
         Assert.Equal(1, frames);
         Corpus.AssertSameBytes(content, decoded, name);
@@ -447,14 +447,24 @@ internal static class Pieces
         _ => random.Next(300, 70_000),
     };
 
+    /// <summary>The most a guarded piece, or a guarded destination, holds.</summary>
+    private const int GuardedCapacity = 1 << 20;
+
     /// <summary>
     /// The stream through the decoder, its bytes handed over in pieces whose sizes
     /// <paramref name="source"/> draws, its content taken into destinations whose sizes
     /// <paramref name="destination"/> draws, until the stream ends.
     /// </summary>
+    /// <param name="guards">
+    /// When set, each piece is copied against the upper or the lower guard page of a
+    /// <see cref="GuardedBuffer"/>, and each destination lies against one of another, as it draws (both
+    /// of <see cref="GuardedCapacity"/> bytes at most): a byte read or written past either end faults.
+    /// </param>
     /// <returns>The last status, the content, and the frames that ended.</returns>
-    public static (OperationStatus Status, byte[] Content, int Frames) Decode(ZstdDecoder decoder, ReadOnlySpan<byte> stream, Func<int> source, Func<int> destination)
+    public static (OperationStatus Status, byte[] Content, int Frames) Decode(ZstdDecoder decoder, ReadOnlySpan<byte> stream, Func<int> source, Func<int> destination, Random? guards = null)
     {
+        using GuardedBuffer? input = guards is null ? null : new GuardedBuffer(GuardedCapacity);
+        using GuardedBuffer? output = guards is null ? null : new GuardedBuffer(GuardedCapacity);
         var content = new ArrayBufferWriter<byte>();
         int at = 0;
         int frames = 0;
@@ -463,11 +473,35 @@ internal static class Pieces
         {
             int take = Math.Min(source(), stream.Length - at);
             int room = destination();
-            Span<byte> target = room == 0 ? [] : content.GetSpan(room)[..room];
-            OperationStatus status = decoder.Decompress(stream.Slice(at, take), target, out int consumed, out int written);
+            ReadOnlySpan<byte> piece;
+            Span<byte> target;
+            if (guards is null)
+            {
+                piece = stream.Slice(at, take);
+                target = room == 0 ? [] : content.GetSpan(room)[..room];
+            }
+            else
+            {
+                take = Math.Min(take, GuardedCapacity);
+                room = Math.Min(room, GuardedCapacity);
+                Span<byte> copy = Against(input!, take, guards);
+                stream.Slice(at, take).CopyTo(copy);
+                piece = copy;
+                target = Against(output!, room, guards);
+            }
+
+            OperationStatus status = decoder.Decompress(piece, target, out int consumed, out int written);
             Assert.InRange(consumed, 0, take);
             Assert.InRange(written, 0, room);
-            content.Advance(written);
+            if (guards is null)
+            {
+                content.Advance(written);
+            }
+            else
+            {
+                content.Write(target[..written]);
+            }
+
             at += consumed;
             switch (status)
             {
@@ -500,4 +534,8 @@ internal static class Pieces
             Assert.True(stalls < 2, $"no progress at byte {at}, {status}");
         }
     }
+
+    /// <summary><paramref name="length"/> bytes of <paramref name="buffer"/> against its upper or its lower guard page.</summary>
+    private static Span<byte> Against(GuardedBuffer buffer, int length, Random random) =>
+        random.Next(2) == 0 ? buffer.AtEnd(length) : buffer.AtStart(length);
 }
