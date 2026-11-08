@@ -6,13 +6,16 @@ A corrupt or hostile input produces an error, never anything worse. The decoders
 
 - `ZstdDecompressor.Decompress` returns `OperationStatus.InvalidData` for a frame libzstd refuses, and
   for a block over RFC 8878's size limit, which libzstd only partly enforces.
+- `ZstdDecoder.Decompress` returns `OperationStatus.InvalidData` for a stream libzstd's streaming
+  decoder refuses, a frame whose window exceeds the decoder's `MaxWindowLog` among them.
 - `Lz4Block.TryDecompress` returns false, and `Lz4Block.Decompress` throws `InvalidDataException`, for a
   literal or a match past either end, an offset of zero or before the start, and a block that does not
   end with literals.
 
 Neither reads nor writes outside the spans it is given, and neither allocates what the input asks for:
 a decompressor's memory is bounded by the format's block size and by the dictionary the caller passes,
-and its output by the destination the caller passes. The tests fuzz both decoders with each buffer
+and its output by the destination the caller passes. A `ZstdDecoder` also holds the window of the frame
+it decodes, which `ZstdDecompressionOptions.MaxWindowLog` bounds: 128 MiB and a block by default. The tests fuzz both decoders with each buffer
 placed against an inaccessible memory page, so that a single byte read or written out of bounds faults.
 
 ## What is not

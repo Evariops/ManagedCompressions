@@ -63,6 +63,32 @@ The status says what to do next; `decompressor.LastError` says why, naming the c
 frame: `ZstdError.ChecksumMismatch`, `ZstdError.OffsetTooLarge`, `ZstdError.DictionaryMismatch`, and so
 on. It is `ZstdError.None` after a call that returns `Done`.
 
+### Streaming decompression
+
+`ZstdDecoder` decodes frames as their bytes arrive and as room comes for their content. A frame may be
+cut anywhere across calls, may declare no content size (as `zstd` writes from a pipe), and may be larger
+than any buffer:
+
+```csharp
+var decoder = new ZstdDecoder();   // or new ZstdDecoder(dictionary), or with ZstdDecompressionOptions
+
+OperationStatus status = decoder.Decompress(source, destination, out int consumed, out int written);
+```
+
+| status | meaning |
+|---|---|
+| `Done` | A frame ended, and all its content is written. The next call starts the next frame. |
+| `NeedMoreData` | The source has been taken whole, inside a frame; its content so far is written. |
+| `DestinationTooSmall` | The destination is full, and more content is to come. |
+| `InvalidData` | The stream is not valid Zstandard; `decoder.LastError` says why. The decoder refuses every call until `Reset()`. |
+
+Unlike `ZstdDecompressor`, every call keeps what it took: pass on the source after `consumed`, and a new
+destination. The decoder holds a frame's window, up to `ZstdDecompressionOptions.MaxWindowLog` (27 by
+default, 128 MiB, as libzstd), and refuses a frame whose window is larger. A call that holds a whole
+frame that declares its content size, and room for it, decodes it in place, as `ZstdDecompressor` does,
+whatever its window, as libzstd does too. The decoder accepts and refuses what libzstd's
+`ZSTD_decompressStream` does.
+
 ### Compression
 
 ```csharp
@@ -150,8 +176,10 @@ var compressor = new ZstdCompressor(level: 3, ZstdExperimentalOptions.EntropyAwa
 
 The limitations are these:
 
-- There is no streaming API. A frame is compressed or decompressed in one call, from and into memory.
-- Sources and frames must fit in a span, so they are limited to 2 GiB.
+- Compression has no streaming API yet: a frame is compressed in one call, from and into memory.
+  Decompression streams with `ZstdDecoder`.
+- Compression sources, and the frames `ZstdDecompressor` decodes, must fit in a span, so they are
+  limited to 2 GiB. `ZstdDecoder` has no such limit.
 - Compression takes a level, a dictionary and the checksum option. libzstd's advanced parameters, such
   as the window size or the strategy, are not exposed.
 

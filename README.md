@@ -236,11 +236,12 @@ x64 alike.
 | Dictionaries | yes, at compression and decompression | no |
 | Checksums | XXH64, written on request, always verified | not in the block format |
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no |
+| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window | no |
 | Validation | accepts and refuses what libzstd does | refuses any literal or match past either end |
 
-Not supported: streaming (a frame or block is compressed or decompressed in one call, from and into
-memory), inputs over 2 GiB, the LZ4 frame format, and libzstd's advanced parameters (window size,
-strategy).
+Not supported: streaming compression (a frame or block is compressed in one call, from and into
+memory), compression inputs over 2 GiB, the LZ4 frame format, and libzstd's advanced parameters
+(window size, strategy).
 
 ## How it was measured
 
