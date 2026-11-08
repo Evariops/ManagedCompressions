@@ -330,7 +330,7 @@ public sealed class LongDistanceCompressionTests
     /// between other content. The binary trees skip positions inside long matches, which the
     /// long-distance matcher's table still holds.
     /// </summary>
-    private static class FarRepeats
+    internal static class FarRepeats
     {
         public static readonly string[] Kinds = ["far-text", "far-json", "far-random", "far-walk64"];
 

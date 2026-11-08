@@ -77,15 +77,23 @@ public sealed unsafe partial class ZstdCompressor
     /// <param name="longDistance">Whether the long-distance matcher is on.</param>
     /// <param name="minimumStart">The lowest index the frame may start at: above an attached dictionary's.</param>
     /// <param name="loadedIndices">The indices a dictionary loaded before the source takes.</param>
+    /// <param name="stream">
+    /// Whether the frame is streamed, its size unknown and <paramref name="source"/> its first chunk:
+    /// the indices then restart only when the last frame ended past the limit, as libzstd's
+    /// <c>ZSTD_indexTooCloseToMax</c> decides, and the stream keeps <see cref="_nextIndex"/> at the
+    /// window's end as its chunks arrive.
+    /// </param>
     private void BeginFrame(
-        CompressionParameters parameters, byte* source, int sourceSize, bool longDistance, uint minimumStart = WindowStartIndex, ulong loadedIndices = 0)
+        CompressionParameters parameters, byte* source, int sourceSize, bool longDistance, uint minimumStart = WindowStartIndex, ulong loadedIndices = 0, bool stream = false)
     {
         _parameters = parameters;
         _frameParameters = parameters;
         // btultra2 moves the window past its first block once (OptimalMatchFinder): the frame may
         // reach a block's indices further than its size.
         uint shift = parameters.Strategy == Strategy.BinaryTreeUltra2 ? (uint)FrameFormat.MaxBlockSize : 0;
-        bool restart = (ulong)Math.Max(_nextIndex, minimumStart) + loadedIndices + (ulong)sourceSize + shift > IndexLimit;
+        bool restart = stream
+            ? Math.Max(_nextIndex, minimumStart) > IndexLimit
+            : (ulong)Math.Max(_nextIndex, minimumStart) + loadedIndices + (ulong)sourceSize + shift > IndexLimit;
         bool rows = parameters.UsesRowMatchFinder;
         int hashSize = 1 << parameters.HashLog;
         int chainSize = parameters.Strategy == Strategy.Fast || rows ? 0 : 1 << parameters.ChainLog;
@@ -146,7 +154,7 @@ public sealed unsafe partial class ZstdCompressor
             Parameters = parameters,
         };
 
-        _nextIndex = start + (uint)sourceSize + shift;
+        _nextIndex = stream ? start : start + (uint)sourceSize + shift;
         _previous.Reset();
         _isFirstBlock = true;
     }
