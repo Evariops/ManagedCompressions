@@ -109,8 +109,10 @@ public sealed class ZstdStreamTests
         Assert.Throws<NotSupportedException>(() => zstd.Length);
         Assert.Throws<NotSupportedException>(() => zstd.Position);
         Assert.Throws<NotSupportedException>(() => zstd.Seek(0, SeekOrigin.Begin));
-        Assert.Throws<NotSupportedException>(() => zstd.Write([1], 0, 1));
-        Assert.Throws<ArgumentException>(() => new ZstdStream(new MemoryStream(), CompressionMode.Compress));
+
+        // As System.IO.Compression's ZstandardStream: what the mode does not do is an invalid operation.
+        Assert.Throws<InvalidOperationException>(() => zstd.Write([1], 0, 1));
+        Assert.Throws<InvalidOperationException>(() => zstd.SetSourceLength(1));
         Assert.Throws<ArgumentException>(() => new ZstdStream(new Unreadable(), CompressionMode.Decompress));
     }
 

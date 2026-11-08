@@ -97,7 +97,7 @@ using var zstd = new ZstdStream(File.OpenRead("data.zst"), CompressionMode.Decom
 zstd.CopyTo(destination);
 ```
 
-It decompresses only, for now. A read returns as soon as it has content. The end of the underlying
+A read returns as soon as it has content. The end of the underlying
 stream ends it between frames; inside a frame, the read throws `InvalidDataException`, as it does for
 data that is not Zstandard.
 
@@ -165,6 +165,23 @@ frame. Once a frame ends, the next call starts another.
 
 Not streamed yet: dictionaries, and frames whose indices would pass 3500 MiB, which libzstd corrects
 (`ZSTD_reduceIndex`). Both throw `NotSupportedException`.
+
+`ZstdStream` writes Zstandard into another stream through a `ZstdEncoder`, as System.IO.Compression's
+`ZstandardStream` does, and writes the same bytes for the same writes and flushes:
+
+```csharp
+using (var zstd = new ZstdStream(File.Create("data.zst"), CompressionLevel.Optimal))   // or options, or an encoder
+{
+    zstd.SetSourceLength(length);   // optional: the frame then declares the size, and holds the content to it
+    source.CopyTo(zstd);
+}   // disposing ends the frame
+```
+
+A write gathers its bytes until they make a block. `Flush` ends a block with what was written so far,
+so that it decodes without the rest. Disposing ends the frame, and writes an empty frame when nothing
+was written. `CompressionLevel` maps as `ZstandardStream` maps it: `Optimal` to the default level,
+`Fastest` to 1, `SmallestSize` to 22, `NoCompression` to the fastest level, -131072, which stores the
+content nearly as it is.
 
 ### Dictionaries
 
@@ -241,7 +258,7 @@ var compressor = new ZstdCompressor(level: 3, ZstdExperimentalOptions.EntropyAwa
 The limitations are these:
 
 - Streaming compression (`ZstdEncoder`) takes no dictionary yet, and stops at 3500 MiB of indices in a
-  frame. `ZstdStream` decompresses only.
+  frame.
 - `ZstdCompressor`'s sources, and the frames `ZstdDecompressor` decodes, must fit in a span, so they are
   limited to 2 GiB. `ZstdEncoder` and `ZstdDecoder` have no such limit.
 - Compression takes the level, the window, the long-distance matcher, the checksum, the header's flags
