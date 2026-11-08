@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [zstd-decompress, zstd-compress, lz4-decompress, lz4-compress]
+        target: [zstd-decompress, zstd-stream-decompress, zstd-compress, lz4-decompress, lz4-compress]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

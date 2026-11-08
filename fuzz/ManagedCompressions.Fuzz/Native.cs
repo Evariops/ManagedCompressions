@@ -7,7 +7,8 @@ namespace ManagedCompressions.Fuzz;
 
 /// <summary>
 /// zstd 1.5.7 and lz4 1.10.0 as NativeCompressions ships them, through its raw bindings: the oracles.
-/// A process runs one target on one thread, so each keeps one context, created on first use.
+/// A process runs one target on one thread, so each keeps one context, created on first use, but for
+/// the streaming decoder's.
 /// </summary>
 internal static unsafe class Native
 {
@@ -45,8 +46,124 @@ internal static unsafe class Native
         }
     }
 
-    /// <summary><c>ZSTD_compress2</c> at <paramref name="level"/>, with the dictionary prepared at that level when given.</summary>
-    public static byte[] ZstdCompress(ReadOnlySpan<byte> content, int level, bool checksum, ZSTD_CDict_s* dictionary)
+    /// <summary>How <see cref="ZstdDecompressStream"/> ends.</summary>
+    public enum StreamEnd
+    {
+        /// <summary>Every frame decoded, and the stream ends where the last one does.</summary>
+        Decoded,
+
+        /// <summary>No error, but no more progress: the stream ends inside a frame, or the destination is full.</summary>
+        Incomplete,
+
+        /// <summary>An error.</summary>
+        Refused,
+    }
+
+    /// <summary>
+    /// libzstd's streaming decoder, <c>ZSTD_decompressStream</c>, handed the whole stream and the whole
+    /// destination, call after call, as long as it makes progress: the semantics
+    /// <see cref="Zstd.ZstdDecoder"/> mirrors. Each stream gets a new context: one that decoded a larger
+    /// window keeps its larger buffer, and a buffer larger than the declared content lets that content
+    /// overflow.
+    /// </summary>
+    /// <param name="written">The content written, however the stream ends.</param>
+    public static StreamEnd ZstdDecompressStream(ReadOnlySpan<byte> stream, Span<byte> destination, ZSTD_DDict_s* dictionary, int windowLogMax, out int written)
+    {
+        ZSTD_DCtx_s* context = ZstandardNativeMethods.ZSTD_createDCtx();
+        try
+        {
+            Check(ZstandardNativeMethods.ZSTD_DCtx_setParameter(context, ZSTD_dParameter.ZSTD_d_windowLogMax, windowLogMax));
+            if (dictionary != null)
+            {
+                Check(ZstandardNativeMethods.ZSTD_DCtx_refDDict(context, dictionary));
+            }
+
+            return DecompressStream(context, stream, destination, out written);
+        }
+        finally
+        {
+            ZstandardNativeMethods.ZSTD_freeDCtx(context);
+        }
+    }
+
+    /// <summary>
+    /// Whether libzstd's streaming decoder refuses the window of the frame <paramref name="frame"/>
+    /// starts with, when the frame arrives a byte at a time: never whole in one call, it is never
+    /// decoded in one pass, which skips that check.
+    /// </summary>
+    public static bool ZstdRefusesWindow(ReadOnlySpan<byte> frame, ZSTD_DDict_s* dictionary, int windowLogMax)
+    {
+        // The largest frame header, after which libzstd has checked the window.
+        const int MaxHeaderSize = 18;
+        ZSTD_DCtx_s* context = ZstandardNativeMethods.ZSTD_createDCtx();
+        try
+        {
+            Check(ZstandardNativeMethods.ZSTD_DCtx_setParameter(context, ZSTD_dParameter.ZSTD_d_windowLogMax, windowLogMax));
+            if (dictionary != null)
+            {
+                Check(ZstandardNativeMethods.ZSTD_DCtx_refDDict(context, dictionary));
+            }
+
+            byte sink = 0;
+            var output = new ZSTD_outBuffer_s { dst = &sink, size = 1, pos = 0 };
+            fixed (byte* src = frame)
+            {
+                for (int i = 0; i < Math.Min(frame.Length, MaxHeaderSize); i++)
+                {
+                    var input = new ZSTD_inBuffer_s { src = src + i, size = 1, pos = 0 };
+                    nuint result = ZstandardNativeMethods.ZSTD_decompressStream(context, &output, &input);
+                    if (ZstandardNativeMethods.ZSTD_isError(result) != 0)
+                    {
+                        return ZstandardNativeMethods.ZSTD_getErrorCode(result) == ZSTD_ErrorCode.ZSTD_error_frameParameter_windowTooLarge;
+                    }
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            ZstandardNativeMethods.ZSTD_freeDCtx(context);
+        }
+    }
+
+    private static StreamEnd DecompressStream(ZSTD_DCtx_s* context, ReadOnlySpan<byte> stream, Span<byte> destination, out int written)
+    {
+        fixed (byte* src = stream)
+        fixed (byte* dst = destination)
+        {
+            var input = new ZSTD_inBuffer_s { src = src, size = (nuint)stream.Length, pos = 0 };
+            var output = new ZSTD_outBuffer_s { dst = dst, size = (nuint)destination.Length, pos = 0 };
+            bool atBoundary;
+            while (true)
+            {
+                nuint read = input.pos;
+                nuint wrote = output.pos;
+                nuint result = ZstandardNativeMethods.ZSTD_decompressStream(context, &output, &input);
+                if (ZstandardNativeMethods.ZSTD_isError(result) != 0)
+                {
+                    written = (int)output.pos;
+                    return StreamEnd.Refused;
+                }
+
+                atBoundary = result == 0;
+                if ((input.pos == input.size && atBoundary) || (input.pos == read && output.pos == wrote))
+                {
+                    break;
+                }
+            }
+
+            written = (int)output.pos;
+            return atBoundary && input.pos == input.size ? StreamEnd.Decoded : StreamEnd.Incomplete;
+        }
+    }
+
+    /// <summary>
+    /// <c>ZSTD_compress2</c> at <paramref name="level"/>, with the dictionary prepared at that level when
+    /// given; without the content size in the header unless <paramref name="contentSize"/>, and with
+    /// a window of 2^<paramref name="windowLog"/> bytes when it is not 0.
+    /// </summary>
+    public static byte[] ZstdCompress(ReadOnlySpan<byte> content, int level, bool checksum, ZSTD_CDict_s* dictionary, bool contentSize = true, int windowLog = 0)
     {
         if (s_compression == null)
         {
@@ -59,6 +176,16 @@ internal static unsafe class Native
         if (checksum)
         {
             Check(ZstandardNativeMethods.ZSTD_CCtx_setParameter(context, ZSTD_cParameter.ZSTD_c_checksumFlag, 1));
+        }
+
+        if (!contentSize)
+        {
+            Check(ZstandardNativeMethods.ZSTD_CCtx_setParameter(context, ZSTD_cParameter.ZSTD_c_contentSizeFlag, 0));
+        }
+
+        if (windowLog != 0)
+        {
+            Check(ZstandardNativeMethods.ZSTD_CCtx_setParameter(context, ZSTD_cParameter.ZSTD_c_windowLog, windowLog));
         }
 
         if (dictionary != null)
