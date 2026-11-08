@@ -223,15 +223,16 @@ internal static unsafe class NativeZstd
 
     /// <summary>
     /// A whole stream through libzstd's streaming decoder, <c>ZSTD_decompressStream</c>, frame after
-    /// frame, each call handed all the input left and all the room left in a destination of
-    /// <paramref name="capacity"/> bytes, the window capped at <paramref name="windowLogMax"/>.
+    /// frame, each call handed all the input left (or <paramref name="piece"/> bytes of it at most)
+    /// and all the room left in a destination of <paramref name="capacity"/> bytes, the window capped
+    /// at <paramref name="windowLogMax"/>.
     /// </summary>
     /// <returns>
     /// Whether libzstd decodes the stream: every frame whole, and nothing left. The content is what it
     /// wrote, also when it refuses.
     /// </returns>
     public static bool DecompressStream(
-        ReadOnlySpan<byte> stream, int capacity, NativeZstdDictionary? dictionary, int windowLogMax, out byte[] content)
+        ReadOnlySpan<byte> stream, int capacity, NativeZstdDictionary? dictionary, int windowLogMax, out byte[] content, int piece = int.MaxValue)
     {
         ZSTD_DCtx_s* context = ZstandardNativeMethods.ZSTD_createDCtx();
         try
@@ -246,11 +247,12 @@ internal static unsafe class NativeZstd
             fixed (byte* source = stream)
             fixed (byte* target = output)
             {
-                var input = new ZSTD_inBuffer_s { src = source, size = (nuint)stream.Length, pos = 0 };
+                var input = new ZSTD_inBuffer_s { src = source, size = 0, pos = 0 };
                 var buffer = new ZSTD_outBuffer_s { dst = target, size = (nuint)capacity, pos = 0 };
                 bool atBoundary = true;
                 while (true)
                 {
+                    input.size = (nuint)Math.Min(stream.Length, (long)input.pos + piece);
                     nuint read = input.pos;
                     nuint wrote = buffer.pos;
                     nuint result = ZstandardNativeMethods.ZSTD_decompressStream(context, &buffer, &input);
@@ -261,7 +263,7 @@ internal static unsafe class NativeZstd
                     }
 
                     atBoundary = result == 0;
-                    if (input.pos == input.size && atBoundary)
+                    if (input.pos == (nuint)stream.Length && atBoundary)
                     {
                         break;
                     }
@@ -273,7 +275,7 @@ internal static unsafe class NativeZstd
                 }
 
                 content = output.AsSpan(0, (int)buffer.pos).ToArray();
-                return atBoundary && input.pos == input.size;
+                return atBoundary && input.pos == (nuint)stream.Length;
             }
         }
         finally

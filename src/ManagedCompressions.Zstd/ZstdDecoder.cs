@@ -269,6 +269,14 @@ public sealed class ZstdDecoder
                         source.Slice(consumed, count).CopyTo(_block.AsSpan(_blockLength));
                         _blockLength += count;
                         consumed += count;
+
+                        // libzstd hands a raw block out as it arrives: into a window the declared size
+                        // bounds, a part past its end is refused as soon as it arrives.
+                        if (_blockType == 0 && !_restarts && _blockLength > _capacity - _out)
+                        {
+                            Throw.Error(ZstdError.ContentSizeMismatch);
+                        }
+
                         if (_blockLength < size)
                         {
                             return OperationStatus.NeedMoreData;
@@ -485,7 +493,10 @@ public sealed class ZstdDecoder
             Throw.Error(ZstdError.ReservedBlockType);
         }
 
-        if (_blockSize > _frame.BlockSizeMax)
+        // The content of an RLE block, which libzstd checks once decoded; and as ZSTD_decompressContinue,
+        // the block's size in the stream, one byte for an RLE block: more than a frame that declares no
+        // content allows, whose maximum block size is 0.
+        if (_blockSize > _frame.BlockSizeMax || (_blockType == 1 && _frame.BlockSizeMax == 0))
         {
             Throw.Error(ZstdError.BlockTooLarge);
         }

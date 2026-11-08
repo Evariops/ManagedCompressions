@@ -287,6 +287,70 @@ public sealed class ZstdDecoderTests
         }
     }
 
+    /// <summary>
+    /// A frame that declares no content allows blocks of 0 bytes, which an RLE block exceeds by its one
+    /// byte in the stream: libzstd's streaming decoder refuses it, where it does not decode the frame in
+    /// one pass (in one pass, and one-shot, it decodes it). The decoder does likewise. libFuzzer found
+    /// it (fuzz/regressions/zstd-stream-decompress/rle-block-in-empty-frame).
+    /// </summary>
+    [Fact]
+    public void An_RLE_block_in_a_frame_of_no_content_is_refused_in_pieces()
+    {
+        // A single segment declaring 0 bytes, then a last RLE block of 0 bytes.
+        byte[] frame = [0x28, 0xB5, 0x2F, 0xFD, 0x20, 0, (1 << 1) | 1, 0, 0, 0x55];
+        Assert.Equal(OperationStatus.Done, NativeZstd.Decompress(frame, new byte[1], null, out _, out _));
+        Assert.True(NativeZstd.DecompressStream(frame, 0, null, 27, out byte[] whole), "whole, in one pass");
+        Assert.Empty(whole);
+        Assert.False(NativeZstd.DecompressStream(frame, 0, null, 27, out _, piece: 1), "a byte at a time");
+
+        Assert.Equal(OperationStatus.Done, new ZstdDecompressor().Decompress(frame, new byte[1], out _, out _));
+        (OperationStatus status, byte[] content, _) = Pieces.Decode(new ZstdDecoder(), frame, Pieces.Whole, Pieces.Whole);
+        Assert.Equal(OperationStatus.Done, status);
+        Assert.Empty(content);
+        var decoder = new ZstdDecoder();
+        (status, _, _) = Pieces.Decode(decoder, frame, Pieces.One, Pieces.One);
+        Assert.Equal(OperationStatus.InvalidData, status);
+        Assert.Equal(ZstdError.BlockTooLarge, decoder.LastError);
+    }
+
+    /// <summary>
+    /// A raw block that takes the content past its declared size, cut short: libzstd copies a raw
+    /// block out as it arrives, and refuses its part past the declared size at once, before the block
+    /// is whole. The decoder does likewise, however the stream arrives.
+    /// </summary>
+    [Fact]
+    public void A_raw_block_past_the_declared_size_is_refused_as_it_arrives()
+    {
+        byte[] content = DataKinds.Generate("incompressible", 105, 3);
+
+        // A single segment of 100 bytes, declared; a raw block of 60 (its header 60 << 3); the last, of
+        // 60 (60 << 3 | 1), cut after 45.
+        byte[] stream = [0x28, 0xB5, 0x2F, 0xFD, 0x20, 100, 0xE0, 0x01, 0, .. content.AsSpan(0, 60), 0xE1, 0x01, 0, .. content.AsSpan(60, 45)];
+        Assert.False(NativeZstd.DecompressStream(stream, 1 << 10, null, 27, out _), "whole");
+        Assert.False(NativeZstd.DecompressStream(stream, 1 << 10, null, 27, out _, piece: 1), "a byte at a time");
+
+        // Cut after 40 instead, which still fit: libzstd waits for the rest.
+        Assert.False(NativeZstd.DecompressStream(stream.AsSpan(0, stream.Length - 5), 1 << 10, null, 27, out byte[] waiting), "cut sooner");
+        Assert.Equal(100, waiting.Length);
+
+        foreach ((Func<int> source, Func<int> destination, string how) in new (Func<int>, Func<int>, string)[]
+        {
+            (Pieces.Whole, Pieces.Whole, "whole"),
+            (Pieces.One, Pieces.One, "one byte at a time"),
+        })
+        {
+            var decoder = new ZstdDecoder();
+            (OperationStatus status, _, _) = Pieces.Decode(decoder, stream, source, destination);
+            Assert.True(status == OperationStatus.InvalidData, $"{how}: {status}");
+            Assert.Equal(ZstdError.ContentSizeMismatch, decoder.LastError);
+
+            decoder = new ZstdDecoder();
+            (status, byte[] decoded, _) = Pieces.Decode(decoder, stream.AsSpan(0, stream.Length - 5), source, destination);
+            Assert.True(status == OperationStatus.NeedMoreData, $"{how}, cut sooner: {status}");
+            Assert.Equal(60, decoded.Length);
+        }
+    }
+
     [Fact]
     public void A_refusal_sticks_until_Reset()
     {
