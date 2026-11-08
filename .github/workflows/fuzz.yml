@@ -60,15 +60,8 @@ jobs:
             clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
           fi
 
-      # SharpFuzz instruments the published libraries in place: each branch they take reports to
-      # libFuzzer. The harness and the native oracles are not instrumented.
-      - name: Publish and instrument
-        run: |
-          set -euo pipefail
-          dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
-          dotnet tool restore
-          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Zstd.dll"
-          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Lz4.dll"
+      - name: Publish
+        run: dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -90,6 +83,16 @@ jobs:
             regressions=("fuzz/regressions/$TARGET")
           fi
           "$fuzz" replay "$TARGET" "corpus/$TARGET" ${regressions[@]+"${regressions[@]}"}
+
+      # SharpFuzz instruments the published libraries in place: each branch they take reports to
+      # libFuzzer, through memory libFuzzer sets up. Instrumented, they run under libFuzzer alone,
+      # hence the seeds and the replay before. The harness and the native oracles stay as they are.
+      - name: Instrument
+        run: |
+          set -euo pipefail
+          dotnet tool restore
+          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Zstd.dll"
+          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Lz4.dll"
 
       - name: Fuzz
         env:

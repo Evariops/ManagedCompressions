@@ -37,14 +37,17 @@ On Linux (or WSL), with the .NET SDK and clang:
 curl -fsSLO https://raw.githubusercontent.com/Metalnem/libfuzzer-dotnet/bd39d4e88d715ab460a929943645be2a186cde52/libfuzzer-dotnet.cc
 clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
 dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o out
+out/ManagedCompressions.Fuzz seed zstd-decompress corpus/zstd-decompress
 dotnet tool restore
 dotnet sharpfuzz out/ManagedCompressions.Zstd.dll
 dotnet sharpfuzz out/ManagedCompressions.Lz4.dll
-out/ManagedCompressions.Fuzz seed zstd-decompress corpus/zstd-decompress
 ./libfuzzer-dotnet --target_path=out/ManagedCompressions.Fuzz --target_arg=zstd-decompress -max_len=65536 corpus/zstd-decompress
 ```
 
-Without libFuzzer, on any system, the application runs inputs directly:
+The seeds come first: instrumented, the libraries report each branch to memory that libFuzzer sets up,
+and outside libFuzzer they fault on the first one.
+
+Without libFuzzer, on any system, an uninstrumented build runs inputs directly:
 
 ```sh
 ManagedCompressions.Fuzz list                                 # the targets
