@@ -29,8 +29,10 @@ public static unsafe class Lz4Block
 
     /// <summary>Decompresses <paramref name="source"/> into all of <paramref name="destination"/>.</summary>
     /// <exception cref="InvalidDataException">The block is corrupt, or does not decode to exactly the destination's length.</exception>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public static void Decompress(ReadOnlySpan<byte> source, Span<byte> destination)
     {
+        LittleEndian.Require();
         nint written;
         fixed (byte* src = source)
         fixed (byte* dst = destination)
@@ -53,8 +55,10 @@ public static unsafe class Lz4Block
     /// Decompresses <paramref name="source"/>, a whole block, into <paramref name="destination"/>;
     /// false when the block is corrupt or its content does not fit.
     /// </summary>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public static bool TryDecompress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
     {
+        LittleEndian.Require();
         nint written;
         fixed (byte* src = source)
         fixed (byte* dst = destination)

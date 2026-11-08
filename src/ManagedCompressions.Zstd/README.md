@@ -3,8 +3,8 @@
 Zstandard ([RFC 8878](https://www.rfc-editor.org/rfc/rfc8878)) compression and decompression for .NET,
 in fully managed C#.
 
-- It contains no native code: no bundled library and no P/Invoke, so it runs wherever .NET runs, and
-  it is compatible with trimming and Native AOT.
+- It contains no native code: no bundled library and no P/Invoke, so it runs wherever .NET runs on a
+  little-endian processor, and it is compatible with trimming and Native AOT.
 - It writes the same frames as libzstd. At every compression level, ManagedCompressions.Zstd writes
   exactly the bytes that libzstd 1.5.7 writes, with dictionaries, with long-distance matching and in
   multithreaded compression.
@@ -58,6 +58,10 @@ if (ZstdDecompressor.TryGetFrameContentSize(frame, out ulong size))
 After `NeedMoreData` or `DestinationTooSmall`, nothing has been consumed, so call again with the whole
 frame or a larger destination. Checksums are verified when a frame has one. A skippable frame decodes
 to nothing.
+
+The status says what to do next; `decompressor.LastError` says why, naming the check that refused the
+frame: `ZstdError.ChecksumMismatch`, `ZstdError.OffsetTooLarge`, `ZstdError.DictionaryMismatch`, and so
+on. It is `ZstdError.None` after a call that returns `Done`.
 
 ### Compression
 
@@ -150,6 +154,9 @@ The limitations are these:
 - Sources and frames must fit in a span, so they are limited to 2 GiB.
 - Compression takes a level, a dictionary and the checksum option. libzstd's advanced parameters, such
   as the window size or the strategy, are not exposed.
+- The processor must be little-endian: the codec reads the format's fields in the processor's byte
+  order. On a big-endian one (IBM Z), the constructors throw `PlatformNotSupportedException`. 32-bit
+  x86 has been checked by hand: it writes the same frames as x64. WebAssembly has not been tried.
 
 ## Performance
 
