@@ -197,7 +197,7 @@ internal sealed class FuzzCorpus
 
     private FuzzCorpus()
     {
-        // From the platform's encoder: every kind, small enough to mutate many times a second.
+        // From libzstd: every kind, small enough to mutate many times a second.
         foreach (string kind in DataKinds.All)
         {
             foreach ((int size, int level, string[] flags) in new (int, int, string[])[]

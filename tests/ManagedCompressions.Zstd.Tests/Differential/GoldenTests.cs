@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using ManagedCompressions.Zstd.Internal;
 using ManagedCompressions.Zstd.Tests.Support;
@@ -73,7 +72,7 @@ public sealed class GoldenTests
         byte[] data = TestData.Read(Path.Combine("golden-compression", file));
         foreach (int level in new[] { -7, -1, 1, 2, 3, 5, 7, 9, 12, 16, 19, 22 })
         {
-            byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = level });
+            byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level });
             AssertDecodes(new ZstdDecompressor(), frame, data, $"{file} L{level}");
         }
     }
@@ -89,10 +88,10 @@ public sealed class GoldenTests
         TestData.Require("golden-compression");
         byte[] dictionary = TestData.Read(Path.Combine("golden-dictionaries", "http-dict-missing-symbols"));
         byte[] data = TestData.Read(Path.Combine("golden-compression", "http"));
-        using var native = ZstandardDictionary.Create(dictionary);
+        using var native = NativeZstdDictionary.Create(dictionary);
         foreach (int level in new[] { 1, 3, 9, 19 })
         {
-            byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = level, Dictionary = native });
+            byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, Dictionary = native });
             AssertDecodes(new ZstdDecompressor(dictionary), frame, data, $"http L{level}");
         }
     }

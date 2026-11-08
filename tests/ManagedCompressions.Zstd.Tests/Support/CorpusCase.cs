@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Globalization;
-using System.IO.Compression;
 
 namespace ManagedCompressions.Zstd.Tests.Support;
 
@@ -44,14 +42,14 @@ internal sealed record CorpusCase(
 
     public byte[] Data => DataKinds.Generate(Kind, Size);
 
-    /// <summary>The dictionary bytes as the decoder receives them, and the platform's own object.</summary>
-    public (byte[] Bytes, ZstandardDictionary Native)? GetDictionary() => Dictionary is null ? null : Dictionaries.Get(Kind, Dictionary);
+    /// <summary>The dictionary bytes as the decoder receives them, and the oracle's own object.</summary>
+    public (byte[] Bytes, NativeZstdDictionary Native)? GetDictionary() => Dictionary is null ? null : Dictionaries.Get(Kind, Dictionary);
 
-    /// <summary>Compresses <see cref="Data"/> with the platform's libzstd.</summary>
+    /// <summary>Compresses <see cref="Data"/> with the oracle's libzstd.</summary>
     public byte[] Compress(byte[] data)
     {
-        var options = new ZstandardCompressionOptions { Quality = Level, AppendChecksum = Checksum };
-        if (WindowLog > 0) options.WindowLog2 = WindowLog;
+        var options = new NativeZstdOptions { Quality = Level, AppendChecksum = Checksum };
+        if (WindowLog > 0) options.WindowLog = WindowLog;
         if (LongDistance) options.EnableLongDistanceMatching = true;
         if (BlockSize > 0) options.TargetBlockSize = BlockSize;
         if (GetDictionary() is { } dictionary) options.Dictionary = dictionary.Native;
@@ -62,12 +60,12 @@ internal sealed record CorpusCase(
 /// <summary>Dictionaries per data kind, built once: trained on samples, or raw content.</summary>
 internal static class Dictionaries
 {
-    private static readonly ConcurrentDictionary<string, (byte[], ZstandardDictionary)> Cache = new();
+    private static readonly ConcurrentDictionary<string, (byte[], NativeZstdDictionary)> Cache = new();
 
-    public static (byte[] Bytes, ZstandardDictionary Native) Get(string kind, string type) =>
+    public static (byte[] Bytes, NativeZstdDictionary Native) Get(string kind, string type) =>
         Cache.GetOrAdd(kind + "/" + type, _ => Build(kind, type));
 
-    private static (byte[], ZstandardDictionary) Build(string kind, string type)
+    private static (byte[], NativeZstdDictionary) Build(string kind, string type)
     {
         switch (type)
         {
@@ -83,24 +81,20 @@ internal static class Dictionaries
                     lengths[i] = sampleSize;
                 }
 
-                try
+                if (NativeZstdDictionary.Train(samples, lengths, 16 * 1024) is { } trained)
                 {
-                    ZstandardDictionary trained = ZstandardDictionary.Train(samples, lengths, 16 * 1024);
-                    return (trained.Data.ToArray(), trained);
+                    return (trained.Bytes, trained);
                 }
-                catch (Exception)
-                {
-                    // Some kinds (zeros, noise) give the trainer nothing to learn: fall back on a
-                    // dictionary trained on text, which is still a valid zstd-format dictionary.
-                    return kind == "text" ? throw new InvalidOperationException("cannot train on text") : Get("text", "trained");
-                }
+
+                // Some kinds (zeros, noise) give the trainer nothing to learn: fall back on a
+                // dictionary trained on text, which is still a valid zstd-format dictionary.
+                return kind == "text" ? throw new InvalidOperationException("cannot train on text") : Get("text", "trained");
             }
 
             case "raw":
             {
                 byte[] raw = DataKinds.Generate(kind, 32 * 1024, 7);
-                ZstandardDictionary native = ZstandardDictionary.Create(raw);
-                return (raw, native);
+                return (raw, NativeZstdDictionary.Create(raw));
             }
 
             default:
@@ -109,54 +103,3 @@ internal static class Dictionaries
     }
 }
 
-/// <summary>The platform's libzstd, through System.IO.Compression: the oracle.</summary>
-internal static class NativeZstd
-{
-    public static byte[] Compress(ReadOnlySpan<byte> data, ZstandardCompressionOptions options, bool noContentSize = false)
-    {
-        using var encoder = new ZstandardEncoder(options);
-        byte[] output = new byte[data.Length + (data.Length >> 7) + 1024];
-        int total = 0;
-        if (noContentSize)
-        {
-            // Fed in chunks, the encoder cannot know the size when it writes the header.
-            const int chunk = 64 * 1024;
-            int offset = 0;
-            do
-            {
-                int length = Math.Min(chunk, data.Length - offset);
-                bool final = offset + length == data.Length;
-                var status = encoder.Compress(data.Slice(offset, length), output.AsSpan(total), out int consumed, out int written, final);
-                if (status != System.Buffers.OperationStatus.Done || consumed != length)
-                {
-                    throw new InvalidOperationException("compression failed: " + status);
-                }
-
-                total += written;
-                offset += length;
-            }
-            while (offset < data.Length);
-        }
-        else
-        {
-            var status = encoder.Compress(data, output, out int consumed, out int written, isFinalBlock: true);
-            if (status != System.Buffers.OperationStatus.Done || consumed != data.Length)
-            {
-                throw new InvalidOperationException("compression failed: " + status);
-            }
-
-            total = written;
-        }
-
-        return output.AsSpan(0, total).ToArray();
-    }
-
-    public static System.Buffers.OperationStatus Decompress(
-        ReadOnlySpan<byte> frame, Span<byte> destination, ZstandardDictionary? dictionary, out int consumed, out int written)
-    {
-        using var decoder = dictionary is null ? new ZstandardDecoder() : new ZstandardDecoder(dictionary);
-        return decoder.Decompress(frame, destination, out consumed, out written);
-    }
-
-    public static IEnumerable<string> Levels => ["-5", "-1", "1", "3", "9", "19", "22"];
-}

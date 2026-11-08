@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.IO.Compression;
 using System.Linq;
 using ManagedCompressions.Zstd.Internal;
 using ManagedCompressions.Zstd.Tests.Differential;
@@ -11,7 +10,7 @@ using Xunit;
 namespace ManagedCompressions.Zstd.Tests.Compression;
 
 /// <summary>
-/// Every case of the corpus is compressed by ManagedCompressions.Zstd and by the platform's libzstd. Wherever ManagedCompressions.Zstd
+/// Every case of the corpus is compressed by ManagedCompressions.Zstd and by libzstd. Wherever ManagedCompressions.Zstd
 /// implements the level's strategy, both frames must be the same bytes; whatever the level, ManagedCompressions.Zstd's
 /// frame must decode, with ManagedCompressions.Zstd and with libzstd, to the original. The corpus is
 /// split across classes so that xUnit runs them in parallel.
@@ -60,21 +59,11 @@ public static class CompressionCorpus
         CompressionParameters.LibzstdStrategy(level, size) <= CompressionParameters.StrongestImplemented;
 
     /// <summary>
-    /// The platform's frame: libzstd's <c>ZSTD_compress</c> at the level, with or without a checksum,
-    /// with or without its long-distance matcher asked for.
+    /// libzstd's frame, <c>ZSTD_compress2</c> at the level, with or without a checksum, with or
+    /// without its long-distance matcher asked for.
     /// </summary>
-    public static byte[] Libzstd(ReadOnlySpan<byte> data, int level, bool checksum, bool longDistance = false)
-    {
-        byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
-        using var encoder = new ZstandardEncoder(new ZstandardCompressionOptions
-        {
-            Quality = level, AppendChecksum = checksum, EnableLongDistanceMatching = longDistance,
-        });
-        OperationStatus status = encoder.Compress(data, output, out int consumed, out int written, isFinalBlock: true);
-        Assert.Equal(OperationStatus.Done, status);
-        Assert.Equal(data.Length, consumed);
-        return output.AsSpan(0, written).ToArray();
-    }
+    public static byte[] Libzstd(ReadOnlySpan<byte> data, int level, bool checksum, bool longDistance = false) =>
+        NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, AppendChecksum = checksum, EnableLongDistanceMatching = longDistance });
 
     /// <summary>
     /// Compresses the case both ways and checks what the API promises about it. Wherever the level is
