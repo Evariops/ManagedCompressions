@@ -248,6 +248,11 @@ strategy).
   Windows 11 (build 26200). Both run .NET 11.0.0-rc.1, on one thread. On Windows the benchmarks run at a
   high priority, and the level-by-level one keeps its timed thread on one logical processor
   (`--core 2`), as macOS keeps it on a performance core.
+- **.NET 10:** the figures are .NET 11's, and .NET 10 runs the managed codecs at the same speed. On the
+  Ryzen 9 7950X, at levels 1, 3 and 9 of every level-by-level workload, its speed against the native
+  side is 0.99 of .NET 11's on average, and no case is more than 8 % slower
+  ([`bench/results/x64/dotnet10`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/dotnet10/README.md)).
+  The arm64 machine has yet to measure it.
 - **Native side:** NativeCompressions 1.1.0, which ships zstd 1.5.7 and lz4 1.10.0 built at `-O3`. On
   arm64, its libzstd decompresses at the speed of the one .NET ships. A libzstd built from source with
   Apple clang 21 decompresses some 20 % faster: against that one, Zstandard decompression is 1.11–1.21×
