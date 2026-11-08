@@ -269,9 +269,10 @@ artifacts/perf/ManagedCompressions.Zstd.Perf --core 2 --corpus silesia,github,gi
 
 Correctness is checked against libzstd itself:
 
-- Differential tests against the libzstd of .NET's `System.IO.Compression`: ManagedCompressions.Zstd
-  must give back the content libzstd decodes, and write libzstd's compressed frames byte for byte, with
-  and without dictionaries.
+- Differential tests against libzstd 1.5.7 as NativeCompressions ships it, the same library on every
+  .NET the tests run on: ManagedCompressions.Zstd must give back the content libzstd decodes, and write
+  libzstd's compressed frames byte for byte, with and without dictionaries. On .NET 11, that library
+  is checked to write the same frames as the libzstd of `System.IO.Compression`.
 - zstd's golden files, for decompression, decompression errors and dictionaries.
 - A decodecorpus corpus: random valid frames from zstd's own generator. They exercise the modes an
   encoder rarely emits, such as RLE and repeated tables, treeless literals and direct Huffman weights.

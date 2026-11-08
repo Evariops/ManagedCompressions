@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.IO.Compression;
 using ManagedCompressions.Zstd.Tests.Support;
 using Xunit;
 
@@ -8,8 +7,8 @@ namespace ManagedCompressions.Zstd.Tests.Compression;
 
 /// <summary>
 /// The experimental features (<see cref="ZstdExperimentalOptions"/>): their frames are not libzstd's,
-/// so the guarantee is the format's. Every frame must decode back to its content with libzstd (the
-/// platform's decoder) and with this library's, frame after frame on one compressor, at every level
+/// so the guarantee is the format's. Every frame must decode back to its content with libzstd's
+/// streaming decoder and with this library's, frame after frame on one compressor, at every level
 /// and size the feature changes, and on sizes around its edges.
 /// </summary>
 public sealed class ExperimentalCompressionTests
@@ -94,20 +93,17 @@ public sealed class ExperimentalCompressionTests
     }
 
     /// <summary>
-    /// A frame both decoders must take whole and give back as <paramref name="content"/>: libzstd
-    /// through the platform's decoder, and <see cref="ZstdDecompressor"/>.
+    /// A frame both decoders must take whole and give back as <paramref name="content"/>: libzstd's
+    /// streaming decoder, and <see cref="ZstdDecompressor"/>.
     /// </summary>
     internal static void AssertDecodes(byte[] content, ReadOnlySpan<byte> frame, string what)
     {
-        // A byte of room more: the platform's decoder reports an empty destination too small, even for an empty frame.
+        // A byte of room more, which a streaming decoder may want even for an empty frame.
         byte[] decoded = new byte[content.Length + 1];
-        using (var platform = new ZstandardDecoder())
-        {
-            OperationStatus status = platform.Decompress(frame, decoded, out int consumed, out int written);
-            Assert.True(
-                status == OperationStatus.Done && consumed == frame.Length && written == content.Length && decoded.AsSpan(0, written).SequenceEqual(content),
-                $"{what}: libzstd gives {status}, {consumed} of {frame.Length} bytes read, {written} of {content.Length} written");
-        }
+        OperationStatus status = NativeZstd.Decompress(frame, decoded, null, out int consumed, out int written);
+        Assert.True(
+            status == OperationStatus.Done && consumed == frame.Length && written == content.Length && decoded.AsSpan(0, written).SequenceEqual(content),
+            $"{what}: libzstd gives {status}, {consumed} of {frame.Length} bytes read, {written} of {content.Length} written");
 
         decoded = new byte[content.Length];
         OperationStatus own = new ZstdDecompressor().Decompress(frame, decoded, out int ownConsumed, out int ownWritten);

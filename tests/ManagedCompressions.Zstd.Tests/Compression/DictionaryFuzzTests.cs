@@ -2,7 +2,6 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO.Compression;
 using ManagedCompressions.Zstd.Tests.Differential;
 using ManagedCompressions.Zstd.Tests.Support;
 using Xunit;
@@ -15,7 +14,7 @@ namespace ManagedCompressions.Zstd.Tests.Compression;
 /// themselves, of sizes around the points where a frame changes the way it takes the dictionary
 /// (attached up to 8 to 32 KiB, its tables copied below 128 KiB or six times its size, loaded beyond).
 /// The compressors are reused from frame to frame, whatever way the last one took; the sources lie
-/// against inaccessible pages. Every frame must be the platform's, given the dictionary prepared at
+/// against inaccessible pages. Every frame must be libzstd's, given the dictionary prepared at
 /// the same level, and decode to its content. A third of the optimal parsers' frames are made with
 /// the long-distance matcher asked for.
 /// </summary>
@@ -49,7 +48,7 @@ public sealed class DictionaryFuzzTests
             dictionaries.Add(Generate(random, size, null));
         }
 
-        var compressors = new Dictionary<(int, int, bool), (ZstdCompressor Zstd, ZstandardDictionary Native)>();
+        var compressors = new Dictionary<(int, int, bool), (ZstdCompressor Zstd, NativeZstdDictionary Native)>();
         using var source = new GuardedBuffer(1 << 20);
         try
         {
@@ -80,7 +79,7 @@ public sealed class DictionaryFuzzTests
 
                 if (!compressors.TryGetValue((index, level, longDistance), out var pair))
                 {
-                    pair = (new ZstdCompressor(level, dictionary) { LongDistanceMatching = longDistance }, ZstandardDictionary.Create(dictionary, level));
+                    pair = (new ZstdCompressor(level, dictionary) { LongDistanceMatching = longDistance }, NativeZstdDictionary.Create(dictionary, level));
                     compressors.Add((index, level, longDistance), pair);
                 }
 
@@ -89,7 +88,7 @@ public sealed class DictionaryFuzzTests
                 byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(size)];
                 Assert.True(pair.Zstd.Compress(src, output, out int consumed, out int written) == OperationStatus.Done, name);
                 Assert.Equal(size, consumed);
-                byte[] expected = NativeZstd.Compress(data, new ZstandardCompressionOptions { Dictionary = pair.Native, EnableLongDistanceMatching = longDistance });
+                byte[] expected = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = pair.Native, EnableLongDistanceMatching = longDistance });
                 Corpus.AssertSameBytes(expected, output.AsSpan(0, written), name);
 
                 byte[] decoded = new byte[size];
@@ -99,7 +98,7 @@ public sealed class DictionaryFuzzTests
         }
         finally
         {
-            foreach ((_, ZstandardDictionary native) in compressors.Values)
+            foreach ((_, NativeZstdDictionary native) in compressors.Values)
             {
                 native.Dispose();
             }

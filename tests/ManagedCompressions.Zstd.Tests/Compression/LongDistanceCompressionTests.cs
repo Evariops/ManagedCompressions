@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.Globalization;
-using System.IO.Compression;
 using System.Threading.Tasks;
 using ManagedCompressions.Zstd.Internal;
 using ManagedCompressions.Zstd.Tests.Differential;
@@ -99,8 +98,8 @@ public sealed class LongDistanceCompressionTests
         CorpusCase @case = CorpusCase.Parse(name);
         (byte[] dictionary, _) = Dictionaries.Get(FarRepeats.Content(@case.Kind), @case.Dictionary!);
         byte[] data = FarRepeats.Generate(@case.Kind, @case.Size, dictionary);
-        using ZstandardDictionary native = ZstandardDictionary.Create(dictionary, @case.Level);
-        byte[] expected = NativeZstd.Compress(data, new ZstandardCompressionOptions { Dictionary = native, EnableLongDistanceMatching = true });
+        using NativeZstdDictionary native = NativeZstdDictionary.Create(dictionary, @case.Level);
+        byte[] expected = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = native, EnableLongDistanceMatching = true });
 
         var compressor = new ZstdCompressor(@case.Level, dictionary) { LongDistanceMatching = true };
         byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
@@ -139,8 +138,8 @@ public sealed class LongDistanceCompressionTests
         dictionary.AsSpan(dictionary.Length - 24).CopyTo(data.AsSpan(1_000_000));
         head.CopyTo(data.AsSpan(1_000_000 + 24));
 
-        using ZstandardDictionary native = ZstandardDictionary.Create(dictionary, level);
-        byte[] expected = NativeZstd.Compress(data, new ZstandardCompressionOptions { Dictionary = native, EnableLongDistanceMatching = true });
+        using NativeZstdDictionary native = NativeZstdDictionary.Create(dictionary, level);
+        byte[] expected = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = native, EnableLongDistanceMatching = true });
         var compressor = new ZstdCompressor(level, dictionary) { LongDistanceMatching = true };
         byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
         Assert.Equal(OperationStatus.Done, compressor.Compress(data, output, out _, out int written));
@@ -161,9 +160,9 @@ public sealed class LongDistanceCompressionTests
             byte[] data = FarRepeats.Generate(kind, DictionarySizes[^1], dictionary);
             foreach (int level in Levels)
             {
-                using ZstandardDictionary native = ZstandardDictionary.Create(dictionary, level);
-                byte[] with = NativeZstd.Compress(data, new ZstandardCompressionOptions { Dictionary = native, EnableLongDistanceMatching = true });
-                byte[] without = NativeZstd.Compress(data, new ZstandardCompressionOptions { Dictionary = native });
+                using NativeZstdDictionary native = NativeZstdDictionary.Create(dictionary, level);
+                byte[] with = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = native, EnableLongDistanceMatching = true });
+                byte[] without = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = native });
                 changed += with.AsSpan().SequenceEqual(without) ? 0 : 1;
             }
         }
@@ -220,8 +219,8 @@ public sealed class LongDistanceCompressionTests
         Assert.True(LongDistanceMatcher.EnabledFor(CompressionParameters.ForFrame(22, Size, dictionary.Length, attached: false)));
 
         byte[] data = FarRepeats.Generate("far-walk64", Size, dictionary);
-        using ZstandardDictionary native = ZstandardDictionary.Create(dictionary, 22);
-        byte[] expected = NativeZstd.Compress(data, new ZstandardCompressionOptions { Dictionary = native });
+        using NativeZstdDictionary native = NativeZstdDictionary.Create(dictionary, 22);
+        byte[] expected = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = native });
         byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
         Assert.Equal(OperationStatus.Done, new ZstdCompressor(22, dictionary).Compress(data, output, out _, out int written));
         Corpus.AssertSameBytes(expected, output.AsSpan(0, written), "far-walk64/" + Size + "/L22/dict=raw");
@@ -304,15 +303,9 @@ public sealed class LongDistanceCompressionTests
         Corpus.AssertSameBytes(expected, output.AsSpan(0, written), "far-walk64/" + Size + "/L22 in jobs");
     }
 
-    /// <summary>The platform's frame, with or without its long-distance matcher.</summary>
-    private static byte[] Libzstd(ReadOnlySpan<byte> data, int level, bool longDistance)
-    {
-        byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
-        using var encoder = new ZstandardEncoder(new ZstandardCompressionOptions { Quality = level, EnableLongDistanceMatching = longDistance });
-        Assert.Equal(OperationStatus.Done, encoder.Compress(data, output, out int consumed, out int written, isFinalBlock: true));
-        Assert.Equal(data.Length, consumed);
-        return output.AsSpan(0, written).ToArray();
-    }
+    /// <summary>libzstd's frame, with its long-distance matcher asked for or left to libzstd.</summary>
+    private static byte[] Libzstd(ReadOnlySpan<byte> data, int level, bool longDistance) =>
+        NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, EnableLongDistanceMatching = longDistance });
 
     /// <summary>
     /// Sources whose matches lie far back and run long: copies of a stretch of content, slightly edited,

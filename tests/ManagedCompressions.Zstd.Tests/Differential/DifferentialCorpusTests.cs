@@ -8,7 +8,7 @@ using Xunit;
 namespace ManagedCompressions.Zstd.Tests.Differential;
 
 /// <summary>
-/// Every frame of the corpus is decoded by ManagedCompressions.Zstd and by the platform's libzstd, and
+/// Every frame of the corpus is decoded by ManagedCompressions.Zstd and by libzstd, and
 /// both must give back the original bytes. The corpus is split across classes so that xUnit runs them in
 /// parallel. Frames across the block boundaries are the compression corpus's, which makes libzstd's own
 /// and decodes them; the frames of several blocks here are the large ones and the encoder options'.
@@ -104,16 +104,16 @@ public static class Corpus
         CorpusCase @case = CorpusCase.Parse(name);
         byte[] data = @case.Data;
         byte[] frame = @case.Compress(data);
-        (byte[] Bytes, System.IO.Compression.ZstandardDictionary Native)? dictionary = @case.GetDictionary();
+        (byte[] Bytes, NativeZstdDictionary Native)? dictionary = @case.GetDictionary();
 
         // The oracle first: a failure here is the corpus's, not the decoder's. Its destination is
-        // never empty, which the platform's decoder refuses even for an empty frame.
+        // never empty, which a streaming decoder may refuse even for an empty frame.
         byte[] native = new byte[Math.Max(1, data.Length)];
         OperationStatus nativeStatus = NativeZstd.Decompress(frame, native, dictionary?.Native, out int nativeConsumed, out int nativeWritten);
         Assert.Equal(OperationStatus.Done, nativeStatus);
         Assert.Equal(frame.Length, nativeConsumed);
         Assert.Equal(data.Length, nativeWritten);
-        Assert.True(data.AsSpan().SequenceEqual(native.AsSpan(0, nativeWritten)), "the platform's libzstd does not round-trip " + name);
+        Assert.True(data.AsSpan().SequenceEqual(native.AsSpan(0, nativeWritten)), "libzstd does not round-trip " + name);
 
         ZstdDecompressor decoder = dictionary is null ? new ZstdDecompressor() : new ZstdDecompressor(dictionary.Value.Bytes);
 
