@@ -7,6 +7,9 @@
     <Project Path="tests/ManagedCompressions.Zstd.Tests/ManagedCompressions.Zstd.Tests.csproj" />
     <Project Path="tests/ManagedCompressions.Lz4.Tests/ManagedCompressions.Lz4.Tests.csproj" />
   </Folder>
+  <Folder Name="/fuzz/">
+    <Project Path="fuzz/ManagedCompressions.Fuzz/ManagedCompressions.Fuzz.csproj" />
+  </Folder>
   <Folder Name="/bench/">
     <Project Path="bench/ManagedCompressions.Bench/ManagedCompressions.Bench.csproj" />
     <Project Path="bench/ManagedCompressions.Benchmarks/ManagedCompressions.Benchmarks.csproj" />

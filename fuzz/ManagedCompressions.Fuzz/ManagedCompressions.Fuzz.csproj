@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Coverage-guided fuzzing of both libraries: libFuzzer drives it through SharpFuzz, which
+       instruments the libraries' assemblies after publish (see README.md). The oracles are the native
+       libraries NativeCompressions ships, zstd 1.5.7 and lz4 1.10.0, the tests' own. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.Fuzz</RootNamespace>
+    <AssemblyName>ManagedCompressions.Fuzz</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpFuzz" />
+    <PackageReference Include="NativeCompressions.Zstandard" />
+    <PackageReference Include="NativeCompressions.LZ4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
+    <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+    <Compile Include="../../tests/ManagedCompressions.Zstd.Tests/Support/GuardedBuffer.cs" LinkBase="Shared" />
+    <Compile Include="../../tests/ManagedCompressions.Zstd.Tests/Support/DataKinds.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+</Project>
