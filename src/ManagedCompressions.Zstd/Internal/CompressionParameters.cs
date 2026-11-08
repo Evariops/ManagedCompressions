@@ -211,11 +211,19 @@ internal struct CompressionParameters
     /// <param name="longDistanceMatching">Whether the long-distance matcher is asked for, as in <see cref="ForFrame(int, long, bool, int)"/>.</param>
     /// <param name="windowLog">The window asked for, as in <see cref="ForFrame(int, long, bool, int)"/>.</param>
     public static CompressionParameters ForFrame(
-        int level, long sourceSize, long dictionarySize, bool attached, bool longDistanceMatching = false, int windowLog = 0)
+        int level, long sourceSize, long dictionarySize, bool attached, bool longDistanceMatching = false, int windowLog = 0) =>
+        ForStream(level, (ulong)sourceSize, (ulong)dictionarySize, attached, longDistanceMatching, windowLog);
+
+    /// <summary>
+    /// <see cref="ForFrame(int, long, long, bool, bool, int)"/> for a frame whose size may be unknown
+    /// (<see cref="UnknownSize"/>), as <c>ZSTD_CCtx_init_compressStream2</c> asks for it.
+    /// </summary>
+    public static CompressionParameters ForStream(
+        int level, ulong pledgedSize, ulong dictionarySize, bool attached, bool longDistanceMatching = false, int windowLog = 0)
     {
         ParameterMode mode = attached ? ParameterMode.AttachedDictionary : ParameterMode.Frame;
-        CompressionParameters parameters = Select(level, (ulong)sourceSize, (ulong)dictionarySize, mode);
-        Override(ref parameters, (ulong)sourceSize, (ulong)dictionarySize, mode, longDistanceMatching, windowLog);
+        CompressionParameters parameters = Select(level, pledgedSize, dictionarySize, mode);
+        Override(ref parameters, pledgedSize, dictionarySize, mode, longDistanceMatching, windowLog);
         return parameters;
     }
 
@@ -270,10 +278,14 @@ internal struct CompressionParameters
     /// libzstd's <c>ZSTD_resetCCtx_byAttachingCDict</c>: a prepared dictionary's parameters fitted to a
     /// source alone (the dictionary keeps its own tables), the window the frame's.
     /// </summary>
-    public readonly CompressionParameters ForAttachedSource(long sourceSize, long dictionarySize, int windowLog)
+    public readonly CompressionParameters ForAttachedSource(long sourceSize, long dictionarySize, int windowLog) =>
+        ForAttachedSource((ulong)sourceSize, (ulong)dictionarySize, windowLog);
+
+    /// <summary><see cref="ForAttachedSource(long, long, int)"/> for a source whose size may be unknown (<see cref="UnknownSize"/>).</summary>
+    public readonly CompressionParameters ForAttachedSource(ulong sourceSize, ulong dictionarySize, int windowLog)
     {
         CompressionParameters parameters = this;
-        parameters.Adjust((ulong)sourceSize, (ulong)dictionarySize, ParameterMode.AttachedDictionary);
+        parameters.Adjust(sourceSize, dictionarySize, ParameterMode.AttachedDictionary);
         return parameters.WithWindow(windowLog) with { RowMatchFinder = UsesRowMatchFinder ? (sbyte)1 : (sbyte)-1 };
     }
 

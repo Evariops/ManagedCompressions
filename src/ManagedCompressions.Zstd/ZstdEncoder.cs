@@ -29,8 +29,9 @@ namespace ManagedCompressions.Zstd;
 /// <para>
 /// The long-distance matcher runs as libzstd runs it: on at level 22 for a stream of unknown size,
 /// whose window is then 2^27 bytes, or when <see cref="ZstdCompressionOptions.LongDistanceMatching"/>
-/// asks for it. Not yet streamed: dictionaries, and frames past 3500 MiB, where libzstd corrects its
-/// indices. Those throw <see cref="NotSupportedException"/>.
+/// asks for it. A dictionary is used as libzstd uses it, decided by the size pledged: a stream of
+/// unknown size attaches it. Not yet streamed: frames past 3500 MiB, where libzstd corrects its
+/// indices, which throw <see cref="NotSupportedException"/>.
 /// </para>
 /// </remarks>
 public sealed unsafe class ZstdEncoder
@@ -91,19 +92,19 @@ public sealed unsafe class ZstdEncoder
     {
     }
 
-    /// <summary>Creates an encoder with <paramref name="options"/>.</summary>
+    /// <summary>
+    /// Creates an encoder with <paramref name="options"/>. A dictionary is prepared once, here, at the
+    /// level, as <see cref="ZstdCompressor"/> prepares it; its frames are those libzstd streams with the
+    /// dictionary prepared alike (<c>ZSTD_createCDict</c>, then <c>ZSTD_CCtx_refCDict</c>).
+    /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentException">Experimental features asked for with a dictionary.</exception>
     /// <exception cref="ArgumentOutOfRangeException">An experimental feature is unknown.</exception>
-    /// <exception cref="NotSupportedException">A dictionary asked for.</exception>
+    /// <exception cref="System.IO.InvalidDataException">A zstd-format dictionary whose tables are invalid.</exception>
     /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdEncoder(ZstdCompressionOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (!options.Dictionary.IsEmpty)
-        {
-            throw new NotSupportedException("ZstdEncoder does not compress with a dictionary yet.");
-        }
-
         _compressor = new ZstdCompressor(options);
     }
 

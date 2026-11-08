@@ -29,6 +29,7 @@ public sealed unsafe partial class ZstdCompressor
     private StreamStage _streamStage;
     private bool _streamWindowStarted;
     private bool _streamLongDistance;
+    private DictionaryFramePlan _streamPlan;
 
     /// <summary>libzstd's <c>window.nextSrc</c>: where the last chunk ended, to tell whether the next one follows it.</summary>
     private byte* _streamNextSource;
@@ -54,24 +55,30 @@ public sealed unsafe partial class ZstdCompressor
     /// <param name="pledgedSize">The content's size, as pledged; <see cref="CompressionParameters.UnknownSize"/> if it is not.</param>
     /// <param name="blockSizeMax">libzstd's <c>blockSizeMax</c>: the largest block, and the chunk the input buffer hands over.</param>
     /// <param name="windowSize">The window: the size the input buffer keeps, besides a block.</param>
-    /// <exception cref="NotSupportedException">
-    /// The frame needs a dictionary, or the long-distance matcher is asked for below the optimal parsers.
-    /// </exception>
+    /// <exception cref="NotSupportedException">The long-distance matcher is asked for below the optimal parsers.</exception>
     internal void BeginStream(ulong pledgedSize, out int blockSizeMax, out long windowSize)
     {
-        if (_dictionary is not null)
+        CompressionParameters parameters;
+        if (_dictionary is null)
         {
-            throw new NotSupportedException("ZstdEncoder does not compress with a dictionary yet.");
-        }
+            parameters = CompressionParameters.ForStream(Level, pledgedSize, LongDistanceMatching, _windowLog);
+            if (LongDistanceMatching && parameters.Strategy < Strategy.BinaryTreeOptimal)
+            {
+                throw new NotSupportedException("Long-distance matching is implemented for the optimal parsers only.");
+            }
 
-        CompressionParameters parameters = CompressionParameters.ForStream(Level, pledgedSize, LongDistanceMatching, _windowLog);
-        if (LongDistanceMatching && parameters.Strategy < Strategy.BinaryTreeOptimal)
+            _streamLongDistance = UsesLongDistanceMatcher(parameters);
+        }
+        else
         {
-            throw new NotSupportedException("Long-distance matching is implemented for the optimal parsers only.");
+            // As a one-shot frame decides it, from the pledged size: a stream of unknown size attaches
+            // the dictionary, with the parameters of a source of unknown size.
+            _streamPlan = PlanDictionaryFrame(pledgedSize, inJob: false);
+            parameters = _streamPlan.Frame;
+            _streamLongDistance = _streamPlan.LongDistance;
         }
 
         _streamParameters = parameters;
-        _streamLongDistance = UsesLongDistanceMatcher(parameters);
         windowSize = (long)Math.Max(1, Math.Min(1UL << parameters.WindowLog, pledgedSize));
         blockSizeMax = (int)Math.Min(FrameFormat.MaxBlockSize, windowSize);
         _streamBlockSizeMax = blockSizeMax;
@@ -107,7 +114,7 @@ public sealed unsafe partial class ZstdCompressor
         {
             bool contentSize = _writeContentSize && _streamPledged != CompressionParameters.UnknownSize;
             headerSize = WriteFrameHeader(
-                destination, _streamParameters.WindowLog, _streamPledged, AppendChecksum, 0, contentSize, _writeDictionaryId);
+                destination, _streamParameters.WindowLog, _streamPledged, AppendChecksum, _dictionary?.Id ?? 0, contentSize, _writeDictionaryId);
             _streamStage = StreamStage.Ongoing;
         }
 
@@ -116,7 +123,15 @@ public sealed unsafe partial class ZstdCompressor
         {
             if (!_streamWindowStarted)
             {
-                BeginFrame(_streamParameters, source, 0, _streamLongDistance, stream: true);
+                if (_dictionary is null)
+                {
+                    BeginFrame(_streamParameters, source, 0, _streamLongDistance, stream: true);
+                }
+                else
+                {
+                    BeginDictionaryFrame(_streamPlan, source, 0, stream: true);
+                }
+
                 _streamNextSource = source;
                 _streamWindowStarted = true;
             }
@@ -126,6 +141,7 @@ public sealed unsafe partial class ZstdCompressor
             {
                 _longDistanceMatcher!.UpdateWindow(source, (nuint)size);
             }
+
             if ((ulong)(_streamNextSource - _matchState.Base) > CurrentMax)
             {
                 throw new NotSupportedException(

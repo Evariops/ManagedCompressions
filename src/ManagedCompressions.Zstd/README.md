@@ -163,8 +163,9 @@ and 128 KiB at the default level, 128 MiB at level 22, where libzstd also turns 
 on. A first call that is final, with room for `GetMaxCompressedLength` of its source, writes the one-shot
 frame. Once a frame ends, the next call starts another.
 
-Not streamed yet: dictionaries, and frames whose indices would pass 3500 MiB, which libzstd corrects
-(`ZSTD_reduceIndex`). Both throw `NotSupportedException`.
+A dictionary in the options is used as libzstd uses a prepared one, decided by the size pledged: a
+stream of unknown size attaches it. Not streamed yet: frames whose indices would pass 3500 MiB, which
+libzstd corrects (`ZSTD_reduceIndex`), and which throw `NotSupportedException`.
 
 `ZstdStream` writes Zstandard into another stream through a `ZstdEncoder`, as System.IO.Compression's
 `ZstandardStream` does, and writes the same bytes for the same writes and flushes:
@@ -260,8 +261,8 @@ var compressor = new ZstdCompressor(level: 3, ZstdExperimentalOptions.EntropyAwa
 
 The limitations are these:
 
-- Streaming compression (`ZstdEncoder`) takes no dictionary yet, and stops at 3500 MiB of indices in a
-  frame.
+- Streaming compression (`ZstdEncoder`) stops at 3500 MiB of indices in a frame, where libzstd
+  corrects them.
 - `ZstdCompressor`'s sources, and the frames `ZstdDecompressor` decodes, must fit in a span, so they are
   limited to 2 GiB. `ZstdEncoder` and `ZstdDecoder` have no such limit.
 - Compression takes the level, the window, the long-distance matcher, the checksum, the header's flags
