@@ -24,6 +24,7 @@ internal static class Targets
     public static readonly Target[] All =
     [
         new("zstd-decompress", "[flags][frame]", ZstdTargets.Decompress, ZstdTargets.DecompressSeeds),
+        new("zstd-stream-decompress", "[flags][seed][stream]", ZstdTargets.DecompressStream, ZstdTargets.DecompressStreamSeeds),
         new("zstd-compress", "[level][flags][content]", ZstdTargets.Compress, ZstdTargets.CompressSeeds),
         new("lz4-decompress", "[capacity, 3 bytes][block]", Lz4Targets.Decompress, Lz4Targets.DecompressSeeds),
         new("lz4-compress", "[level][content]", Lz4Targets.Compress, Lz4Targets.CompressSeeds),
@@ -55,6 +56,31 @@ internal static unsafe class ZstdTargets
     private static readonly ZSTD_DDict_s* NativeDictionary = Native.ZstdDecompressionDictionary(Dictionary);
     private static readonly Dictionary<(int Level, bool Dictionary), ZstdCompressor> Compressors = [];
     private static readonly Dictionary<int, nint> NativeCompressionDictionaries = [];
+
+    /// <summary>The window limit of the streaming decoders that bit 5 of the stream target's flags picks.</summary>
+    private const int LowWindowLog = 20;
+
+    /// <summary>
+    /// The streaming decoders, without and with the dictionary, at the default window limit and at
+    /// <see cref="LowWindowLog"/>: reused from input to input, after <see cref="ZstdDecoder.Reset"/>, as
+    /// an application reuses them.
+    /// </summary>
+    private static readonly ZstdDecoder[] StreamDecoders =
+    [
+        new(),
+        new(Dictionary),
+        new(new ZstdDecompressionOptions { MaxWindowLog = LowWindowLog }),
+        new(new ZstdDecompressionOptions { MaxWindowLog = LowWindowLog, Dictionary = Dictionary }),
+    ];
+
+    /// <summary>The content the streaming decoder writes, gathered from its destinations.</summary>
+    private static readonly byte[] Content = new byte[MaxContent];
+
+    /// <summary>What libzstd one-shot decodes of a frame the streaming decoder refuses.</summary>
+    private static readonly byte[] OneShot = new byte[MaxContent];
+
+    /// <summary>A skippable frame of three bytes, between the frames of some stream seeds.</summary>
+    private static readonly byte[] SkippableFrame = [0x50, 0x2A, 0x4D, 0x18, 3, 0, 0, 0, 1, 2, 3];
 
     /// <summary>
     /// <c>[flags][frame]</c>. Flags: bit 0, the dictionary; bits 1 and 2, the destination: the declared
@@ -176,6 +202,177 @@ internal static unsafe class ZstdTargets
     }
 
     /// <summary>
+    /// <c>[flags][seed][stream]</c>: the stream through <see cref="ZstdDecoder"/>, in pieces, into
+    /// destinations, of the sizes <c>seed</c> draws, each against the upper or the lower guard page as
+    /// it draws too. Flags: bit 0, the dictionary; bits 1 and 2, the pieces: the rest of the stream,
+    /// one byte, up to 31 bytes, or mostly a few KiB; bits 3 and 4, the destinations alike; bit 5, a
+    /// window limit of 2^<see cref="LowWindowLog"/> bytes rather than the default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each call must keep to its spans, take its whole source when it asks for more, fill its
+    /// destination when it is too small, and make progress when it can. The verdict is then
+    /// libzstd's streaming decoder's, handed the whole stream (<see cref="Native.ZstdDecompressStream"/>):
+    /// a stream the decoder decodes, libzstd decodes to the same bytes; a stream it finds cut short,
+    /// libzstd finds cut short; a stream it refuses, libzstd refuses, but for the one-shot target's
+    /// exceptions, and for a window over the limit: libzstd decodes such a frame in one pass where a
+    /// call holds the whole frame and room for its declared content, as the whole stream does and
+    /// the pieces seldom do. Where the decoder stops short of libzstd, what it wrote is the start of
+    /// libzstd's content.
+    /// </para>
+    /// <para>
+    /// The content is compared up to <c>MaxContent</c> bytes: a stream that holds more is left there.
+    /// </para>
+    /// </remarks>
+    public static void DecompressStream(ReadOnlySpan<byte> input)
+    {
+        if (input.Length < 2)
+        {
+            return;
+        }
+
+        int flags = input[0];
+        var random = new Random(input[1]);
+        ReadOnlySpan<byte> stream = input[2..];
+        bool dictionary = (flags & 1) != 0;
+        bool limited = (flags & 0x20) != 0;
+        ZstdDecoder decoder = StreamDecoders[(dictionary ? 1 : 0) + (limited ? 2 : 0)];
+        decoder.Reset();
+
+        int at = 0;
+        int total = 0;
+        int frameStart = 0;
+        int stalls = 0;
+        OperationStatus status;
+        while (true)
+        {
+            int take = Math.Min(Draw((flags >> 1) & 3, random), stream.Length - at);
+            int room = Math.Min(Draw((flags >> 3) & 3, random), MaxContent - total);
+            Span<byte> src = random.Next(2) == 0 ? Source.AtEnd(take) : Source.AtStart(take);
+            stream.Slice(at, take).CopyTo(src);
+            Span<byte> dst = random.Next(2) == 0 ? Destination.AtEnd(room) : Destination.AtStart(room);
+            status = decoder.Decompress(src, dst, out int consumed, out int written);
+            if (consumed < 0 || consumed > take || written < 0 || written > room)
+            {
+                throw new FuzzFailure($"{status}: {consumed} bytes consumed of {take}, {written} written into {room}");
+            }
+
+            dst[..written].CopyTo(Content.AsSpan(total));
+            total += written;
+            at += consumed;
+            if (status == OperationStatus.InvalidData)
+            {
+                break;
+            }
+
+            if (status == OperationStatus.Done)
+            {
+                frameStart = at;
+                if (at == stream.Length)
+                {
+                    break;
+                }
+            }
+            else if (status == OperationStatus.NeedMoreData)
+            {
+                if (consumed != take)
+                {
+                    throw new FuzzFailure($"asks for more data with {take - consumed} bytes left in its source");
+                }
+
+                if (at == stream.Length)
+                {
+                    break;
+                }
+            }
+            else if (written != room)
+            {
+                throw new FuzzFailure($"destination too small with {room - written} bytes left in it");
+            }
+            else if (total == MaxContent)
+            {
+                return;
+            }
+
+            // A call with bytes to take and room to fill must do something with them.
+            stalls = consumed == 0 && written == 0 && take > 0 && room > 0 ? stalls + 1 : 0;
+            if (stalls > 1)
+            {
+                throw new FuzzFailure($"{status}: no progress at byte {at} of {stream.Length}");
+            }
+        }
+
+        int windowLogMax = limited ? LowWindowLog : ZstdDecompressionOptions.DefaultMaxWindowLog;
+        Native.StreamEnd theirs = Native.ZstdDecompressStream(stream, Expected, dictionary ? NativeDictionary : null, windowLogMax, out int expected);
+        bool same = total <= expected && Expected.AsSpan(0, total).SequenceEqual(Content.AsSpan(0, total));
+        string verdict = $"{status} ({decoder.LastError}) at byte {at} of {stream.Length}, {total} bytes written; libzstd: {theirs}, {expected} bytes";
+        switch (status)
+        {
+            case OperationStatus.Done:
+                if (theirs != Native.StreamEnd.Decoded || expected != total || !same)
+                {
+                    throw new FuzzFailure(verdict);
+                }
+
+                break;
+
+            case OperationStatus.NeedMoreData:
+                // libzstd hands a raw block out as it arrives, the decoder once it is whole.
+                if (theirs != Native.StreamEnd.Incomplete || !same)
+                {
+                    throw new FuzzFailure(verdict);
+                }
+
+                break;
+
+            default:
+                // Where libzstd does not refuse the stream, but decodes it or finds it cut short, the
+                // frame the decoder refuses must be one of the exceptions, which libzstd goes past.
+                if (theirs != Native.StreamEnd.Refused && (!same || !Excused(decoder.LastError, stream[frameStart..], dictionary, windowLogMax)))
+                {
+                    throw new FuzzFailure(verdict);
+                }
+
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Whether the streaming decoder may refuse <paramref name="frame"/>, for <paramref name="error"/>,
+    /// where libzstd's streaming decoder goes past it: a format before v0.8; one of libzstd one-shot's
+    /// two leniencies; a window over the limit, which libzstd decodes in one pass, but refuses when the
+    /// frame arrives in pieces; and the two leniencies of libzstd's streaming path that its one-shot
+    /// decoder does not share, provided that it refuses the frame: a compressed block of size zero,
+    /// skipped as an empty block, and a content size checked only after a last block that is not empty.
+    /// </summary>
+    private static bool Excused(ZstdError error, ReadOnlySpan<byte> frame, bool dictionary, int windowLogMax)
+    {
+        ZSTD_DDict_s* native = dictionary ? NativeDictionary : null;
+        return IsLegacy(frame)
+            || error is ZstdError.HuffmanStream or ZstdError.BlockTooLarge
+            || (error == ZstdError.WindowTooLarge && Native.ZstdRefusesWindow(frame, native, windowLogMax))
+            || (error is ZstdError.LiteralsHeader or ZstdError.ContentSizeMismatch && Native.ZstdDecompress(frame, OneShot, native, out _) < 0);
+    }
+
+    /// <summary>
+    /// A piece's size, or a destination's: <paramref name="mode"/> 0, all there is; 1, a byte; 2, up to
+    /// 31 bytes; 3, mostly a few KiB, sometimes nothing or a few bytes, sometimes more than a block.
+    /// </summary>
+    private static int Draw(int mode, Random random) => mode switch
+    {
+        0 => int.MaxValue,
+        1 => 1,
+        2 => random.Next(32),
+        _ => random.Next(10) switch
+        {
+            0 => random.Next(4),
+            1 => random.Next(4, 300),
+            2 => random.Next(128 << 10, 400 << 10),
+            _ => random.Next(300, 70_000),
+        },
+    };
+
+    /// <summary>
     /// <c>[level][flags][content]</c>. The level is <c>level % 30 - 7</c>, from -7 to 22. Flags: bit 0,
     /// a checksum; bit 1, the dictionary. The frame must be libzstd's, byte for byte, and decode back.
     /// The compressors are reused from input to input, as an application reuses them.
@@ -208,19 +405,7 @@ internal static unsafe class ZstdTargets
         }
 
         byte[] frame = dst[..written].ToArray();
-        ZSTD_CDict_s* native = null;
-        if (dictionary)
-        {
-            if (!NativeCompressionDictionaries.TryGetValue(level, out nint prepared))
-            {
-                prepared = (nint)Native.ZstdCompressionDictionary(Dictionary, level);
-                NativeCompressionDictionaries.Add(level, prepared);
-            }
-
-            native = (ZSTD_CDict_s*)prepared;
-        }
-
-        byte[] expected = Native.ZstdCompress(content, level, checksum, native);
+        byte[] expected = Native.ZstdCompress(content, level, checksum, dictionary ? NativeCompressionDictionary(level) : null);
         if (!expected.AsSpan().SequenceEqual(frame))
         {
             throw new FuzzFailure($"level {level}, checksum {checksum}, dictionary {dictionary}: {frame.Length} bytes where libzstd writes {expected.Length}");
@@ -254,6 +439,81 @@ internal static unsafe class ZstdTargets
                 seed++;
             }
         }
+    }
+
+    /// <summary>
+    /// Streams of every kind of data, in four shapes (see <see cref="SeedStream"/>), with flags and
+    /// seeds that vary the pieces, the destinations and the window limit.
+    /// </summary>
+    public static IEnumerable<byte[]> DecompressStreamSeeds()
+    {
+        int[] levels = [-5, 1, 3, 9, 19];
+        int seed = 0;
+        foreach (string kind in DataKinds.All)
+        {
+            for (int shape = 0; shape < 4; shape++)
+            {
+                byte[] content = DataKinds.Generate(kind, 200 + (seed * 997 % 20_000), seed + 1);
+                byte[] stream = SeedStream(content, levels[seed % levels.Length], shape, seed % 2 == 0);
+                int flags = (shape == 3 ? 1 : 0) | ((seed % 4) << 1) | ((seed / 4 % 4) << 3) | (seed % 5 == 0 ? 0x20 : 0);
+                yield return [(byte)flags, (byte)seed, .. stream];
+                seed++;
+            }
+        }
+
+        // A single segment of 1.2 MB, over the low window limit: refused in pieces of a byte, which
+        // libzstd decodes in one pass; decoded in place when whole, as libzstd decodes it.
+        byte[] single = LargeSingleSegment();
+        yield return [0x20 | (1 << 1), 0, .. single];
+        yield return [0x20, 0, .. single];
+    }
+
+    /// <summary>A frame of 1.2 MB of a repeated pattern, a single segment, whose window is its content size.</summary>
+    private static byte[] LargeSingleSegment()
+    {
+        byte[] content = new byte[1_200_000];
+        for (int i = 0; i < content.Length; i++)
+        {
+            content[i] = (byte)('a' + (i % 7));
+        }
+
+        return Native.ZstdCompress(content, 3, checksum: true, null);
+    }
+
+    /// <summary>
+    /// <paramref name="content"/> as libzstd compresses it, in one of four shapes: 0, one frame, which
+    /// declares its size; 1, one frame without its size, with a checksum and a window of 1 KiB, which
+    /// restarts again and again; 2, two frames, the second without its size, around a skippable one;
+    /// 3, one frame with the dictionary. <paramref name="variant"/> adds a checksum to the first, and
+    /// the size to the last.
+    /// </summary>
+    private static byte[] SeedStream(byte[] content, int level, int shape, bool variant)
+    {
+        int half = content.Length / 2;
+        return shape switch
+        {
+            0 => Native.ZstdCompress(content, level, checksum: variant, null),
+            1 => Native.ZstdCompress(content, level, checksum: true, null, contentSize: false, windowLog: 10),
+            2 =>
+            [
+                .. Native.ZstdCompress(content.AsSpan(0, half), level, checksum: true, null),
+                .. SkippableFrame,
+                .. Native.ZstdCompress(content.AsSpan(half), level, checksum: false, null, contentSize: false),
+            ],
+            _ => Native.ZstdCompress(content, level, checksum: false, NativeCompressionDictionary(level), contentSize: variant),
+        };
+    }
+
+    /// <summary><see cref="Dictionary"/> as libzstd prepares it to compress at <paramref name="level"/>, once per level.</summary>
+    private static ZSTD_CDict_s* NativeCompressionDictionary(int level)
+    {
+        if (!NativeCompressionDictionaries.TryGetValue(level, out nint prepared))
+        {
+            prepared = (nint)Native.ZstdCompressionDictionary(Dictionary, level);
+            NativeCompressionDictionaries.Add(level, prepared);
+        }
+
+        return (ZSTD_CDict_s*)prepared;
     }
 
     /// <summary>Contents of every kind at levels across the range, with and without a checksum or the dictionary.</summary>

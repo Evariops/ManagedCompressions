@@ -13,6 +13,7 @@ fault or a hang (`-timeout`) fails it the same way.
 | Target | Input | Guarantee |
 |:--|:--|:--|
 | `zstd-decompress` | `[flags][frame]` | a status, nothing consumed or written unless decoded; libzstd one-shot's verdict and content, with its two documented leniencies, and the formats before v0.8 left out (see below); `DecompressPrefix` gives the start of libzstd's content |
+| `zstd-stream-decompress` | `[flags][seed][stream]` | `ZstdDecoder` handed the stream in pieces, into destinations, of the sizes the seed draws, the decoders reused after `Reset`: every call within its spans and making progress; the verdict and content of libzstd's streaming decoder handed the whole stream, with the exceptions below |
 | `zstd-compress` | `[level][flags][content]` | libzstd's frame byte for byte, levels -7 to 22, with or without a checksum or a dictionary; it decodes back |
 | `lz4-decompress` | `[capacity, 3 bytes][block]` | lz4's content for every block lz4 decodes, but those with a zero offset; `Decompress` agrees with `TryDecompress` |
 | `lz4-compress` | `[level][content]` | lz4's block byte for byte, levels -7 to 12, the compressors reused from input to input; it decodes back |
@@ -25,6 +26,16 @@ destination, it takes only the block that is a single zero token, as lz4 does.
 The Zstandard decoder refuses the formats before v0.8, whose magic numbers RFC 8878 does not define. The
 libzstd NativeCompressions ships decodes them, and libFuzzer found one at once:
 `regressions/zstd-decompress/legacy-v05-magic`.
+
+In pieces, the streaming decoder refuses a few more frames that libzstd's streaming decoder goes past.
+libzstd decodes a frame whose window is over the limit in one pass when it holds the whole frame and room
+for its declared content, as it does with the whole stream; in pieces, both refuse it. And libzstd's
+streaming decoder lets two frames through that its one-shot decoder refuses, and `ZstdDecoder` with it:
+a frame with a compressed block of size zero, which it skips as an empty block
+(`regressions/zstd-stream-decompress/empty-compressed-block`), and a frame whose content does not match
+its declared size, which it checks only after a last block that is not empty. The target gives libzstd
+a new context for each stream: a context that decoded a larger window keeps its larger buffer, and lets
+a content overflow its declared size (`regressions/zstd-stream-decompress/content-over-declared-size`).
 
 ## In CI
 
