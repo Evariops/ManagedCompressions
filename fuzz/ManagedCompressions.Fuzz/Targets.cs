@@ -65,8 +65,10 @@ internal static unsafe class ZstdTargets
     /// <remarks>
     /// The decoder must return a status, consume and write nothing unless it decodes, and decode only
     /// what libzstd one-shot decodes, to the same bytes. A frame it refuses, libzstd must refuse too,
-    /// but for libzstd's two leniencies the tests document: a Huffman stream whose last symbol overruns
-    /// it by a few bits, and a block larger than its maximum size.
+    /// but for libzstd's two leniencies the tests document, a Huffman stream whose last symbol overruns
+    /// it by a few bits and a block larger than its maximum size, and for the frames of zstd's formats
+    /// before v0.8: NativeCompressions builds libzstd with their decoders, which RFC 8878 does not
+    /// define and this decoder does not have. libFuzzer found one at once (regressions/zstd-decompress).
     /// </remarks>
     public static void Decompress(ReadOnlySpan<byte> input)
     {
@@ -103,7 +105,8 @@ internal static unsafe class ZstdTargets
 
             int expected = Native.ZstdDecompress(frame, Expected, native, out _);
             if (expected >= 0 && expected <= capacity && status != OperationStatus.NeedMoreData
-                && decoder.LastError is not (ZstdError.HuffmanStream or ZstdError.BlockTooLarge))
+                && decoder.LastError is not (ZstdError.HuffmanStream or ZstdError.BlockTooLarge)
+                && !IsLegacy(frame))
             {
                 throw new FuzzFailure($"refused ({decoder.LastError}) a frame libzstd decodes to {expected} bytes");
             }
@@ -126,6 +129,21 @@ internal static unsafe class ZstdTargets
         {
             Prefix(src, dst, dictionary, native);
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="frame"/> starts with the magic number of a zstd format before v0.8,
+    /// v0.1 to v0.7, which libzstd's legacy decoders read.
+    /// </summary>
+    private static bool IsLegacy(ReadOnlySpan<byte> frame)
+    {
+        if (frame.Length < 4)
+        {
+            return false;
+        }
+
+        uint magic = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(frame);
+        return magic == 0xFD2FB51E || magic is >= 0xFD2FB522 and <= 0xFD2FB527;
     }
 
     /// <summary>

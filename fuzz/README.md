@@ -12,7 +12,7 @@ fault or a hang (`-timeout`) fails it the same way.
 
 | Target | Input | Guarantee |
 |:--|:--|:--|
-| `zstd-decompress` | `[flags][frame]` | a status, nothing consumed or written unless decoded; libzstd one-shot's verdict and content, with its two documented leniencies; `DecompressPrefix` gives the start of libzstd's content |
+| `zstd-decompress` | `[flags][frame]` | a status, nothing consumed or written unless decoded; libzstd one-shot's verdict and content, with its two documented leniencies, and the formats before v0.8 left out (see below); `DecompressPrefix` gives the start of libzstd's content |
 | `zstd-compress` | `[level][flags][content]` | libzstd's frame byte for byte, levels -7 to 22, with or without a checksum or a dictionary; it decodes back |
 | `lz4-decompress` | `[capacity, 3 bytes][block]` | lz4's content for every block lz4 decodes, but those with a zero offset; `Decompress` agrees with `TryDecompress` |
 | `lz4-compress` | `[level][content]` | lz4's block byte for byte, levels -7 to 12, the compressors reused from input to input; it decodes back |
@@ -21,6 +21,10 @@ The flags and the exact rules are in [`Targets.cs`](ManagedCompressions.Fuzz/Tar
 departs from lz4 on three kinds of blocks, all by design. It decodes blocks that break the format's
 end-of-block rules, which lz4 refuses. It refuses a zero offset, which lz4 accepts. And into an empty
 destination, it takes only the block that is a single zero token, as lz4 does.
+
+The Zstandard decoder refuses the formats before v0.8, whose magic numbers RFC 8878 does not define. The
+libzstd NativeCompressions ships decodes them, and libFuzzer found one at once:
+`regressions/zstd-decompress/legacy-v05-magic`.
 
 ## In CI
 
