@@ -22,6 +22,12 @@ namespace ManagedCompressions.Zstd;
 /// when the next block may not fit, the bytes before the restart staying within reach.
 /// </para>
 /// <para>
+/// Outside that single pass, libzstd lets two frames through that its one-shot decoder refuses: a
+/// frame with a compressed block of size zero, which it skips as an empty block, and a frame whose
+/// content does not match its declared size, which it checks only after a last block that is not
+/// empty. This decoder refuses both, however they arrive, as <see cref="ZstdDecompressor"/> does.
+/// </para>
+/// <para>
 /// A decoder serves one stream at a time, and is not thread-safe. Once warm, it allocates nothing.
 /// </para>
 /// </remarks>
@@ -427,7 +433,8 @@ public sealed class ZstdDecoder
     /// <summary>
     /// libzstd's checks of a frame header (<c>ZSTD_decodeFrameHeader</c>, the window against
     /// <c>ZSTD_d_windowLogMax</c>) and its window, <c>ZSTD_decodingBufferSize_internal</c>: the window
-    /// and a block, and their margins, or the content size when it is smaller.
+    /// and a block, and their margins, or the content size when it is smaller. libzstd adds a second
+    /// block, for the literals it splits into that buffer; the block decoder keeps them apart.
     /// </summary>
     private void BeginFrame()
     {

@@ -249,6 +249,44 @@ public sealed class ZstdDecoderTests
         Console.WriteLine($"seed {seed}: refused where libzstd decodes: " + string.Join(", ", divergences.Select(d => $"{d.Key} x{d.Value}")));
     }
 
+    /// <summary>
+    /// Two frames libzstd's streaming decoder lets through where it cannot decode them in one pass,
+    /// though its one-shot decoder refuses them: one with a compressed block of size zero, which it
+    /// skips as an empty block, and one whose content falls short of its declared size, which it
+    /// checks only after a last block that is not empty. The decoder refuses both, however they arrive.
+    /// </summary>
+    [Fact]
+    public void What_libzstd_lets_through_only_in_pieces_is_refused()
+    {
+        // A single segment of 100 bytes, declared; "hello" in a raw block; then an empty last block.
+        byte[] start = [0x28, 0xB5, 0x2F, 0xFD, 0x20, 100, 5 << 3, 0, 0, .. "hello"u8];
+        foreach ((byte[] frame, ZstdError error, string name) in new (byte[], ZstdError, string)[]
+        {
+            ([.. start, (2 << 1) | 1, 0, 0], ZstdError.LiteralsHeader, "an empty compressed block"),
+            ([.. start, 1, 0, 0], ZstdError.ContentSizeMismatch, "an empty raw block"),
+        })
+        {
+            // Room for less than the declared size: no single pass, and "hello". Room for it all: refused.
+            Assert.True(NativeZstd.DecompressStream(frame, 50, null, 27, out byte[] native), name);
+            Assert.Equal("hello"u8.ToArray(), native);
+            Assert.False(NativeZstd.DecompressStream(frame, 100, null, 27, out _), name);
+            Assert.Equal(OperationStatus.InvalidData, new ZstdDecompressor().Decompress(frame, new byte[100], out _, out _));
+
+            foreach ((Func<int> source, Func<int> destination, string how) in new (Func<int>, Func<int>, string)[]
+            {
+                (Pieces.Whole, Pieces.Whole, "whole"),
+                (Pieces.Whole, () => 50, "whole, into 50 bytes"),
+                (Pieces.One, Pieces.One, "one byte at a time"),
+            })
+            {
+                var decoder = new ZstdDecoder();
+                (OperationStatus status, _, _) = Pieces.Decode(decoder, frame, source, destination);
+                Assert.True(status == OperationStatus.InvalidData, $"{name}, {how}: {status}");
+                Assert.Equal(error, decoder.LastError);
+            }
+        }
+    }
+
     [Fact]
     public void A_refusal_sticks_until_Reset()
     {
