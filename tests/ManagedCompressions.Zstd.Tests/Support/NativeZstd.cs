@@ -38,10 +38,10 @@ internal static unsafe class NativeZstd
                 Set(context, ZSTD_cParameter.ZSTD_c_checksumFlag, 1);
             }
 
-            // Asked for, or left to libzstd, which turns it on by itself for some levels and sizes.
-            if (options.EnableLongDistanceMatching)
+            // Asked for, kept off, or left to libzstd, which turns it on by itself for some levels and sizes.
+            if (options.EnableLongDistanceMatching || options.DisableLongDistanceMatching)
             {
-                Set(context, ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
+                Set(context, ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, options.EnableLongDistanceMatching ? 1 : 2);
             }
 
             if (options.WindowLog > 0)
@@ -52,6 +52,16 @@ internal static unsafe class NativeZstd
             if (options.TargetBlockSize > 0)
             {
                 Set(context, ZSTD_cParameter.ZSTD_c_targetCBlockSize, options.TargetBlockSize);
+            }
+
+            if (!options.ContentSizeFlag)
+            {
+                Set(context, ZSTD_cParameter.ZSTD_c_contentSizeFlag, 0);
+            }
+
+            if (!options.DictionaryIdFlag)
+            {
+                Set(context, ZSTD_cParameter.ZSTD_c_dictIDFlag, 0);
             }
 
             if (options.Dictionary is { } dictionary)
@@ -325,6 +335,15 @@ internal sealed class NativeZstdOptions
 
     /// <summary><c>ZSTD_c_enableLongDistanceMatching</c> turned on; otherwise libzstd decides.</summary>
     public bool EnableLongDistanceMatching { get; set; }
+
+    /// <summary><c>ZSTD_c_enableLongDistanceMatching</c> kept off (<c>ZSTD_ps_disable</c>).</summary>
+    public bool DisableLongDistanceMatching { get; set; }
+
+    /// <summary><c>ZSTD_c_contentSizeFlag</c>: whether the header declares the content's size; true by default.</summary>
+    public bool ContentSizeFlag { get; set; } = true;
+
+    /// <summary><c>ZSTD_c_dictIDFlag</c>: whether the header names the dictionary; true by default.</summary>
+    public bool DictionaryIdFlag { get; set; } = true;
 
     /// <summary><c>ZSTD_c_windowLog</c>; 0 for the level's.</summary>
     public int WindowLog { get; set; }
