@@ -208,6 +208,24 @@ public sealed class LongDistanceCompressionTests
     }
 
     /// <summary>
+    /// The same source with the matcher kept off (<see cref="ZstdCompressionOptions.LongDistanceMatching"/>
+    /// false, libzstd's <c>ZSTD_ps_disable</c>): libzstd's frame without it, which is not the frame it
+    /// makes when it turns the matcher on by itself.
+    /// </summary>
+    [Fact]
+    public void Kept_off_like_libzstd()
+    {
+        const int Size = (64 << 20) + 300_000;
+        byte[] data = FarRepeats.Generate("far-walk64", Size);
+        byte[] expected = NativeZstd.Compress(data, new NativeZstdOptions { Quality = 22, DisableLongDistanceMatching = true });
+        byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
+        var compressor = new ZstdCompressor(new ZstdCompressionOptions { Level = 22, LongDistanceMatching = false });
+        Assert.Equal(OperationStatus.Done, compressor.Compress(data, output, out _, out int written));
+        Corpus.AssertSameBytes(expected, output.AsSpan(0, written), "far-walk64/" + Size + "/L22/ldm=off");
+        Assert.False(expected.AsSpan().SequenceEqual(Libzstd(data, 22, longDistance: false)), "the matcher should change this frame");
+    }
+
+    /// <summary>
     /// The same with a raw-content dictionary, which the frame loads (64 MiB is over six times its
     /// size), and into the matcher too: the dictionary's stretches in the source are found there.
     /// </summary>

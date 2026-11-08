@@ -60,6 +60,9 @@ public sealed unsafe partial class ZstdCompressor
         Experimental = owner.Experimental;
         JobSizeOverride = owner.JobSizeOverride;
         OverlapLogOverride = owner.OverlapLogOverride;
+        _windowLog = owner._windowLog;
+        _writeContentSize = owner._writeContentSize;
+        _writeDictionaryId = owner._writeDictionaryId;
     }
 
     /// <summary>
@@ -85,9 +88,9 @@ public sealed unsafe partial class ZstdCompressor
     private JobPlan PlanJobs(int sourceSize)
     {
         CompressionParameters parameters = _dictionary is null
-            ? CompressionParameters.ForFrame(Level, sourceSize, LongDistanceMatching)
-            : CompressionParameters.ForFrame(_dictionary.Level, sourceSize, _dictionary.Size, attached: false, LongDistanceMatching);
-        bool longDistance = LongDistanceMatching || LongDistanceMatcher.EnabledFor(parameters);
+            ? CompressionParameters.ForFrame(Level, sourceSize, LongDistanceMatching, _windowLog)
+            : CompressionParameters.ForFrame(_dictionary.Level, sourceSize, _dictionary.Size, attached: false, LongDistanceMatching, _windowLog);
+        bool longDistance = UsesLongDistanceMatcher(parameters);
         if (longDistance && parameters.Strategy < Strategy.BinaryTreeOptimal)
         {
             throw new NotSupportedException("Long-distance matching is implemented for the optimal parsers only.");
@@ -341,7 +344,8 @@ public sealed unsafe partial class ZstdCompressor
             }
 
             byte* header = stackalloc byte[FrameHeaderSizeMax];
-            int headerSize = WriteFrameHeader(header, parameters.WindowLog, (ulong)frameSize, checksum, dictionaryId);
+            int headerSize = WriteFrameHeader(
+                header, parameters.WindowLog, (ulong)frameSize, checksum, dictionaryId, _writeContentSize, _writeDictionaryId);
             if (headerSize > capacity)
             {
                 return -1;

@@ -183,16 +183,11 @@ internal struct CompressionParameters
     /// Whether the long-distance matcher is asked for, as by <c>ZSTD_c_enableLongDistanceMatching</c>,
     /// rather than left to libzstd (<see cref="LongDistanceMatcher.EnabledFor"/>).
     /// </param>
-    public static CompressionParameters ForFrame(int level, long sourceSize, bool longDistanceMatching = false)
+    /// <param name="windowLog">The window asked for, as by <c>ZSTD_c_windowLog</c>; 0 for the level's.</param>
+    public static CompressionParameters ForFrame(int level, long sourceSize, bool longDistanceMatching = false, int windowLog = 0)
     {
         CompressionParameters parameters = Select(level, (ulong)sourceSize, 0, ParameterMode.Frame);
-        if (longDistanceMatching)
-        {
-            // libzstd's ZSTD_getCParamsFromCCtxParams: the matcher's window, then the adjustments again.
-            parameters.WindowLog = LongDistanceMatcher.DefaultWindowLog;
-            parameters.Adjust((ulong)sourceSize, 0, ParameterMode.Frame);
-        }
-
+        Override(ref parameters, (ulong)sourceSize, 0, ParameterMode.Frame, longDistanceMatching, windowLog);
         return parameters;
     }
 
@@ -205,18 +200,42 @@ internal struct CompressionParameters
     /// <param name="sourceSize">The size of the frame's content.</param>
     /// <param name="dictionarySize">The size of the dictionary's buffer.</param>
     /// <param name="attached">Whether the frame attaches the dictionary.</param>
-    /// <param name="longDistanceMatching">Whether the long-distance matcher is asked for, as in <see cref="ForFrame(int, long, bool)"/>.</param>
-    public static CompressionParameters ForFrame(int level, long sourceSize, long dictionarySize, bool attached, bool longDistanceMatching = false)
+    /// <param name="longDistanceMatching">Whether the long-distance matcher is asked for, as in <see cref="ForFrame(int, long, bool, int)"/>.</param>
+    /// <param name="windowLog">The window asked for, as in <see cref="ForFrame(int, long, bool, int)"/>.</param>
+    public static CompressionParameters ForFrame(
+        int level, long sourceSize, long dictionarySize, bool attached, bool longDistanceMatching = false, int windowLog = 0)
     {
         ParameterMode mode = attached ? ParameterMode.AttachedDictionary : ParameterMode.Frame;
         CompressionParameters parameters = Select(level, (ulong)sourceSize, (ulong)dictionarySize, mode);
+        Override(ref parameters, (ulong)sourceSize, (ulong)dictionarySize, mode, longDistanceMatching, windowLog);
+        return parameters;
+    }
+
+    /// <summary>
+    /// The rest of libzstd's <c>ZSTD_getCParamsFromCCtxParams</c>, after the level's row: the matcher's
+    /// window when it is asked for, then the window asked for (<c>ZSTD_overrideCParams</c>), which
+    /// replaces it, then the adjustments again, which shrink the window to the source and fit the
+    /// tables to it. Without either, the row's adjustments stand, as libzstd's second pass leaves them.
+    /// </summary>
+    private static void Override(
+        ref CompressionParameters parameters, ulong sourceSize, ulong dictionarySize, ParameterMode mode, bool longDistanceMatching, int windowLog)
+    {
+        if (!longDistanceMatching && windowLog == 0)
+        {
+            return;
+        }
+
         if (longDistanceMatching)
         {
             parameters.WindowLog = LongDistanceMatcher.DefaultWindowLog;
-            parameters.Adjust((ulong)sourceSize, (ulong)dictionarySize, mode);
         }
 
-        return parameters;
+        if (windowLog != 0)
+        {
+            parameters.WindowLog = windowLog;
+        }
+
+        parameters.Adjust(sourceSize, dictionarySize, mode);
     }
 
     /// <summary>

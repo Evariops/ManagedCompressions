@@ -13,6 +13,7 @@ namespace ManagedCompressions.Zstd.Tests.Support;
 internal sealed unsafe class LibzstdMt
 {
     private const int CompressionLevel = 100;
+    private const int WindowLog = 101;
     private const int ChecksumFlag = 201;
     private const int EnableLongDistanceMatching = 160;
     private const int NbWorkers = 400;
@@ -59,7 +60,7 @@ internal sealed unsafe class LibzstdMt
     /// </summary>
     public byte[] Compress(
         ReadOnlySpan<byte> source, int level, int workers, bool checksum = false, bool longDistance = false,
-        byte[]? dictionary = null, int jobSize = 0, int overlapLog = 0)
+        byte[]? dictionary = null, int jobSize = 0, int overlapLog = 0, int windowLog = 0)
     {
         nint context = _createContext();
         nint prepared = 0;
@@ -71,6 +72,11 @@ internal sealed unsafe class LibzstdMt
             if (longDistance)
             {
                 Check(_setParameter(context, EnableLongDistanceMatching, 1));
+            }
+
+            if (windowLog != 0)
+            {
+                Check(_setParameter(context, WindowLog, windowLog));
             }
 
             if (jobSize != 0)
