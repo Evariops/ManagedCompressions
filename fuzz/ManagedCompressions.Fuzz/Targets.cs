@@ -25,6 +25,7 @@ internal static class Targets
     [
         new("zstd-decompress", "[flags][frame]", ZstdTargets.Decompress, ZstdTargets.DecompressSeeds),
         new("zstd-stream-decompress", "[flags][seed][stream]", ZstdTargets.DecompressStream, ZstdTargets.DecompressStreamSeeds),
+        new("zstd-stream-compress", "[level][flags][seed][content]", ZstdTargets.CompressStream, ZstdTargets.CompressStreamSeeds),
         new("zstd-compress", "[level][flags][content]", ZstdTargets.Compress, ZstdTargets.CompressSeeds),
         new("lz4-decompress", "[capacity, 3 bytes][block]", Lz4Targets.Decompress, Lz4Targets.DecompressSeeds),
         new("lz4-compress", "[level][content]", Lz4Targets.Compress, Lz4Targets.CompressSeeds),
@@ -514,6 +515,170 @@ internal static unsafe class ZstdTargets
         }
 
         return (ZSTD_CDict_s*)prepared;
+    }
+
+    /// <summary>The levels of the stream compression target: every strategy's, from -7 to 19.</summary>
+    private static readonly int[] StreamLevels = [-7, -1, 1, 2, 3, 4, 5, 7, 9, 13, 16, 19];
+
+    /// <summary>The windows of the stream compression target, small, so that the input buffer wraps within an input.</summary>
+    private static readonly int[] StreamWindowLogs = [10, 12, 14, 17];
+
+    /// <summary>The stream compression target's encoders, both sides, by level, window, dictionary and checksum.</summary>
+    private static readonly Dictionary<int, (ZstdEncoder Ours, NativeStreamEncoder Theirs)> StreamEncoders = [];
+
+    /// <summary>
+    /// <c>[level][flags][seed][content]</c>: the content through <see cref="ZstdEncoder"/> and libzstd's
+    /// <c>ZSTD_compressStream2</c> alike, in the calls <c>seed</c> draws: pieces of every size, flushes,
+    /// frames ended mid-way, destinations from nothing to a megabyte, each against a guard page. Level:
+    /// <c>level % 12</c> picks one of every strategy's levels from -7 to 19. Flags: bit 0, a checksum;
+    /// bit 1, the dictionary; bits 2 and 3, a window of 2^10, 2^12, 2^14 or 2^17 bytes, which the input
+    /// buffer wraps in; bits 4 and 5, the pieces, and bit 6, the destinations, as <see cref="Draw"/> draws
+    /// them; bit 7, the size pledged, the frame then never ended before the content is.
+    /// </summary>
+    /// <remarks>
+    /// Each call must take and write libzstd's bytes, and end as libzstd's does; the frames must decode
+    /// back. The encoders are reused from input to input, after <c>Reset</c>, as an application reuses them.
+    /// </remarks>
+    public static void CompressStream(ReadOnlySpan<byte> input)
+    {
+        if (input.Length < 3)
+        {
+            return;
+        }
+
+        int levelIndex = input[0] % StreamLevels.Length;
+        int level = StreamLevels[levelIndex];
+        int flags = input[1];
+        var random = new Random(input[2]);
+        bool checksum = (flags & 1) != 0;
+        bool dictionary = (flags & 2) != 0;
+        int windowIndex = (flags >> 2) & 3;
+        bool pledge = (flags & 0x80) != 0;
+        int key = (levelIndex << 4) | (windowIndex << 2) | (dictionary ? 2 : 0) | (checksum ? 1 : 0);
+        if (!StreamEncoders.TryGetValue(key, out (ZstdEncoder Ours, NativeStreamEncoder Theirs) encoders))
+        {
+            int windowLog = StreamWindowLogs[windowIndex];
+            var options = new ZstdCompressionOptions { Level = level, WindowLog = windowLog, AppendChecksum = checksum, Dictionary = dictionary ? Dictionary : default };
+            encoders = (new ZstdEncoder(options), new NativeStreamEncoder(level, checksum, windowLog, dictionary ? NativeCompressionDictionary(level) : null));
+            StreamEncoders.Add(key, encoders);
+        }
+
+        (ZstdEncoder ours, NativeStreamEncoder theirs) = encoders;
+        ours.Reset();
+        theirs.Reset();
+        Span<byte> content = Source.AtEnd(input.Length - 3);
+        input[3..].CopyTo(content);
+        if (pledge)
+        {
+            ours.SetSourceLength(content.Length);
+            theirs.SetSourceLength(content.Length);
+        }
+
+        int at = 0;
+        int total = 0;
+        int step = 0;
+        while (true)
+        {
+            // The frame ends once the content is offered whole; before, mostly continued, at times
+            // flushed, or ended mid-way when no size is pledged.
+            int choice = random.Next(16);
+            bool end = at == content.Length || (choice == 0 && !pledge);
+            bool flush = !end && choice < 3;
+            int take = flush ? 0 : Math.Min(Draw((flags >> 4) & 3, random), content.Length - at);
+            while (true)
+            {
+                int room = Math.Min(Draw((flags & 0x40) != 0 ? 3 : 2, random), MaxContent - total);
+                Span<byte> dst = random.Next(2) == 0 ? Destination.AtEnd(room) : Destination.AtStart(room);
+                Span<byte> expected = Expected.AsSpan(0, room);
+                ReadOnlySpan<byte> source = content.Slice(at, take);
+                int ourConsumed = 0;
+                int theirConsumed = 0;
+                int ourWritten;
+                int theirWritten;
+                OperationStatus ourStatus;
+                OperationStatus theirStatus;
+                if (flush)
+                {
+                    ourStatus = ours.Flush(dst, out ourWritten);
+                    theirStatus = theirs.Flush(expected, out theirWritten);
+                }
+                else
+                {
+                    ourStatus = ours.Compress(source, dst, out ourConsumed, out ourWritten, end);
+                    theirStatus = theirs.Compress(source, expected, out theirConsumed, out theirWritten, end);
+                }
+
+                if (ourStatus != theirStatus || ourConsumed != theirConsumed || ourWritten != theirWritten
+                    || !dst[..ourWritten].SequenceEqual(expected[..theirWritten]))
+                {
+                    throw new FuzzFailure(
+                        $"level {level}, call {step} ({(flush ? "flush" : end ? "end" : "continue")}, {take} bytes at {at}, room {room}): "
+                        + $"{ourStatus}, {ourConsumed} taken, {ourWritten} written; libzstd: {theirStatus}, {theirConsumed} taken, {theirWritten} written");
+                }
+
+                if (ourStatus == OperationStatus.InvalidData)
+                {
+                    throw new FuzzFailure($"level {level}, call {step}: refused a content of the size pledged");
+                }
+
+                dst[..ourWritten].CopyTo(Content.AsSpan(total));
+                total += ourWritten;
+                at += ourConsumed;
+                take -= ourConsumed;
+                step++;
+                if (total == MaxContent)
+                {
+                    return;
+                }
+
+                // A final call repeats until the frame is written to its end.
+                if (!end || ourStatus == OperationStatus.Done)
+                {
+                    break;
+                }
+            }
+
+            if (end && at == content.Length)
+            {
+                break;
+            }
+        }
+
+        // The frames, one after the other, decode to the content.
+        ZstdDecompressor decoder = dictionary ? Prepared : Plain;
+        int read = 0;
+        int decoded = 0;
+        while (read < total)
+        {
+            if (decoder.Decompress(Content.AsSpan(read, total - read), Expected.AsSpan(decoded), out int consumed, out int written) != OperationStatus.Done)
+            {
+                throw new FuzzFailure($"level {level}: the frame at byte {read} does not decode ({decoder.LastError})");
+            }
+
+            read += consumed;
+            decoded += written;
+        }
+
+        if (!Expected.AsSpan(0, decoded).SequenceEqual(content))
+        {
+            throw new FuzzFailure($"level {level}: the frames decode to {decoded} bytes that are not the content's {content.Length}");
+        }
+    }
+
+    /// <summary>Contents of every kind at every level of the stream target, with flags that vary all they pick.</summary>
+    public static IEnumerable<byte[]> CompressStreamSeeds()
+    {
+        int seed = 0;
+        foreach (string kind in DataKinds.All)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                byte[] content = DataKinds.Generate(kind, 100 + (seed * 2477 % 30_000), seed + 1);
+                int flags = (seed & 3) | ((seed / 4 % 4) << 2) | ((seed % 3) << 4) | ((seed % 2) << 6) | (seed % 5 == 0 ? 0x80 : 0);
+                yield return [(byte)(seed % StreamLevels.Length), (byte)flags, (byte)seed, .. content];
+                seed++;
+            }
+        }
     }
 
     /// <summary>Contents of every kind at levels across the range, with and without a checksum or the dictionary.</summary>
