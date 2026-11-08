@@ -64,8 +64,8 @@ public sealed unsafe partial class ZstdCompressor
         int total = 0;
         fixed (byte* src = source)
         {
-            CompressionParameters parameters = CompressionParameters.ForFrame(Level, source.Length, LongDistanceMatching);
-            BeginFrame(parameters, src, source.Length, LongDistanceMatching || LongDistanceMatcher.EnabledFor(parameters));
+            CompressionParameters parameters = CompressionParameters.ForFrame(Level, source.Length, LongDistanceMatching, _windowLog);
+            BeginFrame(parameters, src, source.Length, UsesLongDistanceMatcher(parameters));
             EnsureBlockCapacity(parameters.BlockSizeMax(source.Length));
             foreach (BlockRecord block in blocks)
             {

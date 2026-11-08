@@ -85,8 +85,8 @@ public sealed unsafe partial class ZstdCompressor
         ulong size = (ulong)sourceSize;
         CompressionParameters prepared = dictionary.Parameters;
         bool attach = size <= AttachCutoff(prepared.Strategy);
-        CompressionParameters frame = CompressionParameters.ForFrame(dictionary.Level, sourceSize, dictionary.Size, attach, LongDistanceMatching);
-        bool longDistance = !inJob && (LongDistanceMatching || LongDistanceMatcher.EnabledFor(frame));
+        CompressionParameters frame = CompressionParameters.ForFrame(dictionary.Level, sourceSize, dictionary.Size, attach, LongDistanceMatching, _windowLog);
+        bool longDistance = !inJob && UsesLongDistanceMatcher(frame);
         bool usePreparedTables = size < PreparedTablesCutoff || size < (ulong)dictionary.Size * LoadDictionaryMultiplier;
         CompressionParameters tables = !usePreparedTables ? frame
             : attach ? prepared.ForAttachedSource(sourceSize, dictionary.Size, frame.WindowLog)

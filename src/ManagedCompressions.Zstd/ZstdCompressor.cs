@@ -87,6 +87,35 @@ public sealed unsafe partial class ZstdCompressor
         Experimental = experimental;
     }
 
+    /// <summary>
+    /// Creates a compressor with <paramref name="options"/>: a level, and libzstd's parameters beyond
+    /// it, the frames still libzstd's bytes with the same parameters.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentException">Experimental features asked for with a dictionary.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">An experimental feature is unknown.</exception>
+    /// <exception cref="System.IO.InvalidDataException">A zstd-format dictionary whose tables are invalid.</exception>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
+    public ZstdCompressor(ZstdCompressionOptions options)
+        : this((options ?? throw new ArgumentNullException(nameof(options))).Level, options.Experimental)
+    {
+        if (!options.Dictionary.IsEmpty && options.Experimental != ZstdExperimentalOptions.None)
+        {
+            throw new ArgumentException("The experimental features are not available with a dictionary.", nameof(options));
+        }
+
+        AppendChecksum = options.AppendChecksum;
+        LongDistanceMatching = options.LongDistanceMatching == true;
+        _noLongDistanceMatching = options.LongDistanceMatching == false;
+        _windowLog = options.WindowLog;
+        _writeContentSize = options.WriteContentSize;
+        _writeDictionaryId = options.WriteDictionaryId;
+        if (!options.Dictionary.IsEmpty)
+        {
+            _dictionary = CompressionDictionary.Create(options.Dictionary.Span, Level);
+        }
+    }
+
     /// <summary>The compression level.</summary>
     public int Level { get; }
 
@@ -102,6 +131,25 @@ public sealed unsafe partial class ZstdCompressor
     /// (levels 16 and up) take long-distance matches.
     /// </summary>
     internal bool LongDistanceMatching { get; set; }
+
+    /// <summary>The long-distance matcher kept off, as <c>ZSTD_c_enableLongDistanceMatching</c> at <c>ZSTD_ps_disable</c>.</summary>
+    private readonly bool _noLongDistanceMatching;
+
+    /// <summary>The window asked for, as <c>ZSTD_c_windowLog</c>; 0 for the level's.</summary>
+    private readonly int _windowLog;
+
+    /// <summary>Whether the frame header declares the content's size: <c>ZSTD_c_contentSizeFlag</c>.</summary>
+    private readonly bool _writeContentSize = true;
+
+    /// <summary>Whether the frame header names the dictionary: <c>ZSTD_c_dictIDFlag</c>.</summary>
+    private readonly bool _writeDictionaryId = true;
+
+    /// <summary>
+    /// libzstd's <c>ZSTD_resolveEnableLdm</c>: whether the long-distance matcher runs on a frame of
+    /// these parameters, asked for, kept off, or else as libzstd turns it on by itself.
+    /// </summary>
+    private bool UsesLongDistanceMatcher(in CompressionParameters parameters) =>
+        !_noLongDistanceMatching && (LongDistanceMatching || LongDistanceMatcher.EnabledFor(parameters));
 
     /// <summary>
     /// The largest frame <see cref="Compress"/> writes for <paramref name="sourceLength"/> bytes:
@@ -158,13 +206,13 @@ public sealed unsafe partial class ZstdCompressor
         uint dictionaryId = 0;
         if (_dictionary is null)
         {
-            parameters = CompressionParameters.ForFrame(Level, sourceSize, LongDistanceMatching);
+            parameters = CompressionParameters.ForFrame(Level, sourceSize, LongDistanceMatching, _windowLog);
             if (LongDistanceMatching && parameters.Strategy < Strategy.BinaryTreeOptimal)
             {
                 throw new NotSupportedException("Long-distance matching is implemented for the optimal parsers only.");
             }
 
-            BeginFrame(parameters, source, sourceSize, LongDistanceMatching || LongDistanceMatcher.EnabledFor(parameters));
+            BeginFrame(parameters, source, sourceSize, UsesLongDistanceMatcher(parameters));
         }
         else
         {
@@ -173,7 +221,8 @@ public sealed unsafe partial class ZstdCompressor
         }
 
         byte* header = stackalloc byte[FrameHeaderSizeMax];
-        int headerSize = WriteFrameHeader(header, parameters.WindowLog, (ulong)sourceSize, AppendChecksum, dictionaryId);
+        int headerSize = WriteFrameHeader(
+            header, parameters.WindowLog, (ulong)sourceSize, AppendChecksum, dictionaryId, _writeContentSize, _writeDictionaryId);
         if (headerSize > capacity)
         {
             return -1;
@@ -219,17 +268,20 @@ public sealed unsafe partial class ZstdCompressor
     }
 
     /// <summary>
-    /// libzstd's <c>ZSTD_writeFrameHeader</c> for a frame that declares its content size: a single
-    /// segment when the window covers the whole content; the dictionary's identifier, if any, in as
-    /// few bytes as it takes.
+    /// libzstd's <c>ZSTD_writeFrameHeader</c>: a single segment when the frame declares its content size
+    /// and the window covers it all, else the window; the dictionary's identifier, if any and asked
+    /// for, in as few bytes as it takes; the content size, if asked for.
     /// </summary>
     /// <returns>The size of the header.</returns>
-    private static int WriteFrameHeader(byte* header, int windowLog, ulong contentSize, bool checksum, uint dictionaryId)
+    private static int WriteFrameHeader(
+        byte* header, int windowLog, ulong contentSize, bool checksum, uint dictionaryId, bool contentSizeFlag = true, bool dictionaryIdFlag = true)
     {
         ulong windowSize = 1UL << windowLog;
-        bool singleSegment = windowSize >= contentSize;
-        int contentSizeCode = (contentSize >= 256 ? 1 : 0) + (contentSize >= 65536 + 256 ? 1 : 0) + (contentSize >= 0xFFFFFFFFUL ? 1 : 0);
-        int dictionaryIdCode = (dictionaryId > 0 ? 1 : 0) + (dictionaryId >= 256 ? 1 : 0) + (dictionaryId >= 65536 ? 1 : 0);
+        bool singleSegment = contentSizeFlag && windowSize >= contentSize;
+        int contentSizeCode = !contentSizeFlag ? 0
+            : (contentSize >= 256 ? 1 : 0) + (contentSize >= 65536 + 256 ? 1 : 0) + (contentSize >= 0xFFFFFFFFUL ? 1 : 0);
+        int dictionaryIdCode = !dictionaryIdFlag ? 0
+            : (dictionaryId > 0 ? 1 : 0) + (dictionaryId >= 256 ? 1 : 0) + (dictionaryId >= 65536 ? 1 : 0);
         int descriptor = dictionaryIdCode | ((checksum ? 1 : 0) << 2) | ((singleSegment ? 1 : 0) << 5) | (contentSizeCode << 6);
         Unsafe.WriteUnaligned(header, FrameFormat.Magic);
         header[4] = (byte)descriptor;
