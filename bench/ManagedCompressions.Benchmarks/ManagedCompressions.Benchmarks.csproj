@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- Measured against .NET 11's own libzstd (System.IO.Compression): .NET 11 only. -->
+    <TargetFrameworks>net11.0</TargetFrameworks>
     <RootNamespace>ManagedCompressions.Benchmarks</RootNamespace>
     <AssemblyName>ManagedCompressions.Benchmarks</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
