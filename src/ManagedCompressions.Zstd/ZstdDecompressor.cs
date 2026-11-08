@@ -82,8 +82,12 @@ public sealed partial class ZstdDecompressor
         }
     }
 
-    /// <summary>Why the last call refused its frame; <see cref="ZstdError.None"/> after a success.</summary>
-    internal ZstdError LastError { get; private set; }
+    /// <summary>
+    /// Why the last call refused its frame: the check that failed, where the status it returned says
+    /// what to do next. <see cref="ZstdError.None"/> after a call that returned
+    /// <see cref="OperationStatus.Done"/>.
+    /// </summary>
+    public ZstdError LastError { get; private set; }
 
     /// <summary>
     /// Decompresses the frame that starts <paramref name="source"/> into the start of

@@ -59,6 +59,10 @@ After `NeedMoreData` or `DestinationTooSmall`, nothing has been consumed, so cal
 frame or a larger destination. Checksums are verified when a frame has one. A skippable frame decodes
 to nothing.
 
+The status says what to do next; `decompressor.LastError` says why, naming the check that refused the
+frame: `ZstdError.ChecksumMismatch`, `ZstdError.OffsetTooLarge`, `ZstdError.DictionaryMismatch`, and so
+on. It is `ZstdError.None` after a call that returns `Done`.
+
 ### Compression
 
 ```csharp
