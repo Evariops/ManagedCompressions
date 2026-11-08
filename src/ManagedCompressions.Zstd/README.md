@@ -139,6 +139,33 @@ var compressor = new ZstdCompressor(new ZstdCompressionOptions
 | `Dictionary` | `ZSTD_CCtx_refCDict` | as the dictionary constructor takes it, prepared at the level |
 | `Experimental` | | as the experimental constructor takes it; not with a dictionary |
 
+### Streaming compression
+
+`ZstdEncoder` compresses content as it arrives, into destinations of any size, as System.IO.Compression's
+`ZstandardEncoder` does. Its frames are those libzstd's `ZSTD_compressStream2` writes for the same calls,
+byte for byte:
+
+```csharp
+var encoder = new ZstdEncoder(level: 3);   // or with ZstdCompressionOptions
+encoder.SetSourceLength(length);           // optional: the header then declares the size
+
+// DestinationTooSmall: hand out destination[..written], then call again with what was not consumed.
+OperationStatus status = encoder.Compress(chunk, destination, out int consumed, out int written, isFinalBlock: false);
+status = encoder.Flush(destination, out written);   // what was gathered ends a block here
+status = encoder.Compress(lastChunk, destination, out consumed, out written, isFinalBlock: true);   // the frame ends
+```
+
+A streamed frame is not the one-shot frame of the same content. The encoder gathers a block at a time and
+compresses each one once it is whole, or at a flush. Unless the size is pledged, by `SetSourceLength` or
+by a first call that is also the final one, the frame takes libzstd's parameters for a source of unknown
+size, and its header declares no size. The encoder keeps a window of input, the window and a block: 2 MiB
+and 128 KiB at the default level, 128 MiB at level 22, where libzstd also turns the long-distance matcher
+on. A first call that is final, with room for `GetMaxCompressedLength` of its source, writes the one-shot
+frame. Once a frame ends, the next call starts another.
+
+Not streamed yet: dictionaries, and frames whose indices would pass 3500 MiB, which libzstd corrects
+(`ZSTD_reduceIndex`). Both throw `NotSupportedException`.
+
 ### Dictionaries
 
 ```csharp
@@ -213,10 +240,10 @@ var compressor = new ZstdCompressor(level: 3, ZstdExperimentalOptions.EntropyAwa
 
 The limitations are these:
 
-- Compression has no streaming API yet: a frame is compressed in one call, from and into memory.
-  Decompression streams with `ZstdDecoder`.
-- Compression sources, and the frames `ZstdDecompressor` decodes, must fit in a span, so they are
-  limited to 2 GiB. `ZstdDecoder` has no such limit.
+- Streaming compression (`ZstdEncoder`) takes no dictionary yet, and stops at 3500 MiB of indices in a
+  frame. `ZstdStream` decompresses only.
+- `ZstdCompressor`'s sources, and the frames `ZstdDecompressor` decodes, must fit in a span, so they are
+  limited to 2 GiB. `ZstdEncoder` and `ZstdDecoder` have no such limit.
 - Compression takes the level, the window, the long-distance matcher, the checksum, the header's flags
   and a dictionary. libzstd's finer parameters (the strategy, the hash and chain logs, the target block
   size) are not exposed.

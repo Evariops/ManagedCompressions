@@ -237,14 +237,15 @@ x64 alike.
 | Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level |
 | Checksums | XXH64, written on request, always verified | not in the block format |
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no |
-| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window | no |
+| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames, without dictionaries yet | no |
 | Validation | accepts and refuses what libzstd does | refuses any literal or match past either end |
 | Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same |
 
-Not supported: streaming compression (a frame or block is compressed in one call, from and into
-memory), compression inputs over 2 GiB, the LZ4 frame format, libzstd's finer parameters (strategy,
-hash and chain logs, target block size), and big-endian processors (IBM Z), where the constructors
-throw `PlatformNotSupportedException`. WebAssembly has not been tried.
+Not supported: Zstandard streaming compression with a dictionary, LZ4 streaming (a block is
+compressed in one call, from and into memory), one-shot inputs over 2 GiB (`ZstdEncoder` streams
+them), the LZ4 frame format, libzstd's finer parameters (strategy, hash and chain logs, target block
+size), and big-endian processors (IBM Z), where the constructors throw
+`PlatformNotSupportedException`. WebAssembly has not been tried.
 
 ## How it was measured
 
