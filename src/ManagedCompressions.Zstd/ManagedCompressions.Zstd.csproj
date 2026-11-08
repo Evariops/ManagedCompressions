@@ -24,6 +24,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="ManagedCompressions.Zstd.Tests" />
     <InternalsVisibleTo Include="ManagedCompressions.Zstd.Perf" />
+    <InternalsVisibleTo Include="ManagedCompressions.Fuzz" />
   </ItemGroup>
 
 </Project>
