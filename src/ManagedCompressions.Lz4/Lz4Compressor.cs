@@ -35,8 +35,10 @@ public sealed unsafe class Lz4Compressor
     private readonly int _acceleration;
 
     /// <summary>A compressor at <paramref name="level"/>, from <see cref="MinLevel"/> to <see cref="MaxLevel"/>.</summary>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public Lz4Compressor(int level = DefaultLevel)
     {
+        LittleEndian.Require();
         ArgumentOutOfRangeException.ThrowIfLessThan(level, MinLevel);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(level, MaxLevel);
         Level = level;
