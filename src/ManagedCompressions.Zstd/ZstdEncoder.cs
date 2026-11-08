@@ -30,8 +30,8 @@ namespace ManagedCompressions.Zstd;
 /// The long-distance matcher runs as libzstd runs it: on at level 22 for a stream of unknown size,
 /// whose window is then 2^27 bytes, or when <see cref="ZstdCompressionOptions.LongDistanceMatching"/>
 /// asks for it. A dictionary is used as libzstd uses it, decided by the size pledged: a stream of
-/// unknown size attaches it. Not yet streamed: frames past 3500 MiB, where libzstd corrects its
-/// indices, which throw <see cref="NotSupportedException"/>.
+/// unknown size attaches it. A stream has no size limit: past 3500 MiB, the indices are corrected as
+/// libzstd corrects them, which changes no byte.
 /// </para>
 /// </remarks>
 public sealed unsafe class ZstdEncoder
@@ -107,6 +107,16 @@ public sealed unsafe class ZstdEncoder
         ArgumentNullException.ThrowIfNull(options);
         _compressor = new ZstdCompressor(options);
     }
+
+    /// <summary>The compressor's <see cref="ZstdCompressor.CorrectOverflowFrequently"/>, for the tests.</summary>
+    internal bool CorrectOverflowFrequently
+    {
+        get => _compressor.CorrectOverflowFrequently;
+        set => _compressor.CorrectOverflowFrequently = value;
+    }
+
+    /// <summary>The compressor's <see cref="ZstdCompressor.OverflowCorrections"/>, for the tests.</summary>
+    internal uint OverflowCorrections => _compressor.OverflowCorrections;
 
     private enum Stage
     {

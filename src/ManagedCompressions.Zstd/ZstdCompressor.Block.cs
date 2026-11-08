@@ -123,6 +123,7 @@ public sealed unsafe partial class ZstdCompressor
         if (longDistance)
         {
             _longDistanceMatcher ??= new LongDistanceMatcher();
+            _longDistanceMatcher.CorrectOverflowFrequently = CorrectOverflowFrequently;
             _longDistanceMatcher.BeginFrame(parameters, source);
             _optimal!.LongDistance.Sequences = _longDistanceMatcher.Sequences;
         }
@@ -130,6 +131,7 @@ public sealed unsafe partial class ZstdCompressor
         if (restart)
         {
             _nextIndex = WindowStartIndex;
+            _overflowCorrections = 0;
         }
 
         Array.Clear(_hashCache);
@@ -196,6 +198,8 @@ public sealed unsafe partial class ZstdCompressor
         {
             int blockSize = OptimalBlockSize(ip, remaining, blockSizeMax, savings);
             int lastBlock = lastChunk && blockSize == remaining ? 1 : 0;
+            CorrectOverflowIfNeeded(ip, ip + blockSize);
+
             // As libzstd: a dictionary dropped for the whole block when the window passes it before
             // the block's end; the window moved from the block's start, covering the block whole,
             // the matches then limited to it by the match finder.

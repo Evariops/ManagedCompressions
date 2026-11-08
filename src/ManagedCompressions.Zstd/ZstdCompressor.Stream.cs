@@ -14,12 +14,6 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>A chunk that takes the frame past the size pledged for it: libzstd's <c>srcSize_wrong</c>.</summary>
     internal const int PledgedSizeExceeded = -2;
 
-    /// <summary>
-    /// libzstd's <c>ZSTD_CURRENT_MAX</c>: an index libzstd corrects its tables before reaching
-    /// (<c>ZSTD_overflowCorrectIfNeeded</c>), which this compressor does not do yet.
-    /// </summary>
-    private const ulong CurrentMax = 3500UL << 20;
-
     private XxHash64? _streamChecksum;
     private CompressionParameters _streamParameters;
     private ulong _streamPledged;
@@ -142,13 +136,7 @@ public sealed unsafe partial class ZstdCompressor
                 _longDistanceMatcher!.UpdateWindow(source, (nuint)size);
             }
 
-            if ((ulong)(_streamNextSource - _matchState.Base) > CurrentMax)
-            {
-                throw new NotSupportedException(
-                    "ZstdEncoder does not correct its indices yet, as libzstd does past 3500 MiB: compress less in a frame, "
-                    + "or start a new encoder.");
-            }
-
+            // Past 3500 MiB, the blocks correct the indices before they overflow (CorrectOverflowIfNeeded).
             _streamChecksum?.Append(new ReadOnlySpan<byte>(source, size));
             long savings = (long)_streamConsumed - (long)_streamProduced;
             int blocks = CompressBlocks(source, size, destination + op, capacity - op, _streamBlockSizeMax, last, savings);

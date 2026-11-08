@@ -328,10 +328,47 @@ internal sealed unsafe class LongDistanceMatcher
         _dictBase = null;
         _loadedDictEnd = 0;
         _nextSource = source;
+        _overflowCorrections = 0;
     }
 
     /// <summary>libzstd's <c>window.nextSrc</c> for a streamed frame: where the last chunk ended.</summary>
     private byte* _nextSource;
+
+    /// <summary>libzstd's <c>ldmState.window.nbOverflowCorrections</c>, since the frame began.</summary>
+    private uint _overflowCorrections;
+
+    /// <summary>The frame's <c>ZstdCompressor.CorrectOverflowFrequently</c>.</summary>
+    public bool CorrectOverflowFrequently { get; set; }
+
+    /// <summary>
+    /// libzstd's overflow correction of the matcher's own window, before each chunk of
+    /// <c>ZSTD_ldm_generateSequences</c>: its cycle a single byte, its table's offsets moved down
+    /// (<c>ZSTD_ldm_reduceTable</c>), a dictionary dropped.
+    /// </summary>
+    private void CorrectOverflowIfNeeded(byte* chunkStart, byte* chunkEnd, uint maxDistance)
+    {
+        uint current = (uint)(chunkStart - _base);
+        if (!OverflowCorrection.Needed(
+            current, (uint)(chunkEnd - _base), 0, maxDistance, _loadedDictEnd, _overflowCorrections, CorrectOverflowFrequently))
+        {
+            return;
+        }
+
+        uint correction = OverflowCorrection.Correction(current, 0, maxDistance);
+        _base += correction;
+        _dictBase += correction;
+        _lowLimit = OverflowCorrection.Limit(_lowLimit, correction);
+        _dictLimit = OverflowCorrection.Limit(_dictLimit, correction);
+        _overflowCorrections++;
+        ulong* table = (ulong*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_table));
+        for (int i = 0; i < 1 << _hashLog; i++)
+        {
+            uint offset = (uint)table[i];
+            table[i] = (table[i] & 0xFFFF_FFFF_0000_0000UL) | (offset < correction ? 0 : offset - correction);
+        }
+
+        _loadedDictEnd = 0;
+    }
 
     /// <summary>
     /// libzstd's <c>ZSTD_window_update</c> on the matcher's own window, as <c>ZSTD_compressContinue_internal</c>
@@ -439,9 +476,11 @@ internal sealed unsafe class LongDistanceMatcher
     /// </summary>
     private nuint GenerateChunk(byte* source, nuint size, RawSequence* sequences, out nuint leftover)
     {
+        uint maxDistance = 1u << _windowLog;
+        CorrectOverflowIfNeeded(source, source + size, maxDistance);
+
         // A dictionary's content stays whole until the chunk ends a window past it.
         uint blockEndIndex = (uint)(source + size - _base);
-        uint maxDistance = 1u << _windowLog;
         if (blockEndIndex > maxDistance + _loadedDictEnd)
         {
             uint newLowLimit = blockEndIndex - maxDistance;
