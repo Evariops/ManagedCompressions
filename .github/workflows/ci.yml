@@ -61,9 +61,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The SDK global.json names builds both targets; the .NET 10 runtime runs the net10.0 tests.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+          dotnet-version: 10.0.x
 
       # A release v1.2.3 is built as 1.2.3: the assemblies, and the packages the publish job pushes.
       # Any other run leaves the version unset and packs the SDK's default, a file name and not a claim.
@@ -101,9 +103,9 @@ jobs:
       - name: Pack
         run: dotnet pack ManagedCompressions.slnx --no-build -c Release ${VERSION_PROPERTY:+"$VERSION_PROPERTY"}
 
-      # Exactly the two libraries, each with its symbols, its documentation, its readme, and the BSD
-      # notices of zstd and lz4 that NOTICE carries: their licenses ask a binary distribution for them.
-      # A project that becomes packable by accident fails here too.
+      # Exactly the two libraries, each built for .NET 10 and .NET 11 with its documentation, with its
+      # symbols, its readme, and the BSD notices of zstd and lz4 that NOTICE carries: their licenses ask
+      # a binary distribution for them. A project that becomes packable by accident fails here too.
       - name: Check the packages
         run: |
           set -euo pipefail
@@ -120,7 +122,8 @@ jobs:
             fi
             package=${packages[0]}
             contents=$(unzip -Z1 "$package")
-            for entry in README.md NOTICE LICENSE "lib/[^/]+/$id\.dll" "lib/[^/]+/$id\.xml"; do
+            for entry in README.md NOTICE LICENSE \
+              "lib/net10\.0/$id\.dll" "lib/net10\.0/$id\.xml" "lib/net11\.0/$id\.dll" "lib/net11\.0/$id\.xml"; do
               if ! grep -qxE "$entry" <<< "$contents"; then
                 echo "::error::$package has no $entry"
                 exit 1

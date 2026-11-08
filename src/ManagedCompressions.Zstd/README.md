@@ -20,8 +20,8 @@ zstd project or with Meta.
 
 ## Requirements
 
-ManagedCompressions.Zstd targets .NET 11 (`net11.0`). Its only dependency is `System.IO.Hashing`, for the
-XXH64 frame checksums.
+ManagedCompressions.Zstd targets .NET 10 (`net10.0`) and .NET 11 (`net11.0`). Its only dependency is
+`System.IO.Hashing`, for the XXH64 frame checksums.
 
 ```sh
 dotnet add package ManagedCompressions.Zstd
