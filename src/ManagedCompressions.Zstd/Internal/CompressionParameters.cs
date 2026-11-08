@@ -184,10 +184,18 @@ internal struct CompressionParameters
     /// rather than left to libzstd (<see cref="LongDistanceMatcher.EnabledFor"/>).
     /// </param>
     /// <param name="windowLog">The window asked for, as by <c>ZSTD_c_windowLog</c>; 0 for the level's.</param>
-    public static CompressionParameters ForFrame(int level, long sourceSize, bool longDistanceMatching = false, int windowLog = 0)
+    public static CompressionParameters ForFrame(int level, long sourceSize, bool longDistanceMatching = false, int windowLog = 0) =>
+        ForStream(level, (ulong)sourceSize, longDistanceMatching, windowLog);
+
+    /// <summary>
+    /// <see cref="ForFrame(int, long, bool, int)"/> for a frame whose size may be unknown, as
+    /// <c>ZSTD_CCtx_init_compressStream2</c> asks for it: <paramref name="pledgedSize"/> is the size
+    /// pledged, or <see cref="UnknownSize"/>, the row of the largest sources, which nothing adjusts.
+    /// </summary>
+    public static CompressionParameters ForStream(int level, ulong pledgedSize, bool longDistanceMatching = false, int windowLog = 0)
     {
-        CompressionParameters parameters = Select(level, (ulong)sourceSize, 0, ParameterMode.Frame);
-        Override(ref parameters, (ulong)sourceSize, 0, ParameterMode.Frame, longDistanceMatching, windowLog);
+        CompressionParameters parameters = Select(level, pledgedSize, 0, ParameterMode.Frame);
+        Override(ref parameters, pledgedSize, 0, ParameterMode.Frame, longDistanceMatching, windowLog);
         return parameters;
     }
 
