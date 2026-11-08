@@ -327,6 +327,43 @@ internal sealed unsafe class LongDistanceMatcher
         _lowLimit = WindowStartIndex;
         _dictBase = null;
         _loadedDictEnd = 0;
+        _nextSource = source;
+    }
+
+    /// <summary>libzstd's <c>window.nextSrc</c> for a streamed frame: where the last chunk ended.</summary>
+    private byte* _nextSource;
+
+    /// <summary>
+    /// libzstd's <c>ZSTD_window_update</c> on the matcher's own window, as <c>ZSTD_compressContinue_internal</c>
+    /// calls it before each chunk of a streamed frame: a chunk that does not follow the last one makes
+    /// the window's bytes before it an extDict, which the chunk, overwriting their buffer, shrinks.
+    /// </summary>
+    public void UpdateWindow(byte* source, nuint size)
+    {
+        if (size == 0)
+        {
+            return;
+        }
+
+        if (source != _nextSource)
+        {
+            uint distanceFromBase = (uint)(_nextSource - _base);
+            _lowLimit = _dictLimit;
+            _dictLimit = distanceFromBase;
+            _dictBase = _base;
+            _base = source - distanceFromBase;
+            if (_dictLimit - _lowLimit < HashReadSize)
+            {
+                _lowLimit = _dictLimit;
+            }
+        }
+
+        _nextSource = source + size;
+        if (_lowLimit < _dictLimit && source + size > _dictBase + _lowLimit && source < _dictBase + _dictLimit)
+        {
+            ulong highInputIndex = (ulong)(source + size - _dictBase);
+            _lowLimit = highInputIndex > _dictLimit ? _dictLimit : (uint)highInputIndex;
+        }
     }
 
     /// <summary>

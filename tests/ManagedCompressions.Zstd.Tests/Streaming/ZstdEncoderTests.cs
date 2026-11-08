@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
+using ManagedCompressions.Zstd.Tests.Compression;
 using ManagedCompressions.Zstd.Tests.Differential;
 using ManagedCompressions.Zstd.Tests.Support;
 using Xunit;
@@ -241,20 +242,54 @@ public sealed class ZstdEncoderTests
             });
     }
 
+    /// <summary>
+    /// The long-distance matcher in streamed frames, asked for at the optimal parsers' levels, in a
+    /// window of 1 MiB the input buffer wraps in, on content that repeats itself far apart: the
+    /// matcher's own window wraps with it.
+    /// </summary>
+    [Theory]
+    [InlineData(16)]
+    [InlineData(19)]
+    [InlineData(22)]
+    public void The_long_distance_matcher_streams_like_libzstd(int level)
+    {
+        Cases.CheckAll(
+            LongDistanceCompressionTests.FarRepeats.Kinds,
+            kind =>
+            {
+                var random = new Random(level + kind.Length);
+                byte[] data = LongDistanceCompressionTests.FarRepeats.Generate(kind, 3_000_000);
+                var options = new ZstdCompressionOptions { Level = level, WindowLog = 20, LongDistanceMatching = true, AppendChecksum = true };
+                using var native = new NativeZstdEncoder(new NativeZstdOptions { Quality = level, WindowLog = 20, EnableLongDistanceMatching = true, AppendChecksum = true });
+                IEnumerable<StreamCall> calls = EncoderScript.RandomCalls(random, data.Length).Select(c => c.Op == StreamOp.End ? c with { Op = StreamOp.Flush } : c);
+                byte[] frame = EncoderScript.Run(new ZstdEncoder(options), native, data, calls, $"{kind} L{level}");
+                EncoderScript.AssertDecodes(frame, data, $"{kind} L{level}");
+            });
+    }
+
+    /// <summary>
+    /// Level 22 without a pledged size: a window of 2^27 bytes, for which libzstd turns the matcher on
+    /// by itself. The heaviest of these tests, for the tables of that window, on both sides.
+    /// </summary>
+    [Fact]
+    public void Level_22_of_unknown_size_turns_the_matcher_on()
+    {
+        var random = new Random(22);
+        byte[] data = LongDistanceCompressionTests.FarRepeats.Generate("far-json", 2_500_000);
+        using var native = new NativeZstdEncoder(new NativeZstdOptions { Quality = 22 });
+        IEnumerable<StreamCall> calls = EncoderScript.RandomCalls(random, data.Length).Select(c => c.Op == StreamOp.End ? c with { Op = StreamOp.Flush } : c);
+        byte[] frame = EncoderScript.Run(new ZstdEncoder(22), native, data, calls, "L22");
+        EncoderScript.AssertDecodes(frame, data, "L22");
+    }
+
     [Fact]
     public void What_is_not_streamed_yet_is_refused()
     {
         Assert.Throws<NotSupportedException>(() => new ZstdEncoder(new ZstdCompressionOptions { Dictionary = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 } }));
-        Assert.Throws<NotSupportedException>(() => new ZstdEncoder(new ZstdCompressionOptions { Level = 19, LongDistanceMatching = true }));
 
-        // Level 22, of unknown size: a window of 2^27, for which libzstd turns the matcher on.
-        var encoder = new ZstdEncoder(22);
+        // As in one-shot frames, the matcher asked for below the optimal parsers.
+        var encoder = new ZstdEncoder(new ZstdCompressionOptions { Level = 3, LongDistanceMatching = true });
         Assert.Throws<NotSupportedException>(() => encoder.Compress(new byte[10], new byte[100], out _, out _, isFinalBlock: false));
-
-        // With a pledged size, the window fits it, and the matcher stays off.
-        encoder = new ZstdEncoder(22);
-        encoder.SetSourceLength(10);
-        Assert.Equal(OperationStatus.Done, encoder.Compress(new byte[10], new byte[100], out _, out _, isFinalBlock: true));
     }
 
 #if NET11_0_OR_GREATER

@@ -27,9 +27,10 @@ namespace ManagedCompressions.Zstd;
 /// yet. Once a frame ends, the next call starts another. It is not thread-safe.
 /// </para>
 /// <para>
-/// Not yet streamed: dictionaries, the long-distance matcher (which libzstd turns on by itself at level
-/// 22 for a stream of unknown size), and frames past 3500 MiB, where libzstd corrects its indices. Those
-/// throw <see cref="NotSupportedException"/>.
+/// The long-distance matcher runs as libzstd runs it: on at level 22 for a stream of unknown size,
+/// whose window is then 2^27 bytes, or when <see cref="ZstdCompressionOptions.LongDistanceMatching"/>
+/// asks for it. Not yet streamed: dictionaries, and frames past 3500 MiB, where libzstd corrects its
+/// indices. Those throw <see cref="NotSupportedException"/>.
 /// </para>
 /// </remarks>
 public sealed unsafe class ZstdEncoder
@@ -93,7 +94,7 @@ public sealed unsafe class ZstdEncoder
     /// <summary>Creates an encoder with <paramref name="options"/>.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">An experimental feature is unknown.</exception>
-    /// <exception cref="NotSupportedException">A dictionary, or the long-distance matcher, asked for.</exception>
+    /// <exception cref="NotSupportedException">A dictionary asked for.</exception>
     /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdEncoder(ZstdCompressionOptions options)
     {
@@ -101,11 +102,6 @@ public sealed unsafe class ZstdEncoder
         if (!options.Dictionary.IsEmpty)
         {
             throw new NotSupportedException("ZstdEncoder does not compress with a dictionary yet.");
-        }
-
-        if (options.LongDistanceMatching == true)
-        {
-            throw new NotSupportedException("ZstdEncoder does not run the long-distance matcher yet.");
         }
 
         _compressor = new ZstdCompressor(options);
