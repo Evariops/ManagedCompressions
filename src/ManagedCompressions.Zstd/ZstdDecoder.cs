@@ -22,6 +22,12 @@ namespace ManagedCompressions.Zstd;
 /// when the next block may not fit, the bytes before the restart staying within reach.
 /// </para>
 /// <para>
+/// Outside that single pass, libzstd lets two frames through that its one-shot decoder refuses: a
+/// frame with a compressed block of size zero, which it skips as an empty block, and a frame whose
+/// content does not match its declared size, which it checks only after a last block that is not
+/// empty. This decoder refuses both, however they arrive, as <see cref="ZstdDecompressor"/> does.
+/// </para>
+/// <para>
 /// A decoder serves one stream at a time, and is not thread-safe. Once warm, it allocates nothing.
 /// </para>
 /// </remarks>
@@ -263,6 +269,14 @@ public sealed class ZstdDecoder
                         source.Slice(consumed, count).CopyTo(_block.AsSpan(_blockLength));
                         _blockLength += count;
                         consumed += count;
+
+                        // libzstd hands a raw block out as it arrives: into a window the declared size
+                        // bounds, a part past its end is refused as soon as it arrives.
+                        if (_blockType == 0 && !_restarts && _blockLength > _capacity - _out)
+                        {
+                            Throw.Error(ZstdError.ContentSizeMismatch);
+                        }
+
                         if (_blockLength < size)
                         {
                             return OperationStatus.NeedMoreData;
@@ -427,7 +441,8 @@ public sealed class ZstdDecoder
     /// <summary>
     /// libzstd's checks of a frame header (<c>ZSTD_decodeFrameHeader</c>, the window against
     /// <c>ZSTD_d_windowLogMax</c>) and its window, <c>ZSTD_decodingBufferSize_internal</c>: the window
-    /// and a block, and their margins, or the content size when it is smaller.
+    /// and a block, and their margins, or the content size when it is smaller. libzstd adds a second
+    /// block, for the literals it splits into that buffer; the block decoder keeps them apart.
     /// </summary>
     private void BeginFrame()
     {
@@ -478,7 +493,10 @@ public sealed class ZstdDecoder
             Throw.Error(ZstdError.ReservedBlockType);
         }
 
-        if (_blockSize > _frame.BlockSizeMax)
+        // The content of an RLE block, which libzstd checks once decoded; and as ZSTD_decompressContinue,
+        // the block's size in the stream, one byte for an RLE block: more than a frame that declares no
+        // content allows, whose maximum block size is 0.
+        if (_blockSize > _frame.BlockSizeMax || (_blockType == 1 && _frame.BlockSizeMax == 0))
         {
             Throw.Error(ZstdError.BlockTooLarge);
         }
