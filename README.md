@@ -1,7 +1,7 @@
 # ManagedCompressions
 
 **Zstandard and LZ4 written entirely in C#.** No native library and no P/Invoke: the code runs wherever
-.NET runs, trims, and compiles with Native AOT.
+.NET runs on a little-endian processor, trims, and compiles with Native AOT.
 
 - **Same bytes as the native libraries.** Every frame and block is byte-for-byte what libzstd 1.5.7 and
   lz4 1.10.0 write, at every level, so the compression ratios are theirs. The tests check this.
@@ -238,10 +238,12 @@ x64 alike.
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no |
 | Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window | no |
 | Validation | accepts and refuses what libzstd does | refuses any literal or match past either end |
+| Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same |
 
 Not supported: streaming compression (a frame or block is compressed in one call, from and into
-memory), compression inputs over 2 GiB, the LZ4 frame format, and libzstd's advanced parameters
-(window size, strategy).
+memory), compression inputs over 2 GiB, the LZ4 frame format, libzstd's advanced parameters (window
+size, strategy), and big-endian processors (IBM Z), where the constructors throw
+`PlatformNotSupportedException`. WebAssembly has not been tried.
 
 ## How it was measured
 

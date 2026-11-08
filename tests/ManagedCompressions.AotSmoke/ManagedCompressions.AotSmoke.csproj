@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Round trips through both libraries as an application compiles them: CI publishes it with Native
+       AOT, whose trimming and compilation would show what the JIT tolerates, and runs it on each
+       architecture. Not in the solution: it is not a test project, and only that job builds it. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.AotSmoke</RootNamespace>
+    <AssemblyName>ManagedCompressions.AotSmoke</AssemblyName>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
+    <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+  </ItemGroup>
+
+</Project>
