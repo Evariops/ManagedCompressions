@@ -28,7 +28,7 @@ internal static class Program
             case ["list"]:
                 foreach (Target target in Targets.All)
                 {
-                    Console.WriteLine($"{target.Name,-16} {target.Input}");
+                    Console.WriteLine($"{target.Name,-24} {target.Input}");
                 }
 
                 return 0;

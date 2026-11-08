@@ -227,7 +227,10 @@ Instances are not thread-safe. Use one per thread, or one per concurrent operati
 
 Decompression follows libzstd's decoding and validation, so the two accept and reject the same frames.
 ManagedCompressions.Zstd also enforces RFC 8878's limit on the size of a block in every case, where
-libzstd only partly enforces it in one-shot decoding.
+libzstd only partly enforces it in one-shot decoding. And `ZstdDecoder` refuses two frames that
+libzstd's streaming decoder lets through when it cannot decode them in one pass, though its one-shot
+decoder refuses them: a frame with a compressed block of size zero, and a frame whose content does not
+match its declared size, when its last block is empty.
 
 Compression reproduces libzstd 1.5.7's `ZSTD_compress` byte for byte, at every level from -131072 to
 22. This covers:
