@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Formats.Tar;
 using System.IO;
@@ -140,34 +139,14 @@ internal static class DataSets
     }
 
     /// <summary>
-    /// The file's frames, decoded by ManagedCompressions.Zstd on any .NET: zstd's corpus files declare
-    /// no content size, so each frame gets a destination twice as large until it fits.
+    /// The file's frames, decoded by ManagedCompressions.Zstd's own stream, on any .NET: zstd's corpus
+    /// files declare no content size.
     /// </summary>
     private static byte[] Unzstd(string path)
     {
-        byte[] file = File.ReadAllBytes(path);
-        var decompressor = new ZstdDecompressor();
+        using var zstd = new ZstdStream(File.OpenRead(path), CompressionMode.Decompress);
         using var content = new MemoryStream();
-        for (int at = 0; at < file.Length;)
-        {
-            for (int capacity = Math.Max(4 * (file.Length - at), 1 << 20); ; capacity *= 2)
-            {
-                byte[] frame = new byte[capacity];
-                OperationStatus status = decompressor.Decompress(file.AsSpan(at), frame, out int consumed, out int written);
-                if (status == OperationStatus.Done)
-                {
-                    content.Write(frame, 0, written);
-                    at += consumed;
-                    break;
-                }
-
-                if (status != OperationStatus.DestinationTooSmall)
-                {
-                    throw new InvalidDataException($"{path}: {status} at byte {at}");
-                }
-            }
-        }
-
+        zstd.CopyTo(content);
         return content.ToArray();
     }
 
