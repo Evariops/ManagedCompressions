@@ -27,6 +27,24 @@ sa case ici. Les décisions prises en route vont dans le [journal](#journal), en
 | D3 | 32 bits (win-x86, linux-arm) et WebAssembly : supportés ou exclus ? | Les tester une fois (0.6), puis soit une jambe de CI, soit une exclusion écrite dans le README. | Acceptée |
 | D4 | Le brouillon de release v0.2.1 contient une nouvelle API publique (`ZstdExperimentalOptions`, #10). | Le publier en 0.3.0 plutôt qu'en 0.2.1. | À faire par Raphaël : la publication pousse sur nuget.org |
 
+## Suivi des PR
+
+Les cases du plan se cochent quand la PR est mergée ; en attendant, ce tableau dit où en est chaque étape.
+
+| Étape | PR | Base | État |
+|:--|:--|:--|:--|
+| Plan | #12 | `main` | en revue |
+| 0.2 Renovate : lz4 épinglé, #7 fermée | #13 | `main` | en revue ; #6 et #9 à merger par Raphaël |
+| 0.3 Oracle de test hors .NET 11 | #14 | `main` | en revue |
+| 0.4 `net10.0` + `net11.0` | #15 | #14 | en revue |
+| 0.5 CI : arm64, jeux d'instructions, Native AOT | #17 | #15 | en revue |
+| 0.6 Big-endian refusé, processeurs documentés (D3) | #18 | `main` | en revue |
+| 0.7 `ZstdError` et `LastError` publics | #16 | `main` | en revue |
+| 1 Fuzzing guidé par la couverture | #19 | `main` | en revue |
+| 2.1 à 2.4, 2.6 `ZstdDecoder` | #20 | #15, avec #16 | en revue |
+| 2.5 `ZstdStream` en lecture | #21 | #20 | en revue |
+| 0.1 SDK .NET 11 GA | — | — | attend la GA |
+
 ## Vue d'ensemble
 
 | Phase | Contenu | Livraison |
@@ -474,3 +492,19 @@ Fini quand : les frames LZ4 se lisent et s'écrivent à l'octet près.
   zstd 1.5.7 ; seule la 1.3.0 change lz4 (1.11.0) ; aucune n'est compilée avec le multithread de
   zstd, donc `LibzstdMt` reste sur `tools/native-ref`. Les merges restent à Raphaël : la protection
   de `main` a refusé celui de #6.
+- **2026-11-08** — Phase 0 en PR (#13 à #18). .NET 10 va à la vitesse de .NET 11 sur le 7950X
+  (0,99 en moyenne contre le natif). La CI passe sur arm64 et sans AVX-512, AVX2 ni intrinsics ; le
+  smoke test Native AOT donne les mêmes empreintes sur linux-x64 et linux-arm64, et le 32 bits x86
+  aussi (vérifié à la main). `DOTNET_EnableAVX512F=0` ne fait plus rien depuis .NET 10 :
+  `DOTNET_EnableAVX512=0`. Le job de test complet passe de 7 à 17 minutes avec les deux runtimes.
+- **2026-11-08** — Fuzzing (#19). Un premier passage `smoke` a montré trois écarts voulus du décodeur
+  LZ4 avec lz4 (règles de fin de bloc non imposées, offset nul refusé, destination vide). libFuzzer a
+  trouvé en un million d'entrées une frame au format zstd v0.5 : le libzstd de NativeCompressions a
+  les décodeurs legacy, pas ce décodeur (RFC 8878 seule). Les deux sont documentés ; la frame v0.5 est
+  la première régression. Ouvert : faut-il aligner la validation LZ4 sur celle de lz4 ?
+- **2026-11-08** — `ZstdDecoder` (#20) et `ZstdStream` (#21). Le streaming accepte et refuse comme
+  `ZSTD_decompressStream`, raccourci one-shot compris (avant le contrôle de fenêtre, comme libzstd).
+  Silesia niveau 3 sur le 7950X : 2 031 Mo/s en one-shot, ~1 800 Mo/s en morceaux de 64 Kio
+  (−11 %), contre ~1 680 Mo/s pour le streaming de libzstd. Piste : les paires de blocs dans le
+  chemin streaming. Correctif au passage : une copie depuis l'historique ne passe plus par
+  `CopyForward`, qui confondait un historique dans le même tableau que la sortie avec la sortie.
