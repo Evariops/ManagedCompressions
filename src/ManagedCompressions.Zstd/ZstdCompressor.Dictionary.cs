@@ -79,28 +79,58 @@ public sealed unsafe partial class ZstdCompressor
     /// frame's (zstdmt's serial state).
     /// </param>
     /// <returns>The frame's parameters: its window.</returns>
-    private CompressionParameters BeginDictionaryFrame(byte* source, int sourceSize, bool inJob = false)
+    private CompressionParameters BeginDictionaryFrame(byte* source, int sourceSize, bool inJob = false) =>
+        BeginDictionaryFrame(PlanDictionaryFrame((ulong)sourceSize, inJob), source, sourceSize, stream: false);
+
+    /// <summary>
+    /// How a frame of <paramref name="size"/> bytes uses the prepared dictionary, as libzstd decides it
+    /// before the frame's first byte (<c>ZSTD_shouldAttachDict</c>, <c>ZSTD_compressBegin_internal</c>):
+    /// attached up to the strategy's cutoff, and for a frame of unknown size
+    /// (<see cref="CompressionParameters.UnknownSize"/>); with the dictionary's tables below 128 KiB,
+    /// below six times the dictionary, and for a frame of unknown size; else loaded.
+    /// </summary>
+    private DictionaryFramePlan PlanDictionaryFrame(ulong size, bool inJob)
     {
         CompressionDictionary dictionary = _dictionary!;
-        ulong size = (ulong)sourceSize;
         CompressionParameters prepared = dictionary.Parameters;
-        bool attach = size <= AttachCutoff(prepared.Strategy);
-        CompressionParameters frame = CompressionParameters.ForFrame(dictionary.Level, sourceSize, dictionary.Size, attach, LongDistanceMatching, _windowLog);
+        bool unknown = size == CompressionParameters.UnknownSize;
+        bool attach = unknown || size <= AttachCutoff(prepared.Strategy);
+        CompressionParameters frame = CompressionParameters.ForStream(dictionary.Level, size, (ulong)dictionary.Size, attach, LongDistanceMatching, _windowLog);
         bool longDistance = !inJob && UsesLongDistanceMatcher(frame);
-        bool usePreparedTables = size < PreparedTablesCutoff || size < (ulong)dictionary.Size * LoadDictionaryMultiplier;
+        bool usePreparedTables = unknown || size < PreparedTablesCutoff || size < (ulong)dictionary.Size * LoadDictionaryMultiplier;
         CompressionParameters tables = !usePreparedTables ? frame
-            : attach ? prepared.ForAttachedSource(sourceSize, dictionary.Size, frame.WindowLog)
+            : attach ? prepared.ForAttachedSource(size, (ulong)dictionary.Size, frame.WindowLog)
             : prepared.WithWindow(frame.WindowLog);
         if (longDistance && tables.Strategy < Strategy.BinaryTreeOptimal)
         {
             throw new NotSupportedException("Long-distance matching is implemented for the optimal parsers only.");
         }
 
+        return new DictionaryFramePlan(frame, tables, attach, usePreparedTables, longDistance);
+    }
+
+    /// <summary>The frame's parameters, its tables', and how it uses the prepared dictionary.</summary>
+    private readonly record struct DictionaryFramePlan(
+        CompressionParameters Frame, CompressionParameters Tables, bool Attach, bool UsePreparedTables, bool LongDistance);
+
+    /// <summary>
+    /// The start of a frame with the prepared dictionary, as <paramref name="plan"/> decided it: see
+    /// <see cref="BeginDictionaryFrame(byte*, int, bool)"/>. A streamed frame (<paramref name="stream"/>)
+    /// starts at its first chunk, of a size yet unknown.
+    /// </summary>
+    private CompressionParameters BeginDictionaryFrame(in DictionaryFramePlan plan, byte* source, int sourceSize, bool stream)
+    {
+        CompressionDictionary dictionary = _dictionary!;
+        CompressionParameters frame = plan.Frame;
+        CompressionParameters tables = plan.Tables;
+        bool longDistance = plan.LongDistance;
+        bool attach = plan.Attach;
+        bool usePreparedTables = plan.UsePreparedTables;
         if (usePreparedTables && attach)
         {
             uint dictionaryEnd = dictionary.State->End;
             bool hasContent = dictionary.ContentLength != 0;
-            BeginFrame(tables, source, sourceSize, longDistance, hasContent ? dictionaryEnd : WindowStartIndex);
+            BeginFrame(tables, source, sourceSize, longDistance, hasContent ? dictionaryEnd : WindowStartIndex, stream: stream);
             if (hasContent)
             {
                 _matchState.LoadedDictEnd = _matchState.DictLimit;
@@ -109,7 +139,7 @@ public sealed unsafe partial class ZstdCompressor
         }
         else if (usePreparedTables)
         {
-            BeginFrame(tables, source, sourceSize, longDistance);
+            BeginFrame(tables, source, sourceSize, longDistance, stream: stream);
             CopyDictionaryTables(dictionary);
 
             // The dictionary's window, then the source past its end: not contiguous.
@@ -129,11 +159,14 @@ public sealed unsafe partial class ZstdCompressor
 
             // As BeginFrame reserves them, by the strategy that runs: the dictionary's. A dictionary
             // too small to search leaves no segment below the source, and btultra2's first pass runs.
-            _nextIndex = dictionaryEnd + (uint)sourceSize + (tables.Strategy == Strategy.BinaryTreeUltra2 ? (uint)FrameFormat.MaxBlockSize : 0);
+            if (!stream)
+            {
+                _nextIndex = dictionaryEnd + (uint)sourceSize + (tables.Strategy == Strategy.BinaryTreeUltra2 ? (uint)FrameFormat.MaxBlockSize : 0);
+            }
         }
         else
         {
-            BeginFrame(frame, source, sourceSize, longDistance, loadedIndices: dictionary.FullContentLength);
+            BeginFrame(frame, source, sourceSize, longDistance, loadedIndices: dictionary.FullContentLength, stream: stream);
             if (longDistance && dictionary.IsRawContent)
             {
                 _longDistanceMatcher!.LoadDictionary(dictionary.FullContent, dictionary.FullContentLength, source);
@@ -155,7 +188,10 @@ public sealed unsafe partial class ZstdCompressor
                     _matchState.LowLimit = contentEnd;
                 }
 
-                _nextIndex = contentEnd + (uint)sourceSize + (tables.Strategy == Strategy.BinaryTreeUltra2 ? (uint)FrameFormat.MaxBlockSize : 0);
+                if (!stream)
+                {
+                    _nextIndex = contentEnd + (uint)sourceSize + (tables.Strategy == Strategy.BinaryTreeUltra2 ? (uint)FrameFormat.MaxBlockSize : 0);
+                }
             }
         }
 

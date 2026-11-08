@@ -283,13 +283,51 @@ public sealed class ZstdEncoderTests
     }
 
     [Fact]
-    public void What_is_not_streamed_yet_is_refused()
+    public void The_long_distance_matcher_is_refused_below_the_optimal_parsers()
     {
-        Assert.Throws<NotSupportedException>(() => new ZstdEncoder(new ZstdCompressionOptions { Dictionary = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 } }));
-
-        // As in one-shot frames, the matcher asked for below the optimal parsers.
+        // As in one-shot frames.
         var encoder = new ZstdEncoder(new ZstdCompressionOptions { Level = 3, LongDistanceMatching = true });
         Assert.Throws<NotSupportedException>(() => encoder.Compress(new byte[10], new byte[100], out _, out _, isFinalBlock: false));
+    }
+
+    /// <summary>
+    /// A prepared dictionary in streamed frames, used as libzstd uses it, by the size pledged: attached
+    /// for a stream of unknown size or a small one; its tables copied below 128 KiB or six times its
+    /// size; else loaded into the frame's own. Frames ended mid-way begin again, each deciding anew.
+    /// </summary>
+    [Theory]
+    [InlineData("json", "trained", 1)]
+    [InlineData("json", "trained", 3)]
+    [InlineData("text", "raw", 5)]
+    [InlineData("json", "trained", 9)]
+    [InlineData("text", "raw", 16)]
+    [InlineData("json", "trained", 19)]
+    public void Dictionaries_stream_like_libzstd(string kind, string type, int level)
+    {
+        (byte[] dictionary, NativeZstdDictionary prepared) = Dictionaries.Get(kind, type);
+        Cases.CheckAll(
+            from size in (int[])[100, 5000, 20_000, 100_000, 300_000, 1_500_000]
+            from pledge in (bool[])[false, true]
+            select (size, pledge),
+            c =>
+            {
+                var random = new Random(c.size + level);
+                byte[] data = DataKinds.Generate(kind, c.size, level);
+                var encoder = new ZstdEncoder(new ZstdCompressionOptions { Level = level, Dictionary = dictionary, AppendChecksum = true });
+                using var native = new NativeZstdEncoder(new NativeZstdOptions { Quality = level, Dictionary = prepared, AppendChecksum = true });
+                IEnumerable<StreamCall> calls = EncoderScript.RandomCalls(random, data.Length);
+                if (c.pledge)
+                {
+                    encoder.SetSourceLength(c.size);
+                    native.SetSourceLength(c.size);
+                    calls = calls.Select(call => call.Op == StreamOp.End ? call with { Op = StreamOp.Flush } : call);
+                }
+
+                string name = $"{kind}/{type} L{level}, {c.size} bytes, pledged {c.pledge}";
+                byte[] frames = EncoderScript.Run(encoder, native, data, calls, name);
+                EncoderScript.AssertDecodes(frames, data, name, dictionary);
+            },
+            c => $"{c.size} bytes, pledged {c.pledge}");
     }
 
 #if NET11_0_OR_GREATER
@@ -461,9 +499,10 @@ internal static class EncoderScript
     }
 
     /// <summary>The frames decode, one after the other, to <paramref name="data"/>.</summary>
-    public static void AssertDecodes(byte[] frames, byte[] data, string name)
+    public static void AssertDecodes(byte[] frames, byte[] data, string name, byte[]? dictionary = null)
     {
-        (OperationStatus status, byte[] content, _) = Pieces.Decode(new ZstdDecoder(), frames, Pieces.Whole, Pieces.Whole);
+        ZstdDecoder decoder = dictionary is null ? new ZstdDecoder() : new ZstdDecoder(dictionary);
+        (OperationStatus status, byte[] content, _) = Pieces.Decode(decoder, frames, Pieces.Whole, Pieces.Whole);
         Assert.True(status == OperationStatus.Done, $"{name}: {status}");
         Corpus.AssertSameBytes(data, content, name);
     }

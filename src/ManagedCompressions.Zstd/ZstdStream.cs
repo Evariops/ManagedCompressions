@@ -102,7 +102,6 @@ public sealed class ZstdStream : Stream
     /// <summary>Compresses into <paramref name="stream"/> with <paramref name="options"/>.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="stream"/> or <paramref name="options"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="stream"/> cannot be written.</exception>
-    /// <exception cref="NotSupportedException">The options ask for a dictionary, which <see cref="ZstdEncoder"/> does not stream yet.</exception>
     public ZstdStream(Stream stream, ZstdCompressionOptions options, bool leaveOpen = false)
         : this(stream, new ZstdEncoder(options), leaveOpen)
     {
