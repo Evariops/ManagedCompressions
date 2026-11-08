@@ -99,7 +99,7 @@ of it. Level 19 is as noisy there: NativeCompressions took 41.7 s, then 43.3 s, 
 
 ## Quick start
 
-The packages target .NET 11:
+The packages target .NET 10 and .NET 11:
 
 ```sh
 dotnet add package ManagedCompressions.Zstd
@@ -279,11 +279,12 @@ tools/native-ref/build.sh mt         # libzstd with threads, the oracle of the p
 Then run the benchmarks:
 
 ```sh
-dotnet run -c Release --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4 --seconds 3
+dotnet run -c Release -f net11.0 --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4 --seconds 3
 dotnet run -c Release --project bench/ManagedCompressions.Benchmarks -- --filter '*'
 ```
 
-On Windows, add `--core 2` to the first command to keep its timed thread on one logical processor.
+On Windows, add `--core 2` to the first command to keep its timed thread on one logical processor. With
+`-f net10.0`, it measures the managed codecs on .NET 10.
 
 Finally, run the tests:
 
