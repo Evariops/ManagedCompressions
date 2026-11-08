@@ -774,7 +774,9 @@ public sealed partial class ZstdDecompressor
 
             nint h = history.Length - (nint)(offset - (nuint)o);
             nint fromHistory = Math.Min(matchLength, history.Length - h);
-            CopyForward(ref frameStart, o, ref MemoryMarshal.GetReference(history), h, fromHistory);
+            // The history may be the window this block is decoded into (ZstdDecoder), the bytes before
+            // its restart: never taken for the output by CopyForward, and copied as by memmove.
+            history.Slice((int)h, (int)fromHistory).CopyTo(MemoryMarshal.CreateSpan(ref Unsafe.Add(ref frameStart, o), (int)fromHistory));
             o += fromHistory;
             matchLength -= fromHistory;
             matchFrom = 0;
@@ -822,7 +824,9 @@ public sealed partial class ZstdDecompressor
 
             nint h = history.Length - (nint)(offset - (nuint)o);
             nint fromHistory = Math.Min(matchLength, history.Length - h);
-            CopyForward(ref frameStart, o, ref MemoryMarshal.GetReference(history), h, fromHistory);
+            // The history may be the window this block is decoded into (ZstdDecoder), the bytes before
+            // its restart: never taken for the output by CopyForward, and copied as by memmove.
+            history.Slice((int)h, (int)fromHistory).CopyTo(MemoryMarshal.CreateSpan(ref Unsafe.Add(ref frameStart, o), (int)fromHistory));
             o += fromHistory;
             matchLength -= fromHistory;
             matchFrom = 0;
