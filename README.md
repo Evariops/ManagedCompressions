@@ -234,6 +234,7 @@ x64 alike.
 | Format | RFC 8878 frames, skippable frames | the LZ4 block format (Parquet's `LZ4_RAW`) |
 | Compression levels | -131072 to 22, libzstd's bytes at each | acceleration 65537 to level 12, lz4's bytes at each |
 | Dictionaries | yes, at compression and decompression | no |
+| Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level |
 | Checksums | XXH64, written on request, always verified | not in the block format |
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no |
 | Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window | no |
@@ -241,9 +242,9 @@ x64 alike.
 | Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same |
 
 Not supported: streaming compression (a frame or block is compressed in one call, from and into
-memory), compression inputs over 2 GiB, the LZ4 frame format, libzstd's advanced parameters (window
-size, strategy), and big-endian processors (IBM Z), where the constructors throw
-`PlatformNotSupportedException`. WebAssembly has not been tried.
+memory), compression inputs over 2 GiB, the LZ4 frame format, libzstd's finer parameters (strategy,
+hash and chain logs, target block size), and big-endian processors (IBM Z), where the constructors
+throw `PlatformNotSupportedException`. WebAssembly has not been tried.
 
 ## How it was measured
 

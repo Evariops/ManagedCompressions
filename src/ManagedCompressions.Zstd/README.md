@@ -110,9 +110,34 @@ byte[] frame = new byte[ZstdCompressor.GetMaxCompressedLength(content.Length)];
 compressor.Compress(content, frame, out _, out int length);   // the frame is frame[..length]
 ```
 
-`Compress` writes one whole frame per call, and the frame always declares its content size. Set
+`Compress` writes one whole frame per call, and the frame declares its content size. Set
 `AppendChecksum = true` to end each frame with a checksum of its content. Level 0 selects
 `ZstdCompressor.DefaultLevel`, which is 3.
+
+### Compression options
+
+`ZstdCompressionOptions` takes libzstd's parameters beyond the level. The frames stay libzstd's, byte
+for byte, as `ZSTD_compress2` writes them with the same parameters set:
+
+```csharp
+var compressor = new ZstdCompressor(new ZstdCompressionOptions
+{
+    Level = 19,
+    WindowLog = 23,            // an 8 MiB window, as HTTP's Content-Encoding: zstd asks (RFC 9659)
+    AppendChecksum = true,
+});
+```
+
+| option | libzstd | what it does |
+|:--|:--|:--|
+| `Level` | `ZSTD_c_compressionLevel` | the level, as the constructors take it |
+| `WindowLog` | `ZSTD_c_windowLog` | the window, from 2^10 to 2^31: how far back a match may reach, and what a decoder must hold; 0 for the level's, which libzstd shrinks to the source in either case |
+| `AppendChecksum` | `ZSTD_c_checksumFlag` | a checksum of the content after the last block |
+| `LongDistanceMatching` | `ZSTD_c_enableLongDistanceMatching` | null for libzstd's choice (on at level 22 above 64 MiB), true for on, false for off; on, it runs on the optimal parsers only (levels 16 and up), and elsewhere `Compress` throws `NotSupportedException` |
+| `WriteContentSize` | `ZSTD_c_contentSizeFlag` | whether the header declares the content size; without it, it holds the window |
+| `WriteDictionaryId` | `ZSTD_c_dictIDFlag` | whether the header names a zstd-format dictionary |
+| `Dictionary` | `ZSTD_CCtx_refCDict` | as the dictionary constructor takes it, prepared at the level |
+| `Experimental` | | as the experimental constructor takes it; not with a dictionary |
 
 ### Dictionaries
 
@@ -192,8 +217,9 @@ The limitations are these:
   Decompression streams with `ZstdDecoder`.
 - Compression sources, and the frames `ZstdDecompressor` decodes, must fit in a span, so they are
   limited to 2 GiB. `ZstdDecoder` has no such limit.
-- Compression takes a level, a dictionary and the checksum option. libzstd's advanced parameters, such
-  as the window size or the strategy, are not exposed.
+- Compression takes the level, the window, the long-distance matcher, the checksum, the header's flags
+  and a dictionary. libzstd's finer parameters (the strategy, the hash and chain logs, the target block
+  size) are not exposed.
 - The processor must be little-endian: the codec reads the format's fields in the processor's byte
   order. On a big-endian one (IBM Z), the constructors throw `PlatformNotSupportedException`. 32-bit
   x86 has been checked by hand: it writes the same frames as x64. WebAssembly has not been tried.
