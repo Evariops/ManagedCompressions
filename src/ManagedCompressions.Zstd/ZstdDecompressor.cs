@@ -61,8 +61,10 @@ public sealed partial class ZstdDecompressor
     private bool _prefix;
 
     /// <summary>Creates a decoder without a dictionary.</summary>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdDecompressor()
     {
+        LittleEndian.Require();
         _huffman = new HuffmanTable();
         _sequenceTables = new SequenceTableSet();
         _currentHuffman = _huffman;
