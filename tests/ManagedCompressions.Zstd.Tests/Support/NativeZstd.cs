@@ -138,6 +138,140 @@ internal static unsafe class NativeZstd
         }
     }
 
+    /// <summary>
+    /// <c>ZSTD_compressStream2</c> fed <paramref name="chunk"/> bytes at a time, each piece followed by
+    /// <c>ZSTD_e_flush</c> when <paramref name="flush"/>: a frame whose blocks end where the caller
+    /// flushed. Its header declares the content size only when <paramref name="pledge"/>.
+    /// </summary>
+    public static byte[] CompressStream(ReadOnlySpan<byte> data, NativeZstdOptions options, int chunk, bool flush, bool pledge)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(chunk, 1);
+        ZSTD_CCtx_s* context = ZstandardNativeMethods.ZSTD_createCCtx();
+        try
+        {
+            int level = options.Dictionary?.Level ?? options.Quality;
+            Set(context, ZSTD_cParameter.ZSTD_c_compressionLevel, level);
+            if (options.AppendChecksum)
+            {
+                Set(context, ZSTD_cParameter.ZSTD_c_checksumFlag, 1);
+            }
+
+            if (options.EnableLongDistanceMatching)
+            {
+                Set(context, ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
+            }
+
+            if (options.WindowLog > 0)
+            {
+                Set(context, ZSTD_cParameter.ZSTD_c_windowLog, options.WindowLog);
+            }
+
+            if (options.Dictionary is { } dictionary)
+            {
+                Check(ZstandardNativeMethods.ZSTD_CCtx_refCDict(context, dictionary.ForCompression(level)));
+            }
+
+            if (pledge)
+            {
+                Check(ZstandardNativeMethods.ZSTD_CCtx_setPledgedSrcSize(context, (ulong)data.Length));
+            }
+
+            // Each flush may close a block of its own, three bytes of header and a byte of content more.
+            int pieces = (data.Length / Math.Max(chunk, 1)) + 2;
+            int capacity = (int)ZstandardNativeMethods.ZSTD_compressBound((nuint)data.Length) + (pieces * 8) + 1024;
+            byte[] output = new byte[capacity];
+            fixed (byte* source = data)
+            fixed (byte* destination = output)
+            {
+                var buffer = new ZSTD_outBuffer_s { dst = destination, size = (nuint)capacity, pos = 0 };
+                int offset = 0;
+                do
+                {
+                    int size = Math.Min(chunk, data.Length - offset);
+                    bool final = offset + size == data.Length;
+                    var input = new ZSTD_inBuffer_s { src = source + offset, size = (nuint)size, pos = 0 };
+                    ZSTD_EndDirective directive = final ? ZSTD_EndDirective.ZSTD_e_end : flush ? ZSTD_EndDirective.ZSTD_e_flush : ZSTD_EndDirective.ZSTD_e_continue;
+                    nuint remaining;
+                    do
+                    {
+                        remaining = Check(ZstandardNativeMethods.ZSTD_compressStream2(context, &buffer, &input, directive));
+                    }
+                    while (directive == ZSTD_EndDirective.ZSTD_e_continue ? input.pos < input.size : remaining != 0);
+
+                    offset += size;
+                }
+                while (offset < data.Length);
+
+                return output.AsSpan(0, (int)buffer.pos).ToArray();
+            }
+        }
+        finally
+        {
+            ZstandardNativeMethods.ZSTD_freeCCtx(context);
+        }
+    }
+
+    /// <summary>
+    /// A whole stream through libzstd's streaming decoder, <c>ZSTD_decompressStream</c>, frame after
+    /// frame, each call handed all the input left and all the room left in a destination of
+    /// <paramref name="capacity"/> bytes, the window capped at <paramref name="windowLogMax"/>.
+    /// </summary>
+    /// <returns>
+    /// Whether libzstd decodes the stream: every frame whole, and nothing left. The content is what it
+    /// wrote, also when it refuses.
+    /// </returns>
+    public static bool DecompressStream(
+        ReadOnlySpan<byte> stream, int capacity, NativeZstdDictionary? dictionary, int windowLogMax, out byte[] content)
+    {
+        ZSTD_DCtx_s* context = ZstandardNativeMethods.ZSTD_createDCtx();
+        try
+        {
+            Check(ZstandardNativeMethods.ZSTD_DCtx_setParameter(context, ZSTD_dParameter.ZSTD_d_windowLogMax, windowLogMax));
+            if (dictionary is not null)
+            {
+                Check(ZstandardNativeMethods.ZSTD_DCtx_refDDict(context, dictionary.ForDecompression()));
+            }
+
+            byte[] output = new byte[Math.Max(capacity, 1)];
+            fixed (byte* source = stream)
+            fixed (byte* target = output)
+            {
+                var input = new ZSTD_inBuffer_s { src = source, size = (nuint)stream.Length, pos = 0 };
+                var buffer = new ZSTD_outBuffer_s { dst = target, size = (nuint)capacity, pos = 0 };
+                bool atBoundary = true;
+                while (true)
+                {
+                    nuint read = input.pos;
+                    nuint wrote = buffer.pos;
+                    nuint result = ZstandardNativeMethods.ZSTD_decompressStream(context, &buffer, &input);
+                    if (ZstandardNativeMethods.ZSTD_isError(result) != 0)
+                    {
+                        content = output.AsSpan(0, (int)buffer.pos).ToArray();
+                        return false;
+                    }
+
+                    atBoundary = result == 0;
+                    if (input.pos == input.size && atBoundary)
+                    {
+                        break;
+                    }
+
+                    if (input.pos == read && buffer.pos == wrote)
+                    {
+                        break;
+                    }
+                }
+
+                content = output.AsSpan(0, (int)buffer.pos).ToArray();
+                return atBoundary && input.pos == input.size;
+            }
+        }
+        finally
+        {
+            ZstandardNativeMethods.ZSTD_freeDCtx(context);
+        }
+    }
+
     /// <summary>Fails with libzstd's name for the error, when <paramref name="result"/> is one.</summary>
     internal static nuint Check(nuint result) =>
         ZstandardNativeMethods.ZSTD_isError(result) != 0
