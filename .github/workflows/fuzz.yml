@@ -1,0 +1,122 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of both libraries (fuzz/README.md): a short run on every pull request, from
+# the corpus the nightly runs grew, and a long one each night.
+on:
+  pull_request:
+  schedule:
+    - cron: '37 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds of fuzzing per target
+        default: '600'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  # libfuzzer-dotnet v2025.05.02.0904, the libFuzzer driver SharpFuzz documents: one C++ file, checked
+  # against its SHA-256, then compiled here rather than downloaded as a binary.
+  LIBFUZZER_DOTNET_COMMIT: bd39d4e88d715ab460a929943645be2a186cde52
+  LIBFUZZER_DOTNET_SHA256: 90f019e2e9ad3a0b93c7ecc2c5afb2fbfc8b5aab6aac51c7e0d349ec79354f36
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [zstd-decompress, zstd-compress, lz4-decompress, lz4-compress]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      # libFuzzer comes with clang's compiler-rt, which the runner may lack.
+      - name: Build libfuzzer-dotnet
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o libfuzzer-dotnet.cc \
+            "https://raw.githubusercontent.com/Metalnem/libfuzzer-dotnet/$LIBFUZZER_DOTNET_COMMIT/libfuzzer-dotnet.cc"
+          echo "$LIBFUZZER_DOTNET_SHA256  libfuzzer-dotnet.cc" | sha256sum -c -
+          if ! clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q libclang-rt-18-dev
+            clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
+          fi
+
+      - name: Publish
+        run: dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: corpus
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+
+      # The seeds join the corpus, and every input kept so far runs once, the regressions included:
+      # a guarantee broken by the change under test fails here, before any fuzzing.
+      - name: Seed and replay
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          fuzz="$RUNNER_TEMP/fuzz/ManagedCompressions.Fuzz"
+          "$fuzz" seed "$TARGET" "corpus/$TARGET"
+          regressions=()
+          if [ -d "fuzz/regressions/$TARGET" ]; then
+            regressions=("fuzz/regressions/$TARGET")
+          fi
+          "$fuzz" replay "$TARGET" "corpus/$TARGET" ${regressions[@]+"${regressions[@]}"}
+
+      # SharpFuzz instruments the published libraries in place: each branch they take reports to
+      # libFuzzer, through memory libFuzzer sets up. Instrumented, they run under libFuzzer alone,
+      # hence the seeds and the replay before. The harness and the native oracles stay as they are.
+      - name: Instrument
+        run: |
+          set -euo pipefail
+          dotnet tool restore
+          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Zstd.dll"
+          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Lz4.dll"
+
+      - name: Fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '3000' || inputs.seconds || '120' }}
+        run: |
+          set -euo pipefail
+          mkdir -p findings
+          "$RUNNER_TEMP/libfuzzer-dotnet" \
+            --target_path="$RUNNER_TEMP/fuzz/ManagedCompressions.Fuzz" --target_arg="$TARGET" \
+            -max_total_time="$FUZZ_SECONDS" -timeout=20 -rss_limit_mb=4096 -max_len=65536 \
+            -print_final_stats=1 -artifact_prefix=findings/ "corpus/$TARGET"
+
+      # The corpus grows from run to run: pull requests start from the nightly one.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ !cancelled() }}
+        with:
+          path: corpus
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+
+      # A failing input, to replay locally and to keep under fuzz/regressions once fixed.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: findings-${{ matrix.target }}
+          path: findings
+          if-no-files-found: ignore
