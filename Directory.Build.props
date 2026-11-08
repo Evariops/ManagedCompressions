@@ -1,7 +1,8 @@
 <Project>
 
   <PropertyGroup>
-    <TargetFramework>net11.0</TargetFramework>
+    <!-- .NET 10, the long-term release, and .NET 11. A project that needs .NET 11 alone says so itself. -->
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <LangVersion>preview</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>

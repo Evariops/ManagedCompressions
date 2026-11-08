@@ -59,8 +59,10 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>Creates a compressor at <paramref name="level"/>.</summary>
     /// <param name="level">From <see cref="MinLevel"/> to <see cref="MaxLevel"/>; 0 is the <see cref="DefaultLevel"/>.</param>
     /// <exception cref="ArgumentOutOfRangeException">The level is out of range.</exception>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdCompressor(int level)
     {
+        LittleEndian.Require();
         ArgumentOutOfRangeException.ThrowIfLessThan(level, MinLevel);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(level, MaxLevel);
         Level = level == 0 ? DefaultLevel : level;

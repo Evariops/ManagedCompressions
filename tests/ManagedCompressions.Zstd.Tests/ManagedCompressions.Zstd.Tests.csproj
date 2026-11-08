@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <PackageReference Include="xunit.v3" />
+    <!-- libzstd 1.5.7 as NativeCompressions ships it: the oracle, the same library on every .NET the tests target. -->
+    <PackageReference Include="NativeCompressions.Zstandard" />
   </ItemGroup>
 
   <ItemGroup>

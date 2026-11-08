@@ -2,7 +2,6 @@ using System;
 using System.Buffers;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using ManagedCompressions.Zstd.Tests.Support;
@@ -13,7 +12,7 @@ namespace ManagedCompressions.Zstd.Tests.Differential;
 /// <summary>
 /// Frames from zstd's decodecorpus (tools/native-ref/testdata.sh): random but valid, and built to reach
 /// the modes an encoder seldom emits. Each must decode to the original its manifest describes, and to
-/// what the platform's libzstd decodes.
+/// what libzstd decodes.
 /// </summary>
 public sealed class DecodeCorpusTests
 {
@@ -51,7 +50,7 @@ public sealed class DecodeCorpusTests
         Assert.Equal(size, written);
         Assert.Equal(sha256, Convert.ToHexStringLower(SHA256.HashData(output.AsSpan(0, written))));
 
-        using ZstandardDictionary? native = dictionary is null ? null : ZstandardDictionary.Create(dictionary);
+        using NativeZstdDictionary? native = dictionary is null ? null : NativeZstdDictionary.Create(dictionary);
         byte[] expected = new byte[Math.Max(1, size)];
         Assert.Equal(OperationStatus.Done, NativeZstd.Decompress(frame, expected, native, out _, out int nativeWritten));
         Assert.Equal(size, nativeWritten);

@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.IO.Compression;
 using System.Linq;
 using ManagedCompressions.Zstd.Tests.Support;
 using Xunit;
@@ -27,7 +26,7 @@ public sealed class PrefixDecodeTests
         Cases.CheckAll(
             from size in Sizes from level in Levels select (Size: size, Level: level),
             @case => CheckPrefixes(
-                DataKinds.Generate(kind, @case.Size), new ZstandardCompressionOptions { Quality = @case.Level }, default),
+                DataKinds.Generate(kind, @case.Size), new NativeZstdOptions { Quality = @case.Level }, default),
             @case => $"{kind}, {@case.Size} bytes, level {@case.Level}");
 
     [Theory]
@@ -39,8 +38,8 @@ public sealed class PrefixDecodeTests
         // The edges of the dictionary first, so that a prefix ends inside a match that copies from it.
         (byte[] dictionary, _) = Dictionaries.Get("json", "raw");
         byte[] data = [.. DictionaryEdgeTests.EdgeContent(dictionary), .. DataKinds.Generate("json", 200 * 1024, 9)];
-        using ZstandardDictionary prepared = ZstandardDictionary.Create(dictionary, level);
-        CheckPrefixes(data, new ZstandardCompressionOptions { Quality = level, Dictionary = prepared }, dictionary);
+        using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
+        CheckPrefixes(data, new NativeZstdOptions { Quality = level, Dictionary = prepared }, dictionary);
     }
 
     [Fact]
@@ -48,7 +47,7 @@ public sealed class PrefixDecodeTests
     {
         // The checksum covers the whole content: a prefix stops before it, a whole decode checks it.
         byte[] data = DataKinds.Generate("text", 300_000);
-        byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = 3, AppendChecksum = true });
+        byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = 3, AppendChecksum = true });
         frame[^1] ^= 0xFF;
         var decompressor = new ZstdDecompressor();
         byte[] prefix = new byte[200_000];
@@ -64,7 +63,7 @@ public sealed class PrefixDecodeTests
     /// faults on the first byte written past the destination; each followed, on the same
     /// decompressor, by a decode of the whole frame.
     /// </summary>
-    private static void CheckPrefixes(byte[] data, ZstandardCompressionOptions options, ReadOnlySpan<byte> dictionary)
+    private static void CheckPrefixes(byte[] data, NativeZstdOptions options, ReadOnlySpan<byte> dictionary)
     {
         byte[] frame = NativeZstd.Compress(data, options);
         var decompressor = new ZstdDecompressor();

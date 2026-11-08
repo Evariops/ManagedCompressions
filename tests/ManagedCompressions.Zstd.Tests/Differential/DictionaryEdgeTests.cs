@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.IO.Compression;
 using ManagedCompressions.Zstd.Tests.Support;
 using Xunit;
 
@@ -34,8 +33,8 @@ public sealed class DictionaryEdgeTests
     {
         (byte[] dictionary, _) = Dictionaries.Get("json", type);
         byte[] content = EdgeContent(dictionary);
-        using ZstandardDictionary prepared = ZstandardDictionary.Create(dictionary, level);
-        byte[] frame = NativeZstd.Compress(content, new ZstandardCompressionOptions { Quality = level, Dictionary = prepared });
+        using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
+        byte[] frame = NativeZstd.Compress(content, new NativeZstdOptions { Quality = level, Dictionary = prepared });
 
         var decoder = new ZstdDecompressor(dictionary);
         foreach (int extra in new[] { 0, 64 })
@@ -58,8 +57,8 @@ public sealed class DictionaryEdgeTests
         // sequences, which the decoder takes two at a time, the first block with the edges.
         (byte[] dictionary, _) = Dictionaries.Get("json", type);
         byte[] data = [.. EdgeContent(dictionary), .. DataKinds.Generate("json", 320 * 1024, 5)];
-        using ZstandardDictionary prepared = ZstandardDictionary.Create(dictionary, level);
-        byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = level, Dictionary = prepared });
+        using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
+        byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, Dictionary = prepared });
 
         foreach (bool paired in new[] { true, false })
         {

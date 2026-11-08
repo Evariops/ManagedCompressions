@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.IO.Compression;
 using ManagedCompressions.Zstd.Internal;
 using ManagedCompressions.Zstd.Tests.Support;
 using Xunit;
@@ -26,8 +25,8 @@ public sealed class DictionaryPerFrameTests
         // blocks of short sequences, which the decoder takes two at a time.
         (byte[] dictionary, _) = Dictionaries.Get("json", type);
         byte[] data = [.. DictionaryEdgeTests.EdgeContent(dictionary), .. DataKinds.Generate("json", 320 * 1024, 5)];
-        using ZstandardDictionary prepared = ZstandardDictionary.Create(dictionary, level);
-        byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = level, Dictionary = prepared });
+        using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
+        byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, Dictionary = prepared });
         AssertDecodes(frame, data, dictionary, $"{type} L{level}");
     }
 
@@ -40,8 +39,8 @@ public sealed class DictionaryPerFrameTests
         // A dictionary trained for small frames: a hundredth of the bytes it serves.
         byte[] dictionary = DataKinds.Generate("json", 600, 21);
         byte[] data = [.. DictionaryEdgeTests.EdgeContent(dictionary), .. DataKinds.Generate("json", 64 * 1024, 6)];
-        using ZstandardDictionary prepared = ZstandardDictionary.Create(dictionary, level);
-        byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = level, Dictionary = prepared });
+        using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
+        byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, Dictionary = prepared });
         AssertDecodes(frame, data, dictionary, $"600 bytes L{level}");
     }
 
@@ -58,7 +57,7 @@ public sealed class DictionaryPerFrameTests
             foreach ((string kind, int size, int seed) in new[] { ("json", 1024, 31), ("text", 3000, 32), ("json", 300 * 1024, 33) })
             {
                 byte[] data = DataKinds.Generate(kind, size, seed + d);
-                var options = new ZstandardCompressionOptions { Quality = 3, Dictionary = dictionaries[d].Native };
+                var options = new NativeZstdOptions { Quality = 3, Dictionary = dictionaries[d].Native };
                 frames.Add((d, data, NativeZstd.Compress(data, options)));
             }
         }
@@ -82,12 +81,12 @@ public sealed class DictionaryPerFrameTests
     [Fact]
     public void The_dictionary_of_the_constructor_and_those_given_with_frames_take_turns()
     {
-        (byte[] json, ZstandardDictionary jsonNative) = Dictionaries.Get("json", "trained");
-        (byte[] text, ZstandardDictionary textNative) = Dictionaries.Get("text", "trained");
+        (byte[] json, NativeZstdDictionary jsonNative) = Dictionaries.Get("json", "trained");
+        (byte[] text, NativeZstdDictionary textNative) = Dictionaries.Get("text", "trained");
         byte[] jsonData = DataKinds.Generate("json", 8192, 41);
         byte[] textData = DataKinds.Generate("text", 8192, 42);
-        byte[] jsonFrame = NativeZstd.Compress(jsonData, new ZstandardCompressionOptions { Quality = 3, Dictionary = jsonNative });
-        byte[] textFrame = NativeZstd.Compress(textData, new ZstandardCompressionOptions { Quality = 3, Dictionary = textNative });
+        byte[] jsonFrame = NativeZstd.Compress(jsonData, new NativeZstdOptions { Quality = 3, Dictionary = jsonNative });
+        byte[] textFrame = NativeZstd.Compress(textData, new NativeZstdOptions { Quality = 3, Dictionary = textNative });
 
         var decoder = new ZstdDecompressor(json);
         for (int i = 0; i < 3; i++)
@@ -111,9 +110,9 @@ public sealed class DictionaryPerFrameTests
         second[second.Length - 4000] ^= 0x5A;
         foreach (byte[] dictionary in new[] { first, second, first })
         {
-            using ZstandardDictionary prepared = ZstandardDictionary.Create(dictionary, 3);
+            using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, 3);
             byte[] data = [.. DictionaryEdgeTests.EdgeContent(dictionary), .. dictionary.AsSpan(dictionary.Length - 4100, 200), .. DataKinds.Generate("json", 4096, 7)];
-            byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = 3, Dictionary = prepared });
+            byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = 3, Dictionary = prepared });
             byte[] output = new byte[data.Length];
             Assert.Equal(OperationStatus.Done, Shared.Decompress(frame, output, dictionary, out _, out int written));
             Corpus.AssertSameBytes(data, output.AsSpan(0, written), ReferenceEquals(dictionary, first) ? "first" : "second");
@@ -123,9 +122,9 @@ public sealed class DictionaryPerFrameTests
     [Fact]
     public void A_dictionary_with_invalid_tables_is_refused_and_not_kept()
     {
-        (byte[] dictionary, ZstandardDictionary native) = Dictionaries.Get("json", "trained");
+        (byte[] dictionary, NativeZstdDictionary native) = Dictionaries.Get("json", "trained");
         byte[] data = DataKinds.Generate("json", 4096, 9);
-        byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = 3, Dictionary = native });
+        byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = 3, Dictionary = native });
         byte[] corrupted = (byte[])dictionary.Clone();
         corrupted.AsSpan(8, 56).Fill(0xFF);
 
@@ -148,10 +147,10 @@ public sealed class DictionaryPerFrameTests
     [Fact]
     public void A_frame_that_names_another_dictionary_is_refused()
     {
-        (byte[] json, ZstandardDictionary native) = Dictionaries.Get("json", "trained");
+        (byte[] json, NativeZstdDictionary native) = Dictionaries.Get("json", "trained");
         (byte[] text, _) = Dictionaries.Get("text", "trained");
         byte[] data = DataKinds.Generate("json", 4096, 9);
-        byte[] frame = NativeZstd.Compress(data, new ZstandardCompressionOptions { Quality = 3, Dictionary = native });
+        byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = 3, Dictionary = native });
 
         var decoder = new ZstdDecompressor(json);
         byte[] output = new byte[data.Length];
@@ -174,7 +173,7 @@ public sealed class DictionaryPerFrameTests
         for (int d = 0; d < dictionaries.Count; d++)
         {
             byte[] data = DataKinds.Generate("json", 200 * 1024, 50 + d);
-            var options = new ZstandardCompressionOptions { Quality = 3, Dictionary = dictionaries[d].Native };
+            var options = new NativeZstdOptions { Quality = 3, Dictionary = dictionaries[d].Native };
             frames[d] = (dictionaries[d].Bytes, NativeZstd.Compress(data, options), data.Length);
         }
 
@@ -210,21 +209,21 @@ public sealed class DictionaryPerFrameTests
     /// <summary>A decompressor kept from one call to the next of a test, as a reader keeps one.</summary>
     private static readonly ZstdDecompressor Shared = new ZstdDecompressor();
 
-    private sealed record Given(string Name, byte[] Bytes, ZstandardDictionary? Native);
+    private sealed record Given(string Name, byte[] Bytes, NativeZstdDictionary? Native);
 
     /// <summary>Two trained dictionaries, raw content, a dictionary under the tail's size, and none.</summary>
     private static List<Given> Givens()
     {
-        (byte[] json, ZstandardDictionary jsonNative) = Dictionaries.Get("json", "trained");
-        (byte[] text, ZstandardDictionary textNative) = Dictionaries.Get("text", "trained");
-        (byte[] raw, ZstandardDictionary rawNative) = Dictionaries.Get("json", "raw");
+        (byte[] json, NativeZstdDictionary jsonNative) = Dictionaries.Get("json", "trained");
+        (byte[] text, NativeZstdDictionary textNative) = Dictionaries.Get("text", "trained");
+        (byte[] raw, NativeZstdDictionary rawNative) = Dictionaries.Get("json", "raw");
         byte[] small = DataKinds.Generate("text", 700, 23);
         return
         [
             new Given("json trained", json, jsonNative),
             new Given("text trained", text, textNative),
             new Given("json raw", raw, rawNative),
-            new Given("700 bytes raw", small, ZstandardDictionary.Create(small)),
+            new Given("700 bytes raw", small, NativeZstdDictionary.Create(small)),
             new Given("none", [], null),
         ];
     }

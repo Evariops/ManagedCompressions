@@ -1,0 +1,84 @@
+zstd	silesia	1	compression	native	zstd 1.5.7 (NativeCompressions)	native	705.2282605006618	2.8958134442137093	same
+zstd	silesia	1	compression	managed	ManagedCompressions.Zstd (JIT)	managed	691.3144784351588	2.8958134442137093	same
+zstd	silesia	1	decompression	native	zstd 1.5.7 (NativeCompressions)	native	2156.944285291223	2.8958134442137093	same
+zstd	silesia	1	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	2176.846762738446	2.8958134442137093	same
+zstd	silesia	3	compression	native	zstd 1.5.7 (NativeCompressions)	native	432.45539414303664	3.2049003207016797	same
+zstd	silesia	3	compression	managed	ManagedCompressions.Zstd (JIT)	managed	425.69453828534796	3.2049003207016797	same
+zstd	silesia	3	decompression	native	zstd 1.5.7 (NativeCompressions)	native	1858.5932961991218	3.2049003207016797	same
+zstd	silesia	3	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	2010.161696461343	3.2049003207016797	same
+zstd	silesia	9	compression	native	zstd 1.5.7 (NativeCompressions)	native	109.45892548605482	3.5878380656784103	same
+zstd	silesia	9	compression	managed	ManagedCompressions.Zstd (JIT)	managed	107.10970015069786	3.5878380656784103	same
+zstd	silesia	9	decompression	native	zstd 1.5.7 (NativeCompressions)	native	1999.136312273745	3.5878380656784103	same
+zstd	silesia	9	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	2150.566762552699	3.5878380656784103	same
+zstd	silesia-64k	1	compression	native	zstd 1.5.7 (NativeCompressions)	native	684.1720972692257	2.7632291164527083	same
+zstd	silesia-64k	1	compression	managed	ManagedCompressions.Zstd (JIT)	managed	673.0472541036575	2.7632291164527083	same
+zstd	silesia-64k	1	decompression	native	zstd 1.5.7 (NativeCompressions)	native	1939.8146839706394	2.7632291164527083	same
+zstd	silesia-64k	1	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	1923.1689981734487	2.7632291164527083	same
+zstd	silesia-64k	3	compression	native	zstd 1.5.7 (NativeCompressions)	native	519.3950504708662	2.8824452044390694	same
+zstd	silesia-64k	3	compression	managed	ManagedCompressions.Zstd (JIT)	managed	494.1636665675765	2.8824452044390694	same
+zstd	silesia-64k	3	decompression	native	zstd 1.5.7 (NativeCompressions)	native	1825.833365637833	2.8824452044390694	same
+zstd	silesia-64k	3	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	1907.2338059093752	2.8824452044390694	same
+zstd	silesia-64k	9	compression	native	zstd 1.5.7 (NativeCompressions)	native	100.46881235659835	3.0781279254831393	same
+zstd	silesia-64k	9	compression	managed	ManagedCompressions.Zstd (JIT)	managed	100.97423148939829	3.0781279254831393	same
+zstd	silesia-64k	9	decompression	native	zstd 1.5.7 (NativeCompressions)	native	1798.3338593901133	3.0781279254831393	same
+zstd	silesia-64k	9	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	1912.234280873239	3.0781279254831393	same
+zstd	github	1	compression	native	zstd 1.5.7 (NativeCompressions)	native	334.89000164176656	2.8656130369121624	same
+zstd	github	1	compression	managed	ManagedCompressions.Zstd (JIT)	managed	427.993075954679	2.8656130369121624	same
+zstd	github	1	decompression	native	zstd 1.5.7 (NativeCompressions)	native	923.2020819189862	2.8656130369121624	same
+zstd	github	1	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	1085.5854177754125	2.8656130369121624	same
+zstd	github	3	compression	native	zstd 1.5.7 (NativeCompressions)	native	297.6528527652123	2.9924448584694603	same
+zstd	github	3	compression	managed	ManagedCompressions.Zstd (JIT)	managed	340.30947614280944	2.9924448584694603	same
+zstd	github	3	decompression	native	zstd 1.5.7 (NativeCompressions)	native	665.0847733941964	2.9924448584694603	same
+zstd	github	3	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	749.1057656995961	2.9924448584694603	same
+zstd	github	9	compression	native	zstd 1.5.7 (NativeCompressions)	native	130.22312308478038	3.0192196681517443	same
+zstd	github	9	compression	managed	ManagedCompressions.Zstd (JIT)	managed	143.01945661700265	3.0192196681517443	same
+zstd	github	9	decompression	native	zstd 1.5.7 (NativeCompressions)	native	665.7359660574413	3.0192196681517443	same
+zstd	github	9	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	751.3130755064458	3.0192196681517443	same
+zstd	github-dict	1	compression	native	zstd 1.5.7 (NativeCompressions)	native	959.9129411764707	9.886177482673387	same
+zstd	github-dict	1	compression	managed	ManagedCompressions.Zstd (JIT)	managed	1504.8432312799707	9.886177482673387	same
+zstd	github-dict	1	decompression	native	zstd 1.5.7 (NativeCompressions)	native	3078.9660377358496	9.886177482673387	same
+zstd	github-dict	1	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	3550.59181897302	9.886177482673387	same
+zstd	github-dict	3	compression	native	zstd 1.5.7 (NativeCompressions)	native	931.2097694590275	9.921761758840411	same
+zstd	github-dict	3	compression	managed	ManagedCompressions.Zstd (JIT)	managed	1366.2525117213663	9.921761758840411	same
+zstd	github-dict	3	decompression	native	zstd 1.5.7 (NativeCompressions)	native	3167.414596273292	9.921761758840411	same
+zstd	github-dict	3	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	3753.109475620975	9.921761758840411	same
+zstd	github-dict	9	compression	native	zstd 1.5.7 (NativeCompressions)	native	118.46647501234138	10.34415172798499	same
+zstd	github-dict	9	compression	managed	ManagedCompressions.Zstd (JIT)	managed	119.81996005639098	10.34415172798499	same
+zstd	github-dict	9	decompression	native	zstd 1.5.7 (NativeCompressions)	native	2819.3711126468556	10.34415172798499	same
+zstd	github-dict	9	decompression	managed	ManagedCompressions.Zstd (JIT)	managed	3266.3170536429143	10.34415172798499	same
+lz4	silesia	1	compression	native	lz4 1.10.0 (NativeCompressions)	native	1022.843139431295	2.1009739956083835	same
+lz4	silesia	1	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	990.5034720518403	2.1009739956083835	same
+lz4	silesia	1	decompression	native	lz4 1.10.0 (NativeCompressions)	native	6382.977124064906	2.1009739956083835	same
+lz4	silesia	1	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	6510.220234548257	2.1009739956083835	same
+lz4	silesia	3	compression	native	lz4 1.10.0 (NativeCompressions)	native	165.53092575172005	2.6056240227512983	same
+lz4	silesia	3	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	159.15875089520588	2.6056240227512983	same
+lz4	silesia	3	decompression	native	lz4 1.10.0 (NativeCompressions)	native	5799.375374520819	2.6056240227512983	same
+lz4	silesia	3	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	5909.326255272997	2.6056240227512983	same
+lz4	silesia	9	compression	native	lz4 1.10.0 (NativeCompressions)	native	56.22331625785698	2.721310244921095	same
+lz4	silesia	9	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	53.62818659897737	2.721310244921095	same
+lz4	silesia	9	decompression	native	lz4 1.10.0 (NativeCompressions)	native	6097.960480130735	2.721310244921095	same
+lz4	silesia	9	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	6195.843440588633	2.721310244921095	same
+lz4	silesia-64k	1	compression	native	lz4 1.10.0 (NativeCompressions)	native	963.2919940352151	2.068812051028477	same
+lz4	silesia-64k	1	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	912.7688569590281	2.068812051028477	same
+lz4	silesia-64k	1	decompression	native	lz4 1.10.0 (NativeCompressions)	native	5182.724385073028	2.068812051028477	same
+lz4	silesia-64k	1	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	4610.713225984695	2.068812051028477	same
+lz4	silesia-64k	3	compression	native	lz4 1.10.0 (NativeCompressions)	native	183.7917752958841	2.408919597768634	same
+lz4	silesia-64k	3	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	177.5299611289955	2.408919597768634	same
+lz4	silesia-64k	3	decompression	native	lz4 1.10.0 (NativeCompressions)	native	5864.476135137379	2.408919597768634	same
+lz4	silesia-64k	3	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	5150.169900081646	2.408919597768634	same
+lz4	silesia-64k	9	compression	native	lz4 1.10.0 (NativeCompressions)	native	81.09233363291288	2.4757417342047963	same
+lz4	silesia-64k	9	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	74.68646352629167	2.4757417342047963	same
+lz4	silesia-64k	9	decompression	native	lz4 1.10.0 (NativeCompressions)	native	6123.170384323152	2.4757417342047963	same
+lz4	silesia-64k	9	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	5289.85351998782	2.4757417342047963	same
+lz4	github	1	compression	native	lz4 1.10.0 (NativeCompressions)	native	1833.541573033708	2.2891234330987893	same
+lz4	github	1	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	2127.0229405630866	2.2891234330987893	same
+lz4	github	1	decompression	native	lz4 1.10.0 (NativeCompressions)	native	10328.177215189875	2.2891234330987893	same
+lz4	github	1	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	10996.307277628033	2.2891234330987893	same
+lz4	github	3	compression	native	lz4 1.10.0 (NativeCompressions)	native	289.8905705961771	2.3640024801098667	same
+lz4	github	3	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	628.1185527328714	2.3640024801098667	same
+lz4	github	3	decompression	native	lz4 1.10.0 (NativeCompressions)	native	10541.679586563308	2.3640024801098667	same
+lz4	github	3	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	11026.027027027027	2.3640024801098667	same
+lz4	github	9	compression	native	lz4 1.10.0 (NativeCompressions)	native	289.15089659082855	2.3640024801098667	same
+lz4	github	9	compression	managed	ManagedCompressions.Lz4 (JIT)	managed	510.84773353368394	2.3640024801098667	same
+lz4	github	9	decompression	native	lz4 1.10.0 (NativeCompressions)	native	10596.441558441558	2.3640024801098667	same
+lz4	github	9	decompression	managed	ManagedCompressions.Lz4 (JIT)	managed	10966.747311827956	2.3640024801098667	same

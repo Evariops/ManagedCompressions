@@ -1,7 +1,7 @@
 # ManagedCompressions
 
 **Zstandard and LZ4 written entirely in C#.** No native library and no P/Invoke: the code runs wherever
-.NET runs, trims, and compiles with Native AOT.
+.NET runs on a little-endian processor, trims, and compiles with Native AOT.
 
 - **Same bytes as the native libraries.** Every frame and block is byte-for-byte what libzstd 1.5.7 and
   lz4 1.10.0 write, at every level, so the compression ratios are theirs. The tests check this.
@@ -99,7 +99,7 @@ of it. Level 19 is as noisy there: NativeCompressions took 41.7 s, then 43.3 s, 
 
 ## Quick start
 
-The packages target .NET 11:
+The packages target .NET 10 and .NET 11:
 
 ```sh
 dotnet add package ManagedCompressions.Zstd
@@ -237,10 +237,12 @@ x64 alike.
 | Checksums | XXH64, written on request, always verified | not in the block format |
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no |
 | Validation | accepts and refuses what libzstd does | refuses any literal or match past either end |
+| Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same |
 
 Not supported: streaming (a frame or block is compressed or decompressed in one call, from and into
-memory), inputs over 2 GiB, the LZ4 frame format, and libzstd's advanced parameters (window size,
-strategy).
+memory), inputs over 2 GiB, the LZ4 frame format, libzstd's advanced parameters (window size,
+strategy), and big-endian processors (IBM Z), where the constructors throw
+`PlatformNotSupportedException`. WebAssembly has not been tried.
 
 ## How it was measured
 
@@ -248,6 +250,11 @@ strategy).
   Windows 11 (build 26200). Both run .NET 11.0.0-rc.1, on one thread. On Windows the benchmarks run at a
   high priority, and the level-by-level one keeps its timed thread on one logical processor
   (`--core 2`), as macOS keeps it on a performance core.
+- **.NET 10:** the figures are .NET 11's, and .NET 10 runs the managed codecs at the same speed. On the
+  Ryzen 9 7950X, at levels 1, 3 and 9 of every level-by-level workload, its speed against the native
+  side is 0.99 of .NET 11's on average, and no case is more than 8 % slower
+  ([`bench/results/x64/dotnet10`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/dotnet10/README.md)).
+  The arm64 machine has yet to measure it.
 - **Native side:** NativeCompressions 1.1.0, which ships zstd 1.5.7 and lz4 1.10.0 built at `-O3`. On
   arm64, its libzstd decompresses at the speed of the one .NET ships. A libzstd built from source with
   Apple clang 21 decompresses some 20 % faster: against that one, Zstandard decompression is 1.11–1.21×
@@ -279,11 +286,12 @@ tools/native-ref/build.sh mt         # libzstd with threads, the oracle of the p
 Then run the benchmarks:
 
 ```sh
-dotnet run -c Release --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4 --seconds 3
+dotnet run -c Release -f net11.0 --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4 --seconds 3
 dotnet run -c Release --project bench/ManagedCompressions.Benchmarks -- --filter '*'
 ```
 
-On Windows, add `--core 2` to the first command to keep its timed thread on one logical processor.
+On Windows, add `--core 2` to the first command to keep its timed thread on one logical processor. With
+`-f net10.0`, it measures the managed codecs on .NET 10.
 
 Finally, run the tests:
 

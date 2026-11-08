@@ -61,8 +61,10 @@ public sealed partial class ZstdDecompressor
     private bool _prefix;
 
     /// <summary>Creates a decoder without a dictionary.</summary>
+    /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdDecompressor()
     {
+        LittleEndian.Require();
         _huffman = new HuffmanTable();
         _sequenceTables = new SequenceTableSet();
         _currentHuffman = _huffman;
@@ -82,8 +84,12 @@ public sealed partial class ZstdDecompressor
         }
     }
 
-    /// <summary>Why the last call refused its frame; <see cref="ZstdError.None"/> after a success.</summary>
-    internal ZstdError LastError { get; private set; }
+    /// <summary>
+    /// Why the last call refused its frame: the check that failed, where the status it returned says
+    /// what to do next. <see cref="ZstdError.None"/> after a call that returned
+    /// <see cref="OperationStatus.Done"/>.
+    /// </summary>
+    public ZstdError LastError { get; private set; }
 
     /// <summary>
     /// Decompresses the frame that starts <paramref name="source"/> into the start of

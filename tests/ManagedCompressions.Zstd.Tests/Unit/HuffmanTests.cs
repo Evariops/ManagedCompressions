@@ -9,7 +9,7 @@ namespace ManagedCompressions.Zstd.Tests.Unit;
 
 /// <summary>
 /// Literals compressed with Huffman codes built independently of the decoder (<see cref="HuffmanCode"/>),
-/// in frames the platform's libzstd decodes too.
+/// in frames libzstd decodes too.
 /// </summary>
 public sealed class HuffmanTests
 {
@@ -203,7 +203,7 @@ public sealed class HuffmanTests
     }
 }
 
-/// <summary>Assertions on hand-built frames, which the platform's libzstd must judge alike.</summary>
+/// <summary>Assertions on hand-built frames, which libzstd must judge alike.</summary>
 internal static class FrameAssert
 {
     public static void DecodesTo(byte[] frame, byte[] expected, byte[]? dictionary = null)
@@ -216,7 +216,7 @@ internal static class FrameAssert
         Assert.Equal(expected.Length, written);
         Differential.Corpus.AssertSameBytes(expected, output.AsSpan(0, written), "frame");
 
-        using var native = dictionary is null ? null : System.IO.Compression.ZstandardDictionary.Create(dictionary);
+        using var native = dictionary is null ? null : NativeZstdDictionary.Create(dictionary);
         byte[] nativeOutput = new byte[Math.Max(1, expected.Length)];
         Assert.Equal(OperationStatus.Done, NativeZstd.Decompress(frame, nativeOutput, native, out _, out int nativeWritten));
         Differential.Corpus.AssertSameBytes(expected, nativeOutput.AsSpan(0, nativeWritten), "frame (libzstd)");
@@ -231,8 +231,8 @@ internal static class FrameAssert
         Assert.Equal(0, written);
         Assert.Equal(error, decoder.LastError);
 
-        // The platform's decoder refuses too, by a status or, for some errors, an exception.
-        using var native = dictionary is null ? null : System.IO.Compression.ZstandardDictionary.Create(dictionary);
+        // libzstd refuses too: by a status, or by refusing the dictionary.
+        using var native = dictionary is null ? null : NativeZstdDictionary.Create(dictionary);
         OperationStatus nativeStatus;
         try
         {

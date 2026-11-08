@@ -26,7 +26,7 @@ env:
 jobs:
   hooks:
     name: Hooks (betterleaks + zizmor)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,7 +39,7 @@ jobs:
 
   zizmor:
     name: Workflow security (zizmor)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,16 +54,18 @@ jobs:
   # this job built and tested, and nothing built elsewhere.
   test:
     name: Build & Test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The SDK global.json names builds both targets; the .NET 10 runtime runs the net10.0 tests.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+          dotnet-version: 10.0.x
 
       # A release v1.2.3 is built as 1.2.3: the assemblies, and the packages the publish job pushes.
       # Any other run leaves the version unset and packs the SDK's default, a file name and not a claim.
@@ -101,9 +103,9 @@ jobs:
       - name: Pack
         run: dotnet pack ManagedCompressions.slnx --no-build -c Release ${VERSION_PROPERTY:+"$VERSION_PROPERTY"}
 
-      # Exactly the two libraries, each with its symbols, its documentation, its readme, and the BSD
-      # notices of zstd and lz4 that NOTICE carries: their licenses ask a binary distribution for them.
-      # A project that becomes packable by accident fails here too.
+      # Exactly the two libraries, each built for .NET 10 and .NET 11 with its documentation, with its
+      # symbols, its readme, and the BSD notices of zstd and lz4 that NOTICE carries: their licenses ask
+      # a binary distribution for them. A project that becomes packable by accident fails here too.
       - name: Check the packages
         run: |
           set -euo pipefail
@@ -120,7 +122,8 @@ jobs:
             fi
             package=${packages[0]}
             contents=$(unzip -Z1 "$package")
-            for entry in README.md NOTICE LICENSE "lib/[^/]+/$id\.dll" "lib/[^/]+/$id\.xml"; do
+            for entry in README.md NOTICE LICENSE \
+              "lib/net10\.0/$id\.dll" "lib/net10\.0/$id\.xml" "lib/net11\.0/$id\.dll" "lib/net11\.0/$id\.xml"; do
               if ! grep -qxE "$entry" <<< "$contents"; then
                 echo "::error::$package has no $entry"
                 exit 1
@@ -148,15 +151,107 @@ jobs:
           path: ${{ runner.temp }}/packages
           if-no-files-found: error
 
+  # The same tests where the codecs take other paths: on arm64 (AdvSimd), and on x64 with instruction
+  # sets turned off, down to the scalar code that runs where no vector instruction does. Each path the
+  # library has runs on some machine; the test job above covers whatever its runner has. The knobs are
+  # .NET 10's names: DOTNET_EnableAVX512F no longer does anything, and InstructionSetTests fails a leg
+  # whose knob did not take.
+  instruction-sets:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: arm64
+            runner: ubuntu-24.04-arm
+            knob: ''
+          - name: arm64, no intrinsics
+            runner: ubuntu-24.04-arm
+            knob: DOTNET_EnableHWIntrinsic
+          - name: x64, no AVX-512
+            runner: ubuntu-24.04
+            knob: DOTNET_EnableAVX512
+          - name: x64, no AVX2
+            runner: ubuntu-24.04
+            knob: DOTNET_EnableAVX2
+          - name: x64, no intrinsics
+            runner: ubuntu-24.04
+            knob: DOTNET_EnableHWIntrinsic
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          dotnet-version: 10.0.x
+
+      - name: Build
+        run: dotnet build ManagedCompressions.slnx -c Release
+
+      - name: Write the Zstandard test data
+        run: bash tools/native-ref/testdata.sh
+
+      - name: Build libzstd with threads
+        run: bash tools/native-ref/build.sh mt
+
+      # The knob is set for the tests alone, not for the build.
+      - name: Test
+        env:
+          KNOB: ${{ matrix.knob }}
+        run: |
+          if [ -n "$KNOB" ]; then
+            export "$KNOB=0"
+          fi
+          dotnet test --solution ManagedCompressions.slnx --no-build -c Release
+
+  # Both libraries in an application compiled with Native AOT, for each target and architecture:
+  # trimming and ahead-of-time compilation would refuse what the JIT tolerates, and warnings are
+  # errors. The application checks every frame and block against the hashes it carries, the same
+  # on every machine.
+  native-aot:
+    name: Native AOT (${{ matrix.rid }}, ${{ matrix.framework }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, rid: linux-x64, framework: net10.0 }
+          - { runner: ubuntu-24.04, rid: linux-x64, framework: net11.0 }
+          - { runner: ubuntu-24.04-arm, rid: linux-arm64, framework: net10.0 }
+          - { runner: ubuntu-24.04-arm, rid: linux-arm64, framework: net11.0 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          dotnet-version: 10.0.x
+
+      - name: Publish
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+          RID: ${{ matrix.rid }}
+        run: dotnet publish tests/ManagedCompressions.AotSmoke -c Release -f "$FRAMEWORK" -r "$RID" -o "$RUNNER_TEMP/aot"
+
+      - name: Run
+        run: '"$RUNNER_TEMP/aot/ManagedCompressions.AotSmoke"'
+
   # A published release's packages go to nuget.org, under the Evariops account. Trusted Publishing
   # trades the job's GitHub OIDC token for an API key that lives an hour, so no key is stored here; the
   # policy nuget.org holds names this repository, this file (ci.yml) and the release environment:
   # renaming either stops the push.
   publish:
     name: Publish to nuget.org
-    needs: [hooks, zizmor, test]
+    needs: [hooks, zizmor, test, instruction-sets, native-aot]
     if: github.event_name == 'release'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment: release
     permissions:
