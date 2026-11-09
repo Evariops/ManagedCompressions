@@ -10,7 +10,7 @@
     <!-- Coverage-guided fuzzing with libFuzzer (fuzz/). -->
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
     <!-- The native reference the managed codecs are measured against: zstd 1.5.7 and lz4 1.10.0. -->
-    <PackageVersion Include="NativeCompressions.Zstandard" Version="1.1.0" />
+    <PackageVersion Include="NativeCompressions.Zstandard" Version="1.3.0" />
     <PackageVersion Include="NativeCompressions.LZ4" Version="1.2.0" />
   </ItemGroup>
 </Project>
