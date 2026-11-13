@@ -85,6 +85,18 @@ public sealed partial class ZstdDecompressor
         }
     }
 
+    /// <summary>
+    /// Creates a decoder for frames compressed with <paramref name="dictionary"/>, prepared once and
+    /// shared: its tables taken as they are.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="dictionary"/> is null.</exception>
+    public ZstdDecompressor(ZstdDictionary dictionary)
+        : this()
+    {
+        ArgumentNullException.ThrowIfNull(dictionary);
+        _dictionary = dictionary.Decoder;
+    }
+
     /// <summary>The memory the decompressor holds on to beyond its tables, roughly: its literals and records.</summary>
     internal long RetainedBytes => (long)_literals.Length + (8L * (_records?.Length ?? 0));
 

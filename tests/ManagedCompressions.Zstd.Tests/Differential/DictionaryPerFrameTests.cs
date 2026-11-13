@@ -8,7 +8,7 @@ using Xunit;
 namespace ManagedCompressions.Zstd.Tests.Differential;
 
 /// <summary>
-/// A dictionary given with each frame rather than to the constructor: copied for the frame, its
+/// A dictionary given with each frame rather than to the constructor: read in place for the frame, its
 /// tables kept for the frames that give the same and rebuilt in place for another, so that one
 /// decompressor serves frames of every dictionary. libzstd writes the frames.
 /// </summary>

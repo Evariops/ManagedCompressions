@@ -87,7 +87,7 @@ public sealed class ZstdDecoder
     /// <summary>Creates a decoder without a dictionary, for windows of up to <see cref="ZstdDecompressionOptions.DefaultMaxWindowLog"/>.</summary>
     /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdDecoder()
-        : this(default, ZstdDecompressionOptions.DefaultMaxWindowLog)
+        : this(new ZstdDecompressor(), ZstdDecompressionOptions.DefaultMaxWindowLog)
     {
     }
 
@@ -101,18 +101,47 @@ public sealed class ZstdDecoder
     {
     }
 
+    /// <summary>
+    /// Creates a decoder for frames compressed with <paramref name="dictionary"/>, prepared once and
+    /// shared, for windows of up to <see cref="ZstdDecompressionOptions.DefaultMaxWindowLog"/>.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="dictionary"/> is null.</exception>
+    public ZstdDecoder(ZstdDictionary dictionary)
+        : this(new ZstdDecompressor(dictionary), ZstdDecompressionOptions.DefaultMaxWindowLog)
+    {
+    }
+
     /// <summary>Creates a decoder with <paramref name="options"/>.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentException">The options give the dictionary both as bytes and prepared.</exception>
     /// <exception cref="System.IO.InvalidDataException">The dictionary has the zstd format but invalid tables.</exception>
     public ZstdDecoder(ZstdDecompressionOptions options)
-        : this((options ?? throw new ArgumentNullException(nameof(options))).Dictionary.Span, options.MaxWindowLog)
+        : this(Engine(options ?? throw new ArgumentNullException(nameof(options))), options.MaxWindowLog)
     {
     }
 
     private ZstdDecoder(ReadOnlySpan<byte> dictionary, int maxWindowLog)
+        : this(dictionary.IsEmpty ? new ZstdDecompressor() : new ZstdDecompressor(dictionary), maxWindowLog)
     {
-        _engine = dictionary.IsEmpty ? new ZstdDecompressor() : new ZstdDecompressor(dictionary);
+    }
+
+    private ZstdDecoder(ZstdDecompressor engine, int maxWindowLog)
+    {
+        _engine = engine;
         _maxWindowSize = 1UL << maxWindowLog;
+    }
+
+    /// <summary>The one-shot decoder of the options' dictionary, prepared or given as bytes, if any.</summary>
+    private static ZstdDecompressor Engine(ZstdDecompressionOptions options)
+    {
+        if (options.PreparedDictionary is { } prepared)
+        {
+            return options.Dictionary.IsEmpty
+                ? new ZstdDecompressor(prepared)
+                : throw new ArgumentException("A dictionary is given as bytes or prepared, not both.", nameof(options));
+        }
+
+        return options.Dictionary.IsEmpty ? new ZstdDecompressor() : new ZstdDecompressor(options.Dictionary.Span);
     }
 
     private enum Stage

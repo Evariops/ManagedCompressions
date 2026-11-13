@@ -48,6 +48,18 @@ public sealed unsafe partial class ZstdCompressor
     }
 
     /// <summary>
+    /// Creates a compressor that compresses every frame with <paramref name="dictionary"/>, prepared once
+    /// and shared, at its level: the frames of <see cref="ZstdCompressor(int, ReadOnlySpan{byte})"/> with
+    /// its bytes, without preparing them again.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="dictionary"/> is null.</exception>
+    public ZstdCompressor(ZstdDictionary dictionary)
+        : this((dictionary ?? throw new ArgumentNullException(nameof(dictionary))).Level)
+    {
+        _dictionary = dictionary.Compressor;
+    }
+
+    /// <summary>
     /// libzstd's <c>attachDictSizeCutoffs</c>: up to these sizes, by the dictionary's strategy, a frame
     /// searches the prepared dictionary's tables in place rather than copying them.
     /// </summary>

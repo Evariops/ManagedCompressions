@@ -43,7 +43,14 @@ public sealed class ZstdDecompressionOptions
 
     /// <summary>
     /// A dictionary in the zstd format, or any other bytes as raw content; empty for none. The decoder
-    /// copies it when it is created.
+    /// copies it when it is created. Not with <see cref="PreparedDictionary"/>.
     /// </summary>
     public ReadOnlyMemory<byte> Dictionary { get; set; }
+
+    /// <summary>
+    /// A dictionary prepared once (<see cref="ZstdDictionary.Create(ReadOnlySpan{byte})"/>), which the
+    /// decoder takes as it is, shared with every other codec given it; null for none. Not with
+    /// <see cref="Dictionary"/>.
+    /// </summary>
+    public ZstdDictionary? PreparedDictionary { get; set; }
 }

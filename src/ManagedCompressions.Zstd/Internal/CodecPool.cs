@@ -23,25 +23,38 @@ internal static class CodecPool
     private static readonly int PerSetting = Math.Clamp(Environment.ProcessorCount, 2, 16);
     private static readonly Lock Gate = new();
     private static readonly Dictionary<EncoderKey, List<Entry<ZstdEncoder>>> Encoders = [];
-    private static readonly Dictionary<int, List<Entry<ZstdDecoder>>> Decoders = [];
+    private static readonly Dictionary<DecoderKey, List<Entry<ZstdDecoder>>> Decoders = [];
 
     /// <summary>The gen 2 collections seen, counted by the trimming callback.</summary>
     private static int s_epoch;
     private static bool s_trimming;
 
-    /// <summary>The settings of an encoder without a dictionary: what <see cref="ZstdCompressionOptions"/> holds besides.</summary>
+    /// <summary>
+    /// The settings of an encoder: what <see cref="ZstdCompressionOptions"/> holds, a prepared dictionary
+    /// by reference; none given as bytes, which each encoder would prepare again.
+    /// </summary>
     public readonly record struct EncoderKey(
-        int Level, int WindowLog, bool AppendChecksum, bool? LongDistanceMatching, bool WriteContentSize, bool WriteDictionaryId, ZstdExperimentalOptions Experimental)
+        int Level, int WindowLog, bool AppendChecksum, bool? LongDistanceMatching, bool WriteContentSize, bool WriteDictionaryId,
+        ZstdExperimentalOptions Experimental, ZstdDictionary? Dictionary)
     {
         /// <summary>An encoder at <paramref name="level"/>, every other option at its default.</summary>
         public static EncoderKey Of(int level) =>
-            new(level == 0 ? ZstdCompressor.DefaultLevel : level, 0, false, null, true, true, ZstdExperimentalOptions.None);
+            new(level == 0 ? ZstdCompressor.DefaultLevel : level, 0, false, null, true, true, ZstdExperimentalOptions.None, null);
 
-        /// <summary>The options' settings; null with a dictionary, whose encoders are not kept.</summary>
+        /// <summary>The options' settings; null with a dictionary given as bytes, whose encoders are not kept.</summary>
         public static EncoderKey? Of(ZstdCompressionOptions options) => options.Dictionary.IsEmpty
-            ? new(options.Level == 0 ? ZstdCompressor.DefaultLevel : options.Level, options.WindowLog, options.AppendChecksum,
-                options.LongDistanceMatching, options.WriteContentSize, options.WriteDictionaryId, options.Experimental)
+            ? new(options.PreparedDictionary?.Level ?? (options.Level == 0 ? ZstdCompressor.DefaultLevel : options.Level), options.WindowLog,
+                options.AppendChecksum, options.LongDistanceMatching, options.WriteContentSize, options.WriteDictionaryId, options.Experimental,
+                options.PreparedDictionary)
             : null;
+    }
+
+    /// <summary>The settings of a decoder: its largest window, a prepared dictionary by reference.</summary>
+    public readonly record struct DecoderKey(int MaxWindowLog, ZstdDictionary? Dictionary)
+    {
+        /// <summary>The options' settings; null with a dictionary given as bytes, whose decoders are not kept.</summary>
+        public static DecoderKey? Of(ZstdDecompressionOptions options) =>
+            options.Dictionary.IsEmpty ? new(options.MaxWindowLog, options.PreparedDictionary) : null;
     }
 
     private readonly record struct Entry<T>(T Codec, int Epoch);
@@ -82,12 +95,12 @@ internal static class CodecPool
         }
     }
 
-    /// <summary>A decoder without a dictionary that accepts windows of up to 2^<paramref name="maxWindowLog"/> bytes.</summary>
-    public static ZstdDecoder RentDecoder(int maxWindowLog)
+    /// <summary>A decoder of these settings: a kept one, or a new one.</summary>
+    public static ZstdDecoder RentDecoder(DecoderKey key)
     {
         lock (Gate)
         {
-            if (Decoders.TryGetValue(maxWindowLog, out List<Entry<ZstdDecoder>>? kept) && kept.Count > 0)
+            if (Decoders.TryGetValue(key, out List<Entry<ZstdDecoder>>? kept) && kept.Count > 0)
             {
                 ZstdDecoder decoder = kept[^1].Codec;
                 kept.RemoveAt(kept.Count - 1);
@@ -95,11 +108,11 @@ internal static class CodecPool
             }
         }
 
-        return new ZstdDecoder(new ZstdDecompressionOptions { MaxWindowLog = maxWindowLog });
+        return new ZstdDecoder(new ZstdDecompressionOptions { MaxWindowLog = key.MaxWindowLog, PreparedDictionary = key.Dictionary });
     }
 
     /// <summary>A decoder a stream is done with, reset and kept unless it holds too much or enough are kept.</summary>
-    public static void Return(int maxWindowLog, ZstdDecoder decoder)
+    public static void Return(DecoderKey key, ZstdDecoder decoder)
     {
         if (decoder.RetainedBytes > MaxRetainedBytes)
         {
@@ -109,9 +122,9 @@ internal static class CodecPool
         decoder.Reset();
         lock (Gate)
         {
-            if (!Decoders.TryGetValue(maxWindowLog, out List<Entry<ZstdDecoder>>? kept))
+            if (!Decoders.TryGetValue(key, out List<Entry<ZstdDecoder>>? kept))
             {
-                Decoders[maxWindowLog] = kept = [];
+                Decoders[key] = kept = [];
             }
 
             Keep(kept, decoder);
