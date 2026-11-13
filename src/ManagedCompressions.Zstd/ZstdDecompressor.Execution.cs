@@ -50,6 +50,13 @@ public sealed partial class ZstdDecompressor
         public ref byte HistoryEnd;
         public nint HistoryLength;
 
+        /// <summary>
+        /// How far before <see cref="HistoryEnd"/> a match from the history must end for the fast loop
+        /// to copy it 32 bytes at a time: 0 when the history has <see cref="DecoderDictionary.Margin"/>
+        /// readable bytes after it, the margin itself when it is the caller's dictionary, read in place.
+        /// </summary>
+        public nint HistoryGuard;
+
         /// <summary>A sequence the fast loop decoded but did not execute.</summary>
         public bool Pending;
         public nint LitLength;
@@ -189,6 +196,7 @@ public sealed partial class ZstdDecompressor
         {
             state.HistoryEnd = ref Unsafe.Add(ref MemoryMarshal.GetReference(history), history.Length);
             state.HistoryLength = history.Length;
+            state.HistoryGuard = _historyGuard;
             ref byte frameStart = ref MemoryMarshal.GetReference(destination);
             nint fastRoom = Math.Min((nint)blockStart + blockSizeMax, destination.Length - WildCopyOverlength);
             ref byte fastLimit = ref Unsafe.Add(ref frameStart, Math.Max(fastRoom, Unsafe.ByteOffset(ref frameStart, ref state.Dst)));
@@ -422,10 +430,11 @@ public sealed partial class ZstdDecompressor
             {
                 // ---- a match that starts in the dictionary, libzstd's extDict case: copied from
                 // there 16 bytes at a time, when it ends there too (the last copy may read into the
-                // margin after the content). One that runs on into the frame is the careful path's,
-                // as an offset beyond the dictionary is.
+                // margin after the content, or, for a dictionary read in place, which has none, it
+                // ends that far before the content's end). One that runs on into the frame is the
+                // careful path's, as an offset beyond the dictionary is.
                 nuint back = offset - prefix;
-                if ((back > (nuint)s.HistoryLength) | ((nint)back < matchLength))
+                if ((back > (nuint)s.HistoryLength) | ((nint)back - s.HistoryGuard < matchLength))
                 {
                     goto Pending;
                 }
