@@ -280,6 +280,9 @@ internal sealed unsafe class LongDistanceMatcher
     public static bool EnabledFor(in CompressionParameters parameters) =>
         parameters.Strategy >= Strategy.BinaryTreeOptimal && parameters.WindowLog >= DefaultWindowLog;
 
+    /// <summary>The memory the matcher's tables hold.</summary>
+    public long RetainedBytes => (8L * _table.Length) + _bucketOffsets.Length;
+
     /// <summary>The sequences the last <see cref="GenerateSequences"/> found.</summary>
     public RawSequence* Sequences => (RawSequence*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_sequences));
 

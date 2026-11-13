@@ -128,6 +128,9 @@ public sealed unsafe class ZstdEncoder
     /// <summary>The compressor's <see cref="ZstdCompressor.OverflowCorrections"/>, for the tests.</summary>
     internal uint OverflowCorrections => _compressor.OverflowCorrections;
 
+    /// <summary>The memory the encoder holds on to, its buffers and the compressor's tables, roughly: for <see cref="CodecPool"/>.</summary>
+    internal long RetainedBytes => (long)_input.Length + _output.Length + _compressor.RetainedBytes;
+
     private enum Stage
     {
         /// <summary>No frame begun: the next call begins one, with the parameters it then knows.</summary>

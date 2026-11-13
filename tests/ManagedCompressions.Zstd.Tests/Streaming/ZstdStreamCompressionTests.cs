@@ -145,6 +145,62 @@ public sealed class ZstdStreamCompressionTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new ZstdStream(new MemoryStream(), (CompressionLevel)7));
     }
 
+    /// <summary>
+    /// The streams that create their encoder take it from the library's pool, and put it back: a
+    /// reused encoder writes the bytes a new one writes, at every strategy, and one stream disposed of
+    /// twice puts its encoder back once, so that two streams open at once never share one.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(7)]
+    [InlineData(12)]
+    [InlineData(16)]
+    public void Pooled_encoders_write_the_bytes_of_new_ones(int level)
+    {
+        byte[] large = DataKinds.Generate("mixed", 600_000, level);
+        byte[] small = DataKinds.Generate("json", 3000, level);
+        var options = new ZstdCompressionOptions { Level = level };
+        foreach (byte[] data in (byte[][])[large, small, large, small])
+        {
+            byte[] expected = Compress(data, s => new ZstdStream(s, new ZstdEncoder(level), leaveOpen: true));
+            Assert.Equal(expected, Compress(data, s => new ZstdStream(s, options, leaveOpen: true)));
+        }
+
+        var twice = new ZstdStream(new MemoryStream(), options);
+        twice.Write(small);
+        twice.Dispose();
+        twice.Dispose();
+        var first = new MemoryStream();
+        var second = new MemoryStream();
+        using (var a = new ZstdStream(first, options, leaveOpen: true))
+        using (var b = new ZstdStream(second, options, leaveOpen: true))
+        {
+            for (int at = 0; at < large.Length; at += 50_000)
+            {
+                a.Write(large, at, Math.Min(50_000, large.Length - at));
+                b.Write(small);
+            }
+        }
+
+        Assert.Equal(large, Decompress(first.ToArray()));
+        Assert.Equal(small.Length * ((large.Length + 49_999) / 50_000), Decompress(second.ToArray()).Length);
+    }
+
+    [Fact]
+    public void A_stream_refused_at_its_end_leaves_no_failed_encoder_behind()
+    {
+        byte[] data = DataKinds.Generate("text", 50_000, 11);
+        var less = new ZstdStream(new MemoryStream(), CompressionMode.Compress);
+        less.SetSourceLength(data.Length + 1);
+        less.Write(data);
+        Assert.Throws<InvalidDataException>(less.Dispose);
+        for (int i = 0; i < 4; i++)
+        {
+            Assert.Equal(data, Decompress(Compress(data, s => new ZstdStream(s, CompressionMode.Compress, leaveOpen: true))));
+        }
+    }
+
     [Fact]
     public void An_encoder_given_is_used_and_left_to_its_owner()
     {

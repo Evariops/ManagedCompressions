@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
+using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
 
@@ -25,6 +26,14 @@ namespace ManagedCompressions.Zstd;
 /// it is a truncation, and the read throws <see cref="InvalidDataException"/>, as for any data that is
 /// not Zstandard.
 /// </para>
+/// <para>
+/// A stream created without an encoder or a decoder of the caller's takes one, of its settings, from a
+/// pool the library keeps, and puts it back, reset, once disposed of cleanly: a stream per request or
+/// per file reuses the tables and buffers of the streams before it rather than allocate its own, some
+/// megabytes for an encoder. A reused codec writes and reads the same bytes as a new one. The pool keeps
+/// a few codecs per setting, none with a dictionary, none holding more than 16 MiB, and lets go of
+/// those no stream took between two gen 2 collections.
+/// </para>
 /// <para>Not thread-safe, as streams are not.</para>
 /// </remarks>
 public sealed class ZstdStream : Stream
@@ -41,6 +50,16 @@ public sealed class ZstdStream : Stream
 
     private readonly ZstdDecoder? _decoder;
     private readonly ZstdEncoder? _encoder;
+
+    /// <summary>
+    /// The settings the encoder was taken from <see cref="CodecPool"/> under, and goes back under once the
+    /// stream ends; null when the encoder is the caller's, or a dictionary's.
+    /// </summary>
+    private readonly CodecPool.EncoderKey? _pooledEncoder;
+
+    /// <summary>As <see cref="_pooledEncoder"/>, for the decoder: its largest window; 0 when it is not the pool's.</summary>
+    private readonly int _pooledDecoder;
+
     private readonly bool _leaveOpen;
     private Stream? _stream;
     private byte[]? _input;
@@ -72,10 +91,12 @@ public sealed class ZstdStream : Stream
         switch (mode)
         {
             case CompressionMode.Compress:
-                _encoder = new ZstdEncoder();
+                _pooledEncoder = CodecPool.EncoderKey.Of(ZstdCompressor.DefaultLevel);
+                _encoder = CodecPool.RentEncoder(_pooledEncoder.Value, null);
                 break;
             case CompressionMode.Decompress:
-                _decoder = new ZstdDecoder();
+                _pooledDecoder = ZstdDecompressionOptions.DefaultMaxWindowLog;
+                _decoder = CodecPool.RentDecoder(_pooledDecoder);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown compression mode.");
@@ -95,16 +116,23 @@ public sealed class ZstdStream : Stream
     /// <exception cref="ArgumentException"><paramref name="stream"/> cannot be written.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="level"/> is not a level.</exception>
     public ZstdStream(Stream stream, CompressionLevel level, bool leaveOpen = false)
-        : this(stream, new ZstdEncoder(Level(level)), leaveOpen)
     {
+        _pooledEncoder = CodecPool.EncoderKey.Of(Level(level));
+        _encoder = CodecPool.RentEncoder(_pooledEncoder.Value, null);
+        _stream = Open(stream, compress: true);
+        _leaveOpen = leaveOpen;
     }
 
     /// <summary>Compresses into <paramref name="stream"/> with <paramref name="options"/>.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="stream"/> or <paramref name="options"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="stream"/> cannot be written.</exception>
     public ZstdStream(Stream stream, ZstdCompressionOptions options, bool leaveOpen = false)
-        : this(stream, new ZstdEncoder(options), leaveOpen)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        _pooledEncoder = CodecPool.EncoderKey.Of(options);
+        _encoder = _pooledEncoder is { } key ? CodecPool.RentEncoder(key, options) : new ZstdEncoder(options);
+        _stream = Open(stream, compress: true);
+        _leaveOpen = leaveOpen;
     }
 
     /// <summary>
@@ -126,8 +154,20 @@ public sealed class ZstdStream : Stream
     /// <exception cref="ArgumentException"><paramref name="stream"/> cannot be read.</exception>
     /// <exception cref="InvalidDataException">The dictionary has the zstd format but invalid tables.</exception>
     public ZstdStream(Stream stream, ZstdDecompressionOptions options, bool leaveOpen = false)
-        : this(stream, new ZstdDecoder(options), leaveOpen)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.Dictionary.IsEmpty)
+        {
+            _pooledDecoder = options.MaxWindowLog;
+            _decoder = CodecPool.RentDecoder(_pooledDecoder);
+        }
+        else
+        {
+            _decoder = new ZstdDecoder(options);
+        }
+
+        _stream = Open(stream, compress: false);
+        _leaveOpen = leaveOpen;
     }
 
     /// <summary>
@@ -418,6 +458,7 @@ public sealed class ZstdStream : Stream
     /// <exception cref="InvalidDataException">The content differs from the source length set.</exception>
     protected override void Dispose(bool disposing)
     {
+        bool ended = false;
         try
         {
             if (disposing && _stream is { } stream && _encoder is not null)
@@ -430,12 +471,14 @@ public sealed class ZstdStream : Stream
                 }
                 while (status != OperationStatus.Done);
             }
+
+            ended = true;
         }
         finally
         {
             if (disposing)
             {
-                Release()?.Dispose();
+                Release(ended)?.Dispose();
             }
 
             base.Dispose(disposing);
@@ -445,6 +488,7 @@ public sealed class ZstdStream : Stream
     /// <inheritdoc cref="Dispose(bool)"/>
     public override async ValueTask DisposeAsync()
     {
+        bool ended = false;
         try
         {
             if (_stream is { } stream && _encoder is not null)
@@ -460,10 +504,12 @@ public sealed class ZstdStream : Stream
                 }
                 while (status != OperationStatus.Done);
             }
+
+            ended = true;
         }
         finally
         {
-            if (Release() is { } stream)
+            if (Release(ended) is { } stream)
             {
                 await stream.DisposeAsync().ConfigureAwait(false);
             }
@@ -505,13 +551,34 @@ public sealed class ZstdStream : Stream
         return _encoder is not null ? _stream : throw new InvalidOperationException("A decompression stream cannot be written.");
     }
 
-    /// <summary>The stream, let go of: returned to be disposed of unless left open; the buffers returned.</summary>
-    private Stream? Release()
+    /// <summary>
+    /// The stream, let go of: returned to be disposed of unless left open; the buffers returned, and the
+    /// codec the stream took from <see cref="CodecPool"/>, when it <paramref name="ended"/> cleanly. Once
+    /// only: a stream let go of has nothing left to release.
+    /// </summary>
+    private Stream? Release(bool ended)
     {
         Stream? stream = _stream;
+        if (stream is null)
+        {
+            return null;
+        }
+
         _stream = null;
         Return(ref _input);
         Return(ref _output);
+        if (ended)
+        {
+            if (_pooledEncoder is { } key)
+            {
+                CodecPool.Return(key, _encoder!);
+            }
+            else if (_pooledDecoder != 0)
+            {
+                CodecPool.Return(_pooledDecoder, _decoder!);
+            }
+        }
+
         return _leaveOpen ? null : stream;
 
         static void Return(ref byte[]? buffer)

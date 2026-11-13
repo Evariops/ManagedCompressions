@@ -138,6 +138,9 @@ public sealed class ZstdDecoder
     /// <summary>Whether the decoder is inside a frame: a stream that ends here is cut short.</summary>
     internal bool InFrame => _stage != Stage.FrameHeader || _headerLength != 0;
 
+    /// <summary>The memory the decoder holds on to, its window and buffers, roughly: for <see cref="CodecPool"/>.</summary>
+    internal long RetainedBytes => (long)_window.Length + _block.Length + _engine.RetainedBytes;
+
     /// <summary>
     /// Decodes as much of <paramref name="source"/> as it can into <paramref name="destination"/>, up to
     /// the end of the frame it is in.
