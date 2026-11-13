@@ -43,11 +43,18 @@ public sealed unsafe class ZstdEncoder
     /// <summary>libzstd's <c>pledgedSrcSizePlusOne</c> less one: the size pledged, or unknown.</summary>
     private ulong _pledged = CompressionParameters.UnknownSize;
 
-    /// <summary>libzstd's <c>inBuff</c>: the window, and the block being gathered after it.</summary>
+    /// <summary>The first size of <see cref="_input"/>, which grows from there, doubling, as the input comes.</summary>
+    private const int MinInputCapacity = 4 << 10;
+
+    /// <summary>
+    /// libzstd's <c>inBuff</c>: the window, and the block being gathered after it. Grown as the input
+    /// comes, up to <see cref="_inputSize"/>, rather than allocated at that size before the first
+    /// byte: a stream of a few kilobytes keeps a buffer of their size, not of the level's window.
+    /// </summary>
     private byte[] _input = [];
     private byte* _inputStart;
 
-    /// <summary>libzstd's <c>inBuffSize</c>: the frame's window and a block.</summary>
+    /// <summary>libzstd's <c>inBuffSize</c>: the frame's window and a block, where the input wraps.</summary>
     private int _inputSize;
 
     /// <summary>libzstd's <c>inBuffPos</c>: where the next byte goes.</summary>
@@ -59,7 +66,10 @@ public sealed unsafe class ZstdEncoder
     /// <summary>libzstd's <c>inBuffTarget</c>: the end of the block being gathered.</summary>
     private int _inputTarget;
 
-    /// <summary>libzstd's <c>outBuff</c>: a compressed block that did not fit the destination.</summary>
+    /// <summary>
+    /// libzstd's <c>outBuff</c>: a compressed block that did not fit the destination. Allocated by the
+    /// first such block: a caller that gives room for a block, as <see cref="ZstdStream"/> does, never needs it.
+    /// </summary>
     private byte[] _output = [];
     private byte* _outputStart;
     private int _outputContent;
@@ -274,6 +284,11 @@ public sealed unsafe class ZstdEncoder
 
                     // Gathers the block.
                     int loaded = Math.Min(_inputTarget - _inputPosition, source.Length - ip);
+                    if (_inputPosition + loaded > _input.Length)
+                    {
+                        GrowInput(_inputPosition + loaded);
+                    }
+
                     source.Slice(ip, loaded).CopyTo(new Span<byte>(_inputStart + _inputPosition, loaded));
                     _inputPosition += loaded;
                     ip += loaded;
@@ -287,6 +302,12 @@ public sealed unsafe class ZstdEncoder
                     int chunk = _inputPosition - _inputToCompress;
                     bool direct = destination.Length - op >= Bound(chunk);
                     bool lastBlock = directive == Directive.End && ip == source.Length;
+                    if (!direct && _output.Length == 0)
+                    {
+                        _output = GC.AllocateUninitializedArray<byte>((int)Bound(_blockSizeMax) + 1, pinned: true);
+                        _outputStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_output));
+                    }
+
                     int compressed = _compressor.CompressStreamChunk(
                         _inputStart + _inputToCompress,
                         chunk,
@@ -374,17 +395,11 @@ public sealed unsafe class ZstdEncoder
         }
 
         _inputSize = (int)bufferSize;
-        if (_input.Length < _inputSize)
-        {
-            _input = GC.AllocateUninitializedArray<byte>(_inputSize, pinned: true);
-            _inputStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_input));
-        }
 
-        int outputSize = (int)Bound(_blockSizeMax) + 1;
-        if (_output.Length < outputSize)
+        // A larger block than the output buffer was sized for: it is allocated again when needed.
+        if (_output.Length < (int)Bound(_blockSizeMax) + 1)
         {
-            _output = GC.AllocateUninitializedArray<byte>(outputSize, pinned: true);
-            _outputStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_output));
+            _output = [];
         }
 
         _inputToCompress = 0;
@@ -394,6 +409,29 @@ public sealed unsafe class ZstdEncoder
         _outputFlushed = 0;
         _frameEnded = false;
         _stage = Stage.Load;
+    }
+
+    /// <summary>
+    /// Grows the input buffer to hold <paramref name="size"/> bytes: doubling up to a block, then, for a
+    /// stream longer than that, the frame's whole <see cref="_inputSize"/> at once, so that a long stream
+    /// leaves some hundred kilobytes behind, not a copy of its window. The window's bytes move with it,
+    /// and the compressor's pointers into them: their indices stay, and so do the frame's bytes.
+    /// </summary>
+    private void GrowInput(int size)
+    {
+        int capacity = size > _blockSizeMax
+            ? _inputSize
+            : Math.Min(_blockSizeMax, Math.Max(size, Math.Max(2 * _input.Length, MinInputCapacity)));
+        byte[] grown = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        byte* start = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(grown));
+        if (_input.Length != 0)
+        {
+            Buffer.MemoryCopy(_inputStart, start, capacity, _input.Length);
+            _compressor.MoveStreamBuffer(_inputStart, start);
+        }
+
+        _input = grown;
+        _inputStart = start;
     }
 
     /// <summary>libzstd's <c>ZSTD_CCtx_reset</c> with <c>ZSTD_reset_session_only</c>: no frame, no size pledged.</summary>
