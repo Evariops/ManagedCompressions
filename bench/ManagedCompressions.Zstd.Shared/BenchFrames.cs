@@ -81,8 +81,7 @@ internal static class BenchFrames
 
         try
         {
-            using ZstandardDictionary trained = ZstandardDictionary.Train(samples, lengths, 16 << 10);
-            return trained.Data.ToArray();
+            return ZstandardDictionary.Train(samples, lengths, 16 << 10);
         }
         catch (Exception)
         {
