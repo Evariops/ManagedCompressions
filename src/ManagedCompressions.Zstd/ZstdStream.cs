@@ -256,7 +256,7 @@ public sealed class ZstdStream : Stream
         while (true)
         {
             OperationStatus status = Encode(buffer, out int consumed, out int written);
-            stream.Write(_output.AsSpan(0, written));
+            WriteOutput(stream, written);
             buffer = buffer.Slice(consumed);
             if (status == OperationStatus.Done)
             {
@@ -284,7 +284,11 @@ public sealed class ZstdStream : Stream
         while (true)
         {
             OperationStatus status = Encode(buffer.Span, out int consumed, out int written);
-            await stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+            if (written > 0)
+            {
+                await stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+            }
+
             buffer = buffer.Slice(consumed);
             if (status == OperationStatus.Done)
             {
@@ -309,7 +313,7 @@ public sealed class ZstdStream : Stream
         do
         {
             status = Checked(_encoder.Flush(OutputBuffer(), out int written));
-            _stream.Write(_output.AsSpan(0, written));
+            WriteOutput(_stream, written);
         }
         while (status != OperationStatus.Done);
 
@@ -329,7 +333,10 @@ public sealed class ZstdStream : Stream
         do
         {
             status = Checked(_encoder.Flush(OutputBuffer(), out int written));
-            await _stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+            if (written > 0)
+            {
+                await _stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+            }
         }
         while (status != OperationStatus.Done);
 
@@ -357,7 +364,7 @@ public sealed class ZstdStream : Stream
                 do
                 {
                     status = EndFrame(out int written);
-                    stream.Write(_output.AsSpan(0, written));
+                    WriteOutput(stream, written);
                 }
                 while (status != OperationStatus.Done);
             }
@@ -384,7 +391,10 @@ public sealed class ZstdStream : Stream
                 do
                 {
                     status = EndFrame(out int written);
-                    await stream.WriteAsync(_output.AsMemory(0, written)).ConfigureAwait(false);
+                    if (written > 0)
+                    {
+                        await stream.WriteAsync(_output.AsMemory(0, written)).ConfigureAwait(false);
+                    }
                 }
                 while (status != OperationStatus.Done);
             }
@@ -449,6 +459,18 @@ public sealed class ZstdStream : Stream
                 buffer = null;
                 ArrayPool<byte>.Shared.Return(rented);
             }
+        }
+    }
+
+    /// <summary>
+    /// What the encoder wrote, passed on: nothing when it wrote nothing, as most writes smaller than a
+    /// block do, rather than an empty write the underlying stream would still pay for.
+    /// </summary>
+    private void WriteOutput(Stream stream, int written)
+    {
+        if (written > 0)
+        {
+            stream.Write(_output.AsSpan(0, written));
         }
     }
 

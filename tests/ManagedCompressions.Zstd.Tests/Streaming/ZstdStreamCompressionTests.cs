@@ -31,7 +31,8 @@ public sealed class ZstdStreamCompressionTests
             using var native = new NativeZstdEncoder(new NativeZstdOptions { Quality = level, AppendChecksum = checksum });
             var expected = new ArrayBufferWriter<byte>();
 
-            var output = new MemoryStream();
+            // The underlying stream sees no empty write: a write smaller than a block writes nothing.
+            var output = new NoEmptyWrites();
             var zstd = new ZstdStream(output, options, leaveOpen: true);
             int at = 0;
             int call = 0;
@@ -229,5 +230,27 @@ public sealed class ZstdStreamCompressionTests
         var content = new MemoryStream();
         zstd.CopyTo(content);
         return content.ToArray();
+    }
+
+    /// <summary>A stream that refuses empty writes, which the underlying stream would pay for (a system call on a socket).</summary>
+    private sealed class NoEmptyWrites : MemoryStream
+    {
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            Assert.False(buffer.IsEmpty, "an empty write");
+            base.Write(buffer);
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Assert.NotEqual(0, count);
+            base.Write(buffer, offset, count);
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, System.Threading.CancellationToken cancellationToken = default)
+        {
+            Assert.False(buffer.IsEmpty, "an empty write");
+            return base.WriteAsync(buffer, cancellationToken);
+        }
     }
 }
