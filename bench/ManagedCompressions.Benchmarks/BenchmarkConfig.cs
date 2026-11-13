@@ -44,9 +44,9 @@ public sealed class BenchmarkConfig : ManualConfig
 
     /// <summary>
     /// On x64, the level of this machine's instruction set rather than <c>native</c>, which
-    /// BenchmarkDotNet's project asks for. ILC 11.0.0-rc.1 targeting <c>native</c> on a CPU with
-    /// AVX-512 and no AVX-VNNI, as a Zen 4, compiles <c>AvxVnni.IsSupported</c> in a branch into a
-    /// jump to itself, and BenchmarkDotNet's CPU detection, which tests it, never returns
+    /// BenchmarkDotNet's project asks for. ILC targeting <c>native</c>, from 11.0.0-rc.1 to 11.0.0, on
+    /// a CPU with AVX-512 and no AVX-VNNI, as a Zen 4, compiles <c>AvxVnni.IsSupported</c> in a branch
+    /// into a jump to itself, and BenchmarkDotNet's CPU detection, which tests it, never returns
     /// (dotnet/runtime#135603). With the level, AVX-VNNI and the other extensions light up at run time.
     /// The codecs use nothing past AVX-512 F, BW, CD, DQ and VL.
     /// </summary>
