@@ -130,11 +130,17 @@ public sealed unsafe partial class ZstdCompressor
     /// <exception cref="System.IO.InvalidDataException">A zstd-format dictionary whose tables are invalid.</exception>
     /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public ZstdCompressor(ZstdCompressionOptions options)
-        : this((options ?? throw new ArgumentNullException(nameof(options))).Level, options.Experimental)
+        : this((options ?? throw new ArgumentNullException(nameof(options))).PreparedDictionary?.Level ?? options.Level, options.Experimental)
     {
-        if (!options.Dictionary.IsEmpty && options.Experimental != ZstdExperimentalOptions.None)
+        bool dictionary = !options.Dictionary.IsEmpty || options.PreparedDictionary is not null;
+        if (dictionary && options.Experimental != ZstdExperimentalOptions.None)
         {
             throw new ArgumentException("The experimental features are not available with a dictionary.", nameof(options));
+        }
+
+        if (!options.Dictionary.IsEmpty && options.PreparedDictionary is not null)
+        {
+            throw new ArgumentException("A dictionary is given as bytes or prepared, not both.", nameof(options));
         }
 
         AppendChecksum = options.AppendChecksum;
@@ -143,7 +149,11 @@ public sealed unsafe partial class ZstdCompressor
         _windowLog = options.WindowLog;
         _writeContentSize = options.WriteContentSize;
         _writeDictionaryId = options.WriteDictionaryId;
-        if (!options.Dictionary.IsEmpty)
+        if (options.PreparedDictionary is { } prepared)
+        {
+            _dictionary = prepared.Compressor;
+        }
+        else if (!options.Dictionary.IsEmpty)
         {
             _dictionary = CompressionDictionary.Create(options.Dictionary.Span, Level);
         }

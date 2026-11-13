@@ -751,6 +751,20 @@ internal sealed class HuffmanTable
     internal void BuildDoubleForBenchmark() => BuildDouble();
 
     /// <summary>
+    /// Builds the double-symbol table of a tree that decoders on several threads read at once (a shared
+    /// dictionary's): decoding then never writes to the table, which it does when it builds that form
+    /// the first time a section prefers it.
+    /// </summary>
+    internal void BuildDoubleForSharing()
+    {
+        // As DecodeFourStreams: a tree wider than the fast loops' never takes that form.
+        if (!_hasDouble && TableLog <= FastTableLog)
+        {
+            BuildDouble();
+        }
+    }
+
+    /// <summary>
     /// libzstd's <c>HUF_readDTableX2</c>, derived from the single-symbol table: the code each value of
     /// the next 11 bits starts with, and the next code too when it ends within those bits.
     /// </summary>

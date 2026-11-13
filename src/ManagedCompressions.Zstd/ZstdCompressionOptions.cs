@@ -84,9 +84,17 @@ public sealed class ZstdCompressionOptions
 
     /// <summary>
     /// A dictionary in the zstd format, or any other bytes as raw content; empty for none. It is copied
-    /// and prepared when the compressor is created.
+    /// and prepared when the compressor is created. Not with <see cref="PreparedDictionary"/>.
     /// </summary>
     public ReadOnlyMemory<byte> Dictionary { get; set; }
+
+    /// <summary>
+    /// A dictionary prepared once (<see cref="ZstdDictionary.Create(ReadOnlySpan{byte}, int)"/>), which the
+    /// compressor takes as it is, shared with every other codec given it; null for none. The frames take
+    /// its level, as with libzstd's prepared dictionaries, rather than <see cref="Level"/>. Not with
+    /// <see cref="Dictionary"/>.
+    /// </summary>
+    public ZstdDictionary? PreparedDictionary { get; set; }
 
     /// <summary>
     /// Experimental features, which trade libzstd's exact bytes for speed or ratio (see

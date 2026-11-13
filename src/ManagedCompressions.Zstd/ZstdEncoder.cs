@@ -103,6 +103,16 @@ public sealed unsafe class ZstdEncoder
     }
 
     /// <summary>
+    /// Creates an encoder that compresses with <paramref name="dictionary"/>, prepared once and shared, at
+    /// its level.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="dictionary"/> is null.</exception>
+    public ZstdEncoder(ZstdDictionary dictionary)
+    {
+        _compressor = new ZstdCompressor(dictionary);
+    }
+
+    /// <summary>
     /// Creates an encoder with <paramref name="options"/>. A dictionary is prepared once, here, at the
     /// level, as <see cref="ZstdCompressor"/> prepares it; its frames are those libzstd streams with the
     /// dictionary prepared alike (<c>ZSTD_createCDict</c>, then <c>ZSTD_CCtx_refCDict</c>).

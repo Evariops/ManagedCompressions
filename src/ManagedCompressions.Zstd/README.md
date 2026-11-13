@@ -188,8 +188,8 @@ content nearly as it is.
 A `ZstdStream` created without an encoder or a decoder of yours takes one from a pool the library
 keeps, by its settings, and puts it back when disposed of: a stream per request or per file reuses the
 tables and buffers of the streams before it instead of allocating some megabytes of its own. The pool
-keeps a few codecs per setting, none with a dictionary or holding more than 16 MiB, and releases those
-left unused between two gen 2 collections.
+keeps a few codecs per setting (a `ZstdDictionary` among them, but not a dictionary's bytes), none
+holding more than 16 MiB, and releases those left unused between two gen 2 collections.
 
 ### Dictionaries
 
@@ -203,6 +203,18 @@ var decompressor = new ZstdDecompressor(dictionary);
 The dictionary is prepared once, in the constructor, and then used for every frame.
 ManagedCompressions.Zstd does not train dictionaries, so use `zstd --train`, or
 `ZstandardDictionary.Train` from `System.IO.Compression`.
+
+A `ZstdDictionary` is prepared once and shared, on any number of threads, by every codec given it:
+a compressor or a decompressor per request, or one per thread, then takes its tables as they are
+instead of copying the dictionary and building them again. The frames are the same bytes.
+
+```csharp
+ZstdDictionary prepared = ZstdDictionary.Create(dictionary, level: 3);   // once, for the whole application
+
+var compressor = new ZstdCompressor(prepared);       // the frames take the dictionary's level
+var decompressor = new ZstdDecompressor(prepared);
+using var zstd = new ZstdStream(output, new ZstdCompressionOptions { PreparedDictionary = prepared });
+```
 
 A decompressor can also take the dictionary with each frame, which lets one decompressor serve frames
 of any dictionary:

@@ -46,8 +46,14 @@ internal sealed class DecoderDictionary
     /// libzstd's <c>ZSTD_createDDict</c> in automatic mode: the zstd format when the buffer starts with
     /// its magic number, raw content otherwise.
     /// </summary>
+    /// <param name="buffer">The dictionary.</param>
+    /// <param name="shared">
+    /// Whether decoders on several threads take it at once (<see cref="ZstdDictionary"/>): its Huffman
+    /// table's double-symbol form is then built here, where a decoder that has the dictionary to itself
+    /// builds it when a section first prefers it. The decoders only read it then.
+    /// </param>
     /// <exception cref="System.IO.InvalidDataException">A zstd-format dictionary whose tables are invalid.</exception>
-    public static DecoderDictionary Load(ReadOnlySpan<byte> buffer)
+    public static DecoderDictionary Load(ReadOnlySpan<byte> buffer, bool shared = false)
     {
         var dictionary = new DecoderDictionary(buffer);
         if (!DictionaryEntropy.IsZstdFormat(buffer))
@@ -63,6 +69,11 @@ internal sealed class DecoderDictionary
         catch (ZstdException)
         {
             Throw.Dictionary("its entropy tables are corrupted");
+        }
+
+        if (shared)
+        {
+            entropy.Huffman.BuildDoubleForSharing();
         }
 
         dictionary.Id = entropy.Id;

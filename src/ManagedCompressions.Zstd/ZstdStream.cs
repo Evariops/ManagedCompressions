@@ -31,8 +31,8 @@ namespace ManagedCompressions.Zstd;
 /// pool the library keeps, and puts it back, reset, once disposed of cleanly: a stream per request or
 /// per file reuses the tables and buffers of the streams before it rather than allocate its own, some
 /// megabytes for an encoder. A reused codec writes and reads the same bytes as a new one. The pool keeps
-/// a few codecs per setting, none with a dictionary, none holding more than 16 MiB, and lets go of
-/// those no stream took between two gen 2 collections.
+/// a few codecs per setting, a <see cref="ZstdDictionary"/> among them but not a dictionary's bytes,
+/// none holding more than 16 MiB, and lets go of those no stream took between two gen 2 collections.
 /// </para>
 /// <para>Not thread-safe, as streams are not.</para>
 /// </remarks>
@@ -57,8 +57,8 @@ public sealed class ZstdStream : Stream
     /// </summary>
     private readonly CodecPool.EncoderKey? _pooledEncoder;
 
-    /// <summary>As <see cref="_pooledEncoder"/>, for the decoder: its largest window; 0 when it is not the pool's.</summary>
-    private readonly int _pooledDecoder;
+    /// <summary>As <see cref="_pooledEncoder"/>, for the decoder.</summary>
+    private readonly CodecPool.DecoderKey? _pooledDecoder;
 
     private readonly bool _leaveOpen;
     private Stream? _stream;
@@ -95,8 +95,8 @@ public sealed class ZstdStream : Stream
                 _encoder = CodecPool.RentEncoder(_pooledEncoder.Value, null);
                 break;
             case CompressionMode.Decompress:
-                _pooledDecoder = ZstdDecompressionOptions.DefaultMaxWindowLog;
-                _decoder = CodecPool.RentDecoder(_pooledDecoder);
+                _pooledDecoder = new CodecPool.DecoderKey(ZstdDecompressionOptions.DefaultMaxWindowLog, null);
+                _decoder = CodecPool.RentDecoder(_pooledDecoder.Value);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown compression mode.");
@@ -156,15 +156,13 @@ public sealed class ZstdStream : Stream
     public ZstdStream(Stream stream, ZstdDecompressionOptions options, bool leaveOpen = false)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (options.Dictionary.IsEmpty)
+        if (options.PreparedDictionary is not null && !options.Dictionary.IsEmpty)
         {
-            _pooledDecoder = options.MaxWindowLog;
-            _decoder = CodecPool.RentDecoder(_pooledDecoder);
+            throw new ArgumentException("A dictionary is given as bytes or prepared, not both.", nameof(options));
         }
-        else
-        {
-            _decoder = new ZstdDecoder(options);
-        }
+
+        _pooledDecoder = CodecPool.DecoderKey.Of(options);
+        _decoder = _pooledDecoder is { } key ? CodecPool.RentDecoder(key) : new ZstdDecoder(options);
 
         _stream = Open(stream, compress: false);
         _leaveOpen = leaveOpen;
@@ -573,9 +571,9 @@ public sealed class ZstdStream : Stream
             {
                 CodecPool.Return(key, _encoder!);
             }
-            else if (_pooledDecoder != 0)
+            else if (_pooledDecoder is { } decoderKey)
             {
-                CodecPool.Return(_pooledDecoder, _decoder!);
+                CodecPool.Return(decoderKey, _decoder!);
             }
         }
 
