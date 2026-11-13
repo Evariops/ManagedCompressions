@@ -12,12 +12,14 @@ namespace ManagedCompressions.Zstd.Internal;
 internal sealed class ZstdException : Exception
 {
     public ZstdException(ZstdError error)
-        : base($"Invalid zstd data: {error}.")
     {
         Error = error;
     }
 
     public ZstdError Error { get; }
+
+    /// <summary>Formatted when read, which the codecs that catch the exception never do.</summary>
+    public override string Message => $"Invalid zstd data: {Error}.";
 }
 
 /// <summary>Cold throw sites: kept out of line so that the hot paths only carry a compare and a call.</summary>

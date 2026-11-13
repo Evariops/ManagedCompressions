@@ -140,6 +140,11 @@ public sealed partial class ZstdDecompressor
                 written = DecompressFrame(source, destination, dictionary.Content, dictionary.Entropy, dictionary.Id, out consumed);
             }
 
+            if (written < 0)
+            {
+                return Refuse((ZstdError)~written);
+            }
+
             bytesConsumed = consumed;
             bytesWritten = written;
             LastError = ZstdError.None;
@@ -147,7 +152,7 @@ public sealed partial class ZstdDecompressor
         }
         catch (ZstdException e)
         {
-            return Refuse(e);
+            return Refuse(e.Error);
         }
     }
 
@@ -182,6 +187,11 @@ public sealed partial class ZstdDecompressor
         {
             ReadOnlySpan<byte> history = UseDictionary(dictionary, out DictionaryEntropy? entropy, out uint id);
             int written = DecompressFrame(source, destination, history, entropy, id, out int consumed);
+            if (written < 0)
+            {
+                return Refuse((ZstdError)~written);
+            }
+
             bytesConsumed = consumed;
             bytesWritten = written;
             LastError = ZstdError.None;
@@ -189,7 +199,7 @@ public sealed partial class ZstdDecompressor
         }
         catch (ZstdException e)
         {
-            return Refuse(e);
+            return Refuse(e.Error);
         }
     }
 
@@ -232,13 +242,19 @@ public sealed partial class ZstdDecompressor
         try
         {
             ReadOnlySpan<byte> history = UseDictionary(dictionary, out DictionaryEntropy? entropy, out uint id);
-            bytesWritten = DecompressFrame(source, destination, history, entropy, id, out _);
+            int written = DecompressFrame(source, destination, history, entropy, id, out _);
+            if (written < 0)
+            {
+                return Refuse((ZstdError)~written);
+            }
+
+            bytesWritten = written;
             LastError = ZstdError.None;
             return OperationStatus.Done;
         }
         catch (ZstdException e)
         {
-            return Refuse(e);
+            return Refuse(e.Error);
         }
         finally
         {
@@ -284,10 +300,10 @@ public sealed partial class ZstdDecompressor
     }
 
     /// <summary>The status a refusal reports, which it records.</summary>
-    private OperationStatus Refuse(ZstdException e)
+    private OperationStatus Refuse(ZstdError error)
     {
-        LastError = e.Error;
-        return e.Error switch
+        LastError = error;
+        return error switch
         {
             ZstdError.Truncated => OperationStatus.NeedMoreData,
             ZstdError.DestinationTooSmall => OperationStatus.DestinationTooSmall,
@@ -375,14 +391,17 @@ public sealed partial class ZstdDecompressor
         return entropy;
     }
 
-    /// <summary>Decodes one frame; throws <see cref="ZstdException"/> on anything but success.</summary>
+    /// <summary>
+    /// Decodes one frame: refuses it by returning its error (see <see cref="Fail"/>) when the frame's
+    /// structure is the cause, by throwing <see cref="ZstdException"/> when a block's content is.
+    /// </summary>
     /// <param name="source">The frame.</param>
     /// <param name="destination">Where its content goes.</param>
     /// <param name="history">What precedes the frame: the dictionary's content, if any.</param>
     /// <param name="entropy">The dictionary's tables, if it has them.</param>
     /// <param name="dictionaryId">The identifier of the dictionary; 0 for none, or for raw content.</param>
     /// <param name="consumed">The size of the frame.</param>
-    /// <returns>The size of the content.</returns>
+    /// <returns>The size of the content, or the refusal, negative.</returns>
     private int DecompressFrame(
         ReadOnlySpan<byte> source, Span<byte> destination, ReadOnlySpan<byte> history, DictionaryEntropy? entropy, uint dictionaryId,
         out int consumed)
@@ -390,35 +409,41 @@ public sealed partial class ZstdDecompressor
         consumed = 0;
         if (source.Length < 4)
         {
-            Throw.Error(FrameHeader.IsMagicPrefix(source) ? ZstdError.Truncated : ZstdError.UnknownMagic);
+            return Fail(FrameHeader.IsMagicPrefix(source) ? ZstdError.Truncated : ZstdError.UnknownMagic);
         }
 
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(source);
         if ((magic & FrameFormat.SkippableMagicMask) == FrameFormat.SkippableMagic)
         {
-            consumed = SkipFrame(source);
+            int skipped = SkipFrame(source);
+            if (skipped < 0)
+            {
+                return skipped;
+            }
+
+            consumed = skipped;
             return 0;
         }
 
         if (magic != FrameFormat.Magic)
         {
-            Throw.Error(ZstdError.UnknownMagic);
+            return Fail(ZstdError.UnknownMagic);
         }
 
         ZstdError headerError = FrameHeader.Parse(source, out FrameHeader header);
         if (headerError != ZstdError.None)
         {
-            Throw.Error(headerError);
+            return Fail(headerError);
         }
 
         if (header.DictionaryId != 0 && header.DictionaryId != dictionaryId)
         {
-            Throw.Error(ZstdError.DictionaryMismatch);
+            return Fail(ZstdError.DictionaryMismatch);
         }
 
         if (header.HasContentSize && header.ContentSize > (ulong)destination.Length && !_prefix)
         {
-            Throw.Error(ZstdError.DestinationTooSmall);
+            return Fail(ZstdError.DestinationTooSmall);
         }
 
         // The literals of a block fit the block and the destination (DecodeLiterals refuses more).
@@ -431,7 +456,7 @@ public sealed partial class ZstdDecompressor
         {
             if (source.Length - ip < FrameFormat.BlockHeaderSize)
             {
-                Throw.Error(ZstdError.Truncated);
+                return Fail(ZstdError.Truncated);
             }
 
             int blockHeader = source[ip] | (source[ip + 1] << 8) | (source[ip + 2] << 16);
@@ -445,19 +470,19 @@ public sealed partial class ZstdDecompressor
                 case 0: // raw
                     if (blockSize > source.Length - ip)
                     {
-                        Throw.Error(ZstdError.Truncated);
+                        return Fail(ZstdError.Truncated);
                     }
 
                     if (blockSize > header.BlockSizeMax)
                     {
-                        Throw.Error(ZstdError.BlockTooLarge);
+                        return Fail(ZstdError.BlockTooLarge);
                     }
 
                     if (blockSize > destination.Length - op)
                     {
                         if (!_prefix)
                         {
-                            Throw.Error(ZstdError.DestinationTooSmall);
+                            return Fail(ZstdError.DestinationTooSmall);
                         }
 
                         // The destination ends in this block: its start, and the call is done.
@@ -473,19 +498,19 @@ public sealed partial class ZstdDecompressor
                 case 1: // RLE: the size is the content's, the block holds one byte
                     if (source.Length - ip < 1)
                     {
-                        Throw.Error(ZstdError.Truncated);
+                        return Fail(ZstdError.Truncated);
                     }
 
                     if (blockSize > header.BlockSizeMax)
                     {
-                        Throw.Error(ZstdError.BlockTooLarge);
+                        return Fail(ZstdError.BlockTooLarge);
                     }
 
                     if (blockSize > destination.Length - op)
                     {
                         if (!_prefix)
                         {
-                            Throw.Error(ZstdError.DestinationTooSmall);
+                            return Fail(ZstdError.DestinationTooSmall);
                         }
 
                         destination.Slice(op).Fill(source[ip]);
@@ -500,12 +525,12 @@ public sealed partial class ZstdDecompressor
                 case 2: // compressed
                     if (blockSize > source.Length - ip)
                     {
-                        Throw.Error(ZstdError.Truncated);
+                        return Fail(ZstdError.Truncated);
                     }
 
                     if (blockSize > header.BlockSizeMax)
                     {
-                        Throw.Error(ZstdError.BlockTooLarge);
+                        return Fail(ZstdError.BlockTooLarge);
                     }
 
                     // With the next block compressed too, both at once (see ZstdDecompressor.Pairs.cs).
@@ -535,8 +560,7 @@ public sealed partial class ZstdDecompressor
                     break;
 
                 default:
-                    Throw.Error(ZstdError.ReservedBlockType);
-                    break;
+                    return Fail(ZstdError.ReservedBlockType);
             }
 
             if (lastBlock)
@@ -547,21 +571,21 @@ public sealed partial class ZstdDecompressor
 
         if (header.HasContentSize && (ulong)op != header.ContentSize)
         {
-            Throw.Error(ZstdError.ContentSizeMismatch);
+            return Fail(ZstdError.ContentSizeMismatch);
         }
 
         if (header.HasChecksum)
         {
             if (source.Length - ip < FrameFormat.ChecksumSize)
             {
-                Throw.Error(ZstdError.Truncated);
+                return Fail(ZstdError.Truncated);
             }
 
             uint expected = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(ip));
             uint actual = (uint)XxHash64.HashToUInt64(destination.Slice(0, op));
             if (actual != expected)
             {
-                Throw.Error(ZstdError.ChecksumMismatch);
+                return Fail(ZstdError.ChecksumMismatch);
             }
 
             ip += FrameFormat.ChecksumSize;
@@ -572,27 +596,37 @@ public sealed partial class ZstdDecompressor
     }
 
     /// <summary>libzstd's <c>readSkippableFrameSize</c>.</summary>
+    /// <returns>The size of the frame, or its refusal (see <see cref="Fail"/>).</returns>
     private static int SkipFrame(ReadOnlySpan<byte> source)
     {
         if (source.Length < FrameFormat.SkippableHeaderSize)
         {
-            Throw.Error(ZstdError.Truncated);
+            return Fail(ZstdError.Truncated);
         }
 
         uint size = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(4));
         if (size + (uint)FrameFormat.SkippableHeaderSize < size)
         {
-            Throw.Error(ZstdError.SkippableFrameTooLarge);
+            return Fail(ZstdError.SkippableFrameTooLarge);
         }
 
         ulong total = (ulong)FrameFormat.SkippableHeaderSize + size;
         if (total > (ulong)source.Length)
         {
-            Throw.Error(ZstdError.Truncated);
+            return Fail(ZstdError.Truncated);
         }
 
         return (int)total;
     }
+
+    /// <summary>
+    /// A refusal of the frame as a whole, returned rather than thrown: a source that ends inside the
+    /// frame, a destination too small for the size it declares, which callers meet in normal use, and
+    /// every other check of the frame's structure. The errors inside a block are thrown
+    /// (<see cref="ZstdException"/>), from deep in its decoding.
+    /// </summary>
+    /// <returns>The error, as a negative number: <c>~error</c>.</returns>
+    private static int Fail(ZstdError error) => ~(int)error;
 
     /// <summary>
     /// libzstd's <c>ZSTD_decompressBegin_usingDDict</c>: the state every frame starts from, the
