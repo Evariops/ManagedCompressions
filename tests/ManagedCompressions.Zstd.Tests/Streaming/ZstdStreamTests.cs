@@ -75,20 +75,92 @@ public sealed class ZstdStreamTests
         }
     }
 
+    /// <summary>
+    /// CopyTo writes from the decoder's window rather than through a buffer: the same content, whatever
+    /// the underlying stream hands over, after reads or not, synchronously or not.
+    /// </summary>
+    [Theory]
+    [InlineData(3, 0)]
+    [InlineData(999, 0)]
+    [InlineData(1 << 20, 0)]
+    [InlineData(999, 1)]
+    [InlineData(4096, 70_000)]
+    [InlineData(1 << 20, 449_999)]
+    public async Task CopyTo_writes_every_frame_whatever_the_pieces(int handedOver, int readFirst)
+    {
+        foreach (bool asynchronous in (bool[])[false, true])
+        {
+            using var zstd = new ZstdStream(new Trickle(Compressed, handedOver), CompressionMode.Decompress);
+            using var content = new MemoryStream();
+            byte[] buffer = new byte[readFirst];
+            int read = 0;
+            while (read < readFirst)
+            {
+                read += zstd.Read(buffer, read, readFirst - read);
+            }
+
+            content.Write(buffer);
+            if (asynchronous)
+            {
+                await zstd.CopyToAsync(content, TestContext.Current.CancellationToken);
+            }
+            else
+            {
+                zstd.CopyTo(content);
+            }
+
+            Corpus.AssertSameBytes(Content, content.ToArray(), $"underlying {handedOver}, {readFirst} read first, async {asynchronous}");
+            Assert.Equal(0, zstd.Read(new byte[16], 0, 16));
+        }
+    }
+
     [Fact]
     public void A_stream_cut_inside_a_frame_is_refused_at_its_end()
     {
         using var zstd = new ZstdStream(new MemoryStream(Compressed, 0, Compressed.Length - 10), CompressionMode.Decompress);
         InvalidDataException e = Assert.Throws<InvalidDataException>(() => ReadAll(zstd, 4096));
         Assert.Contains("ends inside a frame", e.Message, StringComparison.Ordinal);
+
+        using var copied = new ZstdStream(new MemoryStream(Compressed, 0, Compressed.Length - 10), CompressionMode.Decompress);
+        e = Assert.Throws<InvalidDataException>(() => copied.CopyTo(Stream.Null));
+        Assert.Contains("ends inside a frame", e.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Data_after_the_frames_that_is_not_Zstandard_is_refused()
+    public async Task Data_after_the_frames_that_is_not_Zstandard_is_refused()
     {
-        using var zstd = new ZstdStream(new MemoryStream([.. Compressed, (byte)'x', (byte)'y', (byte)'z', (byte)'!']), CompressionMode.Decompress);
+        byte[] data = [.. Compressed, (byte)'x', (byte)'y', (byte)'z', (byte)'!'];
+        using var zstd = new ZstdStream(new MemoryStream(data), CompressionMode.Decompress);
         InvalidDataException e = Assert.Throws<InvalidDataException>(() => ReadAll(zstd, 4096));
         Assert.Contains(nameof(ZstdError.UnknownMagic), e.Message, StringComparison.Ordinal);
+
+        using var copied = new ZstdStream(new MemoryStream(data), CompressionMode.Decompress);
+        e = await Assert.ThrowsAsync<InvalidDataException>(() => copied.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken));
+        Assert.Contains(nameof(ZstdError.UnknownMagic), e.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadByte_allocates_nothing()
+    {
+#if DEBUG
+        Assert.Skip("allocations are a property of the optimized build");
+#endif
+        using var zstd = new ZstdStream(new MemoryStream(Compressed), CompressionMode.Decompress);
+        int[] read = new int[10_000];
+        read[0] = zstd.ReadByte();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 1; i < read.Length; i++)
+        {
+            read[i] = zstd.ReadByte();
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        for (int i = 0; i < read.Length; i++)
+        {
+            Assert.True(read[i] == Content[i], $"byte {i}");
+        }
+
+        Assert.Equal(0, allocated);
     }
 
     [Fact]
@@ -113,6 +185,8 @@ public sealed class ZstdStreamTests
         // As System.IO.Compression's ZstandardStream: what the mode does not do is an invalid operation.
         Assert.Throws<InvalidOperationException>(() => zstd.Write([1], 0, 1));
         Assert.Throws<InvalidOperationException>(() => zstd.SetSourceLength(1));
+        Assert.Throws<InvalidOperationException>(() => new ZstdStream(new MemoryStream(), CompressionMode.Compress).CopyTo(Stream.Null));
+        Assert.Throws<InvalidOperationException>(() => new ZstdStream(new MemoryStream(), CompressionMode.Compress).ReadByte());
         Assert.Throws<ArgumentException>(() => new ZstdStream(new Unreadable(), CompressionMode.Decompress));
     }
 

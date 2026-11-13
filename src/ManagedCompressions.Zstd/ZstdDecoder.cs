@@ -175,6 +175,24 @@ public sealed class ZstdDecoder
     }
 
     /// <summary>
+    /// <see cref="Decompress"/> for a caller that writes the content out itself, as
+    /// <see cref="ZstdStream.CopyTo(System.IO.Stream, int)"/> does: no destination, each block decoded
+    /// into the window, and the content not given out yet returned from there, which spares copying
+    /// it through a buffer of the caller's. The content stays valid until the next call.
+    /// </summary>
+    /// <returns>
+    /// <see cref="OperationStatus.DestinationTooSmall"/> when there may be more content to decode from
+    /// the source, <see cref="OperationStatus.Done"/> at the end of a frame, otherwise as <see cref="Decompress"/>.
+    /// </returns>
+    internal OperationStatus DecompressInWindow(ReadOnlySpan<byte> source, out int bytesConsumed, out ReadOnlyMemory<byte> content)
+    {
+        OperationStatus status = Decompress(source, default, out bytesConsumed, out _);
+        content = _window.AsMemory(_flushed, _out - _flushed);
+        _flushed = _out;
+        return status;
+    }
+
+    /// <summary>
     /// Forgets the frame in progress and any refusal: the next call starts a new stream. The buffers
     /// and the dictionary are kept.
     /// </summary>

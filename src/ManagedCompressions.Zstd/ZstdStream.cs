@@ -213,6 +213,68 @@ public sealed class ZstdStream : Stream
     }
 
     /// <inheritdoc/>
+    /// <exception cref="InvalidOperationException">The stream compresses.</exception>
+    public override int ReadByte()
+    {
+        Span<byte> one = stackalloc byte[1];
+        return Read(one) == 0 ? -1 : one[0];
+    }
+
+    /// <summary>
+    /// Decompresses the rest of the stream into <paramref name="destination"/>, written straight from
+    /// the decoder's window rather than copied through a buffer first.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The stream compresses.</exception>
+    public override void CopyTo(Stream destination, int bufferSize)
+    {
+        ValidateCopyToArguments(destination, bufferSize);
+        Stream stream = Reading();
+        while (true)
+        {
+            OperationStatus status = DecodeInWindow(out ReadOnlyMemory<byte> content);
+            if (!content.IsEmpty)
+            {
+                destination.Write(content.Span);
+            }
+
+            if (status == OperationStatus.NeedMoreData)
+            {
+                if (_ended)
+                {
+                    return;
+                }
+
+                Fill(stream.Read(InputBuffer().Span));
+            }
+        }
+    }
+
+    /// <inheritdoc cref="CopyTo(Stream, int)"/>
+    public override async Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+    {
+        ValidateCopyToArguments(destination, bufferSize);
+        Stream stream = Reading();
+        while (true)
+        {
+            OperationStatus status = DecodeInWindow(out ReadOnlyMemory<byte> content);
+            if (!content.IsEmpty)
+            {
+                await destination.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (status == OperationStatus.NeedMoreData)
+            {
+                if (_ended)
+                {
+                    return;
+                }
+
+                Fill(await stream.ReadAsync(InputBuffer(), cancellationToken).ConfigureAwait(false));
+            }
+        }
+    }
+
+    /// <inheritdoc/>
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         ValidateBufferArguments(buffer, offset, count);
@@ -539,6 +601,34 @@ public sealed class ZstdStream : Stream
                 default:
                     throw new InvalidDataException($"The data is not valid Zstandard: {_decoder.LastError}.");
             }
+        }
+    }
+
+    /// <summary>
+    /// Decodes what the input holds into the decoder's window, for <see cref="CopyTo(Stream, int)"/>.
+    /// </summary>
+    /// <returns>
+    /// <see cref="OperationStatus.NeedMoreData"/> when the input must be filled first, unless the
+    /// stream has ended between frames; any other status, to be called again.
+    /// </returns>
+    private OperationStatus DecodeInWindow(out ReadOnlyMemory<byte> content)
+    {
+        OperationStatus status = _decoder!.DecompressInWindow(_input.AsSpan(_inputStart, _inputEnd - _inputStart), out int consumed, out content);
+        _inputStart += consumed;
+        switch (status)
+        {
+            case OperationStatus.Done:
+            case OperationStatus.DestinationTooSmall:
+                return status;
+
+            case OperationStatus.NeedMoreData:
+                // The window's content is out before the decoder asks for more: none comes with it.
+                return _ended && _decoder.InFrame
+                    ? throw new InvalidDataException("The Zstandard stream ends inside a frame.")
+                    : status;
+
+            default:
+                throw new InvalidDataException($"The data is not valid Zstandard: {_decoder.LastError}.");
         }
     }
 
