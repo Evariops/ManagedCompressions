@@ -96,8 +96,9 @@ internal static unsafe partial class FastMatchFinder
         byte* iend = istart + size;
         byte* ilimit = iend - HashReadSize;
 
-        byte* coldBytes = stackalloc byte[sizeof(Cold)];
-        Cold* cold = (Cold*)coldBytes;
+        Cold coldLocal = default;
+        Cold* cold = &coldLocal;
+        Expose(cold);
         cold->Anchor = istart;
         cold->Lit = store.Literals;
         cold->Sequence = store.Sequences;
@@ -290,6 +291,16 @@ internal static unsafe partial class FastMatchFinder
         }
 
         goto Start;
+    }
+
+    /// <summary>
+    /// Takes the address of <paramref name="cold"/>'s local, so that the JIT keeps it in the frame and
+    /// reads its fields there, as <see cref="DoubleFastMatchFinder"/>'s: a local rather than stack
+    /// allocated, which keeps the method eligible for on-stack replacement, and so for dynamic PGO.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Expose(Cold* cold)
+    {
     }
 
     /// <summary>
