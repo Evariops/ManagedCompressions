@@ -11,8 +11,8 @@ in fully managed C#.
 - It is fast. On arm64, decompression is 1.3–1.5× as fast as the libzstd that NativeCompressions and
   .NET ship, and 1.11–1.21× as fast as libzstd built from source at `-O3` on the Silesia corpus. On
   x64, where libzstd has a hand-written assembly Huffman decoder, it is 1.0–1.2× as fast as
-  NativeCompressions' libzstd. Compression of large inputs is within a few percent of libzstd, except
-  on x64 at levels 1 to 5, which are up to 13 % slower (see [Performance](#performance)).
+  NativeCompressions' libzstd. Compression of large inputs runs at libzstd's speed, from 6 % slower to
+  10 % faster (see [Performance](#performance)).
 - A warm compressor or decompressor allocates nothing.
 
 ManagedCompressions.Zstd is an independent implementation of the format. It is not affiliated with the

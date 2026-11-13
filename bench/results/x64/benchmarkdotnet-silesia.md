@@ -16,23 +16,28 @@ content's. Every decoder reads NativeCompressions' output, which the managed com
 - **Brotli and GZip,** at their default levels, for scale against Zstandard's default.
 
 Each case runs 3 warm-up and 10 measured calls, except Zstandard's level 19 and LZ4's level 12, which take
-11 to 44 seconds a call: 1 warm-up and 3 measured calls.
+11 to 40 seconds a call: 1 warm-up and 3 measured calls.
 
-NativeCompressions' win-x64 libraries are built with GCC 16.2 (MSYS2); its libzstd has zstd's assembly
-Huffman decoder and its BMI2 code. The Native AOT job targets `x86-64-v4` instead of `native`: ILC
-11.0.0-rc.1 with `native` on this CPU compiles `AvxVnni.IsSupported` in a branch into a jump to itself,
-and BenchmarkDotNet's CPU detection never returns
-([dotnet/runtime#135603](https://github.com/dotnet/runtime/issues/135603), and `BenchmarkConfig`). The
-codecs use nothing past AVX-512 F, BW, CD, DQ and VL.
+NativeCompressions.Zstandard 1.3.0 and NativeCompressions.LZ4 1.2.0 ship the win-x64 libraries of its
+1.1.0, built with GCC 16.2 (MSYS2); its libzstd has zstd's assembly Huffman decoder and its BMI2 code. The
+Native AOT job targets `x86-64-v4` instead of `native`: ILC with `native` on this CPU, from 11.0.0-rc.1 to
+11.0.0, compiles `AvxVnni.IsSupported` in a branch into a jump to itself, and BenchmarkDotNet's CPU
+detection never returns ([dotnet/runtime#135603](https://github.com/dotnet/runtime/issues/135603), and
+`BenchmarkConfig`). The codecs use nothing past AVX-512 F, BW, CD, DQ and VL.
+
+The run was confined to the processor's second CCD, logical processors 16 to 31
+(`start /affinity FFFF0000`), while the level-by-level benchmark ran on the first. Its native times came
+out at 0.91 to 1.04 times those of the previous run, made alone, 1.01 on average; each ratio compares
+cases run on the same cores.
 
 ```
-BenchmarkDotNet v0.16.0-preview.2, Windows 11 (10.0.26200.9448/25H2/2025Update/HudsonValley2)
+BenchmarkDotNet v0.16.0-preview.2, Windows 11 (10.0.26300.9711)
 AMD Ryzen 9 7950X 4.49GHz, 1 CPU, 32 logical and 16 physical cores
-Memory: 63.11 GB Total, 35.88 GB Available
-.NET SDK 11.0.100-rc.1.26425.128
-  [Host]           : .NET 11.0.0 (11.0.0-rc.1.26425.128, 11.0.26.42628), X64 RyuJIT x86-64-v4
-  JIT, dynamic PGO : .NET 11.0.0 (11.0.0-rc.1.26425.128, 11.0.26.42628), X64 RyuJIT x86-64-v4
-  Native AOT       : .NET 11.0.0-rc.1.26425.128, X64 NativeAOT x86-64-v4
+Memory: 63.11 GB Total, 46.26 GB Available
+.NET SDK 11.0.100
+  [Host]           : .NET 11.0.0 (11.0.0, 11.0.26.53018), X64 RyuJIT x86-64-v4
+  JIT, dynamic PGO : .NET 11.0.0 (11.0.0, 11.0.26.53018), X64 RyuJIT x86-64-v4
+  Native AOT       : .NET 11.0.0, X64 NativeAOT x86-64-v4
 ```
 
 ## JIT, dynamic PGO
@@ -45,63 +50,63 @@ would otherwise be measured instrumented.
 
 | Method | Level | Mean | Ratio | Payload | Allocated |
 |:--|--:|--:|--:|--:|--:|
-| NativeCompressions Zstandard Compress | 1 | 300.75 ms | 1.00 | 69.8MB | - |
-| ManagedCompressions.Zstd Compress | 1 | 305.72 ms | 1.02 | 69.8MB | - |
-| .NET ZstandardEncoder Compress | 1 | 337.82 ms | 1.12 | 69.8MB | - |
+| NativeCompressions Zstandard Compress | 1 | 306.51 ms | 1.00 | 69.8MB | - |
+| ManagedCompressions.Zstd Compress | 1 | 301.66 ms | 0.98 | 69.8MB | - |
+| .NET ZstandardEncoder Compress | 1 | 353.32 ms | 1.15 | 69.8MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress | 3 | 473.83 ms | 1.00 | 63.07MB | - |
-| ManagedCompressions.Zstd Compress | 3 | 512.26 ms | 1.08 | 63.07MB | - |
-| .NET ZstandardEncoder Compress | 3 | 492.50 ms | 1.04 | 63.07MB | - |
+| NativeCompressions Zstandard Compress | 3 | 483.72 ms | 1.00 | 63.07MB | - |
+| ManagedCompressions.Zstd Compress | 3 | 499.68 ms | 1.03 | 63.07MB | - |
+| .NET ZstandardEncoder Compress | 3 | 501.55 ms | 1.04 | 63.07MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress | 9 | 1,852.15 ms | 1.00 | 56.34MB | - |
-| ManagedCompressions.Zstd Compress | 9 | 2,000.61 ms | 1.08 | 56.34MB | - |
-| .NET ZstandardEncoder Compress | 9 | 2,089.15 ms | 1.13 | 56.34MB | - |
+| NativeCompressions Zstandard Compress | 9 | 1,890.08 ms | 1.00 | 56.34MB | - |
+| ManagedCompressions.Zstd Compress | 9 | 2,001.38 ms | 1.06 | 56.34MB | - |
+| .NET ZstandardEncoder Compress | 9 | 2,135.34 ms | 1.13 | 56.34MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 1 | 98.11 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 1 | 96.79 ms | 0.99 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 1 | 108.51 ms | 1.11 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 1 | 100.49 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 1 | 98.54 ms | 0.98 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 1 | 110.95 ms | 1.10 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 3 | 113.31 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 3 | 105.42 ms | 0.93 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 3 | 119.82 ms | 1.06 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 3 | 115.11 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 3 | 106.95 ms | 0.93 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 3 | 121.78 ms | 1.06 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 9 | 105.00 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 9 | 95.83 ms | 0.91 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 9 | 109.55 ms | 1.04 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 9 | 105.99 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 9 | 96.70 ms | 0.91 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 9 | 111.05 ms | 1.05 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress | 19 | 41,659.8 ms | 1.00 | 50.4MB | - |
-| ManagedCompressions.Zstd Compress | 19 | 40,188.7 ms | 0.96 | 50.4MB | - |
-| .NET ZstandardEncoder Compress | 19 | 43,425.9 ms | 1.04 | 50.4MB | - |
+| NativeCompressions Zstandard Compress | 19 | 39,354.2 ms | 1.00 | 50.4MB | - |
+| ManagedCompressions.Zstd Compress | 19 | 36,123.1 ms | 0.92 | 50.4MB | - |
+| .NET ZstandardEncoder Compress | 19 | 39,927.5 ms | 1.01 | 50.4MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 19 | 121.7 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 19 | 111.7 ms | 0.92 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 19 | 120.1 ms | 0.99 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 19 | 115.2 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 19 | 106.4 ms | 0.92 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 19 | 119.1 ms | 1.03 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 1 | 205.60 ms | 1.00 | 96.21MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 1 | 216.66 ms | 1.05 | 96.21MB | - |
+| NativeCompressions LZ4 Compress(Block) | 1 | 211.98 ms | 1.00 | 96.21MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 1 | 222.62 ms | 1.05 | 96.21MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 9 | 3,710.68 ms | 1.00 | 74.28MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 9 | 3,973.03 ms | 1.07 | 74.28MB | - |
+| NativeCompressions LZ4 Compress(Block) | 9 | 3,829.75 ms | 1.00 | 74.28MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,015.90 ms | 1.05 | 74.28MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 1 | 33.08 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 1 | 33.12 ms | 1.00 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 1 | 33.96 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 1 | 33.15 ms | 0.98 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 9 | 34.70 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 9 | 34.20 ms | 0.99 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 9 | 35.52 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 9 | 34.99 ms | 0.99 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 12 | 11,062.91 ms | 1.00 | 73.68MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 12 | 12,306.28 ms | 1.11 | 73.68MB | - |
+| NativeCompressions LZ4 Compress(Block) | 12 | 11,535.78 ms | 1.00 | 73.68MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 12 | 12,401.69 ms | 1.08 | 73.68MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 12 | 33.62 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 12 | 33.47 ms | 1.00 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 12 | 34.58 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 12 | 34.37 ms | 0.99 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress(Default) | – | 488.7 ms | 1.00 | 63.07MB | - |
-| BrotliEncoder TryCompress(Default) | – | 1,458.9 ms | 2.99 | 61.18MB | - |
-| GZipStream Compress(Level: Optimal) | – | 2,083.6 ms | 4.26 | 65.72MB | 296 B |
+| NativeCompressions Zstandard Compress(Default) | – | 483.7 ms | 1.00 | 63.07MB | - |
+| BrotliEncoder TryCompress(Default) | – | 1,451.5 ms | 3.00 | 61.18MB | - |
+| GZipStream Compress(Level: Optimal) | – | 2,155.9 ms | 4.46 | 65.72MB | 296 B |
 | | | | | | |
-| NativeCompressions Zstandard Decompress(Default) | – | 113.2 ms | 1.00 | 202.13MB | - |
-| BrotliDecoder TryDecompress(Default) | – | 290.2 ms | 2.56 | 202.13MB | - |
-| GZipStream Decompress(Level: Optimal) | – | 186.1 ms | 1.64 | 202.13MB | 432 B |
+| NativeCompressions Zstandard Decompress(Default) | – | 115.6 ms | 1.00 | 202.13MB | - |
+| BrotliDecoder TryDecompress(Default) | – | 296.1 ms | 2.56 | 202.13MB | - |
+| GZipStream Decompress(Level: Optimal) | – | 191.9 ms | 1.66 | 202.13MB | 432 B |
 
 ## Native AOT
 
@@ -109,60 +114,60 @@ The same code compiled ahead of time: no tiers, no profile.
 
 | Method | Level | Mean | Ratio | Payload | Allocated |
 |:--|--:|--:|--:|--:|--:|
-| NativeCompressions Zstandard Compress | 1 | 299.20 ms | 1.00 | 69.8MB | - |
-| ManagedCompressions.Zstd Compress | 1 | 299.94 ms | 1.00 | 69.8MB | - |
-| .NET ZstandardEncoder Compress | 1 | 365.80 ms | 1.22 | 69.8MB | - |
+| NativeCompressions Zstandard Compress | 1 | 306.94 ms | 1.00 | 69.8MB | - |
+| ManagedCompressions.Zstd Compress | 1 | 303.70 ms | 0.99 | 69.8MB | - |
+| .NET ZstandardEncoder Compress | 1 | 376.48 ms | 1.23 | 69.8MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress | 3 | 474.40 ms | 1.00 | 63.07MB | - |
-| ManagedCompressions.Zstd Compress | 3 | 501.63 ms | 1.06 | 63.07MB | - |
-| .NET ZstandardEncoder Compress | 3 | 495.39 ms | 1.04 | 63.07MB | - |
+| NativeCompressions Zstandard Compress | 3 | 485.89 ms | 1.00 | 63.07MB | - |
+| ManagedCompressions.Zstd Compress | 3 | 501.40 ms | 1.03 | 63.07MB | - |
+| .NET ZstandardEncoder Compress | 3 | 503.24 ms | 1.04 | 63.07MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress | 9 | 1,891.33 ms | 1.00 | 56.34MB | - |
-| ManagedCompressions.Zstd Compress | 9 | 1,911.12 ms | 1.01 | 56.34MB | - |
-| .NET ZstandardEncoder Compress | 9 | 2,078.14 ms | 1.10 | 56.34MB | - |
+| NativeCompressions Zstandard Compress | 9 | 1,914.30 ms | 1.00 | 56.34MB | - |
+| ManagedCompressions.Zstd Compress | 9 | 1,911.86 ms | 1.00 | 56.34MB | - |
+| .NET ZstandardEncoder Compress | 9 | 2,064.12 ms | 1.08 | 56.34MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 1 | 97.80 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 1 | 97.03 ms | 0.99 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 1 | 111.90 ms | 1.14 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 1 | 100.10 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 1 | 99.39 ms | 0.99 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 1 | 113.43 ms | 1.13 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 3 | 112.39 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 3 | 103.96 ms | 0.92 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 3 | 124.08 ms | 1.10 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 3 | 115.02 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 3 | 104.81 ms | 0.91 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 3 | 125.36 ms | 1.09 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 9 | 105.12 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 9 | 96.13 ms | 0.91 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 9 | 114.46 ms | 1.09 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 9 | 106.89 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 9 | 96.07 ms | 0.90 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 9 | 114.87 ms | 1.07 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress | 19 | 43,260.0 ms | 1.00 | 50.4MB | - |
-| ManagedCompressions.Zstd Compress | 19 | 39,533.1 ms | 0.91 | 50.4MB | - |
-| .NET ZstandardEncoder Compress | 19 | 40,821.0 ms | 0.94 | 50.4MB | - |
+| NativeCompressions Zstandard Compress | 19 | 39,220.9 ms | 1.00 | 50.4MB | - |
+| ManagedCompressions.Zstd Compress | 19 | 36,755.1 ms | 0.94 | 50.4MB | - |
+| .NET ZstandardEncoder Compress | 19 | 38,225.2 ms | 0.97 | 50.4MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Decompress | 19 | 116.2 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Zstd Decompress | 19 | 104.8 ms | 0.90 | 202.13MB | - |
-| .NET ZstandardDecoder Decompress | 19 | 124.1 ms | 1.07 | 202.13MB | - |
+| NativeCompressions Zstandard Decompress | 19 | 115.2 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Zstd Decompress | 19 | 103.0 ms | 0.89 | 202.13MB | - |
+| .NET ZstandardDecoder Decompress | 19 | 122.5 ms | 1.06 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 1 | 206.16 ms | 1.00 | 96.21MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 1 | 216.47 ms | 1.05 | 96.21MB | - |
+| NativeCompressions LZ4 Compress(Block) | 1 | 212.10 ms | 1.00 | 96.21MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 1 | 221.94 ms | 1.05 | 96.21MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 9 | 3,711.38 ms | 1.00 | 74.28MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,052.02 ms | 1.09 | 74.28MB | - |
+| NativeCompressions LZ4 Compress(Block) | 9 | 3,832.51 ms | 1.00 | 74.28MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,180.66 ms | 1.09 | 74.28MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 1 | 35.70 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 1 | 32.96 ms | 0.92 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 1 | 33.95 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 1 | 33.89 ms | 1.00 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 9 | 34.60 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 9 | 34.75 ms | 1.00 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 9 | 35.52 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 9 | 35.79 ms | 1.01 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 12 | 11,090.43 ms | 1.00 | 73.68MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 12 | 12,574.93 ms | 1.13 | 73.68MB | - |
+| NativeCompressions LZ4 Compress(Block) | 12 | 11,460.07 ms | 1.00 | 73.68MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 12 | 12,815.36 ms | 1.12 | 73.68MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 12 | 33.63 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 12 | 33.95 ms | 1.01 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 12 | 34.52 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 12 | 34.85 ms | 1.01 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions Zstandard Compress(Default) | – | 493.7 ms | 1.00 | 63.07MB | - |
-| BrotliEncoder TryCompress(Default) | – | 1,492.1 ms | 3.02 | 61.18MB | - |
-| GZipStream Compress(Level: Optimal) | – | 2,115.3 ms | 4.28 | 65.72MB | 296 B |
+| NativeCompressions Zstandard Compress(Default) | – | 485.4 ms | 1.00 | 63.07MB | - |
+| BrotliEncoder TryCompress(Default) | – | 1,473.0 ms | 3.03 | 61.18MB | - |
+| GZipStream Compress(Level: Optimal) | – | 2,162.2 ms | 4.45 | 65.72MB | 296 B |
 | | | | | | |
-| NativeCompressions Zstandard Decompress(Default) | – | 112.7 ms | 1.00 | 202.13MB | - |
-| BrotliDecoder TryDecompress(Default) | – | 296.8 ms | 2.63 | 202.13MB | - |
-| GZipStream Decompress(Level: Optimal) | – | 186.5 ms | 1.65 | 202.13MB | 432 B |
+| NativeCompressions Zstandard Decompress(Default) | – | 115.6 ms | 1.00 | 202.13MB | - |
+| BrotliDecoder TryDecompress(Default) | – | 304.6 ms | 2.63 | 202.13MB | - |
+| GZipStream Decompress(Level: Optimal) | – | 200.2 ms | 1.73 | 202.13MB | 432 B |
