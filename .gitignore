@@ -30,6 +30,11 @@ coverage*.info
 
 # ---- BenchmarkDotNet ----
 BenchmarkDotNet.Artifacts/
+# The generated projects of each job, built beside the benchmark project (BenchmarkDotNet 0.16).
+.bdn/
+
+# ---- Raw benchmark results (--results); the .md files under bench/results render them ----
+*.tsv
 
 # ---- Native artifacts ----
 *.dll
@@ -58,5 +63,5 @@ Thumbs.db
 tools/native-ref/out/
 tests/ManagedCompressions.Zstd.Tests/testdata/
 
-# ---- Benchmark logs (the results, .tsv and .md, are kept) ----
+# ---- Benchmark logs (the rendered .md results are kept) ----
 bench/results/**/*.log
