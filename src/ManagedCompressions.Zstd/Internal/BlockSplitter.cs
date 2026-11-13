@@ -2,6 +2,7 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
+using System.Runtime.Intrinsics.X86;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -99,6 +100,33 @@ internal static unsafe class BlockSplitter
             }
 
             return (ulong)AdvSimd.Arm64.AddPairwiseScalar(low + high).ToScalar();
+        }
+
+        if (Avx2.IsSupported)
+        {
+            // Eight bins a round: vpmuludq multiplies the even 32-bit lanes into 64 bits, then the odd
+            // ones, shifted down; the absolute value of a 64-bit lane from its sign, which AVX2 compares.
+            Vector256<uint> aTotal = Vector256.Create((uint)a->EventCount);
+            Vector256<uint> bTotal = Vector256.Create((uint)b->EventCount);
+            Vector256<long> sum = Vector256<long>.Zero;
+            for (nuint n = 0; n < (nuint)bins; n += 8)
+            {
+                Vector256<uint> aBins = Avx.LoadVector256(aEvents + n);
+                Vector256<uint> bBins = Avx.LoadVector256(bEvents + n);
+                Vector256<long> even = Avx2.Subtract(Avx2.Multiply(aBins, bTotal), Avx2.Multiply(bBins, aTotal)).AsInt64();
+                Vector256<uint> aOdd = Avx2.ShiftRightLogical(aBins.AsUInt64(), 32).AsUInt32();
+                Vector256<uint> bOdd = Avx2.ShiftRightLogical(bBins.AsUInt64(), 32).AsUInt32();
+                Vector256<long> odd = Avx2.Subtract(Avx2.Multiply(aOdd, bTotal), Avx2.Multiply(bOdd, aTotal)).AsInt64();
+                Vector256<long> evenSign = Avx2.CompareGreaterThan(Vector256<long>.Zero, even);
+                Vector256<long> oddSign = Avx2.CompareGreaterThan(Vector256<long>.Zero, odd);
+                sum += ((even ^ evenSign) - evenSign) + ((odd ^ oddSign) - oddSign);
+                if (merge)
+                {
+                    Avx.Store(aEvents + n, Avx2.Add(aBins, bBins));
+                }
+            }
+
+            return (ulong)Vector256.Sum(sum);
         }
 
         long aCount = (long)a->EventCount;
