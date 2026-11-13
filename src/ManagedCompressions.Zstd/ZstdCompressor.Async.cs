@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using ManagedCompressions.Zstd.Internal;
@@ -40,6 +41,7 @@ public sealed partial class ZstdCompressor
         }
 
         int degree = Math.Min(maxDegreeOfParallelism > 0 ? maxDegreeOfParallelism : Environment.ProcessorCount, plan.Count);
+        _idleWorkers ??= new Stack<ZstdCompressor>();
         using var slots = new SemaphoreSlim(degree);
         var jobs = new Task<(byte[] Buffer, int Size)>[plan.Count];
         int started = 0;

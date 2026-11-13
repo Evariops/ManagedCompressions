@@ -66,11 +66,18 @@ internal sealed unsafe class SequenceStore
     // The buffers of a block, sized for the largest block so far (see <see cref="EnsureCapacity"/>).
     private byte[] _literals = [];
     private SequenceRecord[] _sequences = [];
-    private readonly uint[] _counts = GC.AllocateArray<uint>(CountsCapacity, pinned: true);
 
-    public SequenceStore()
+    /// <summary>The slab the counts are in, kept alive with them.</summary>
+    private readonly PinnedSlab _slab;
+
+    /// <summary>The room the counts take in a slab.</summary>
+    public static readonly int SlabSize = PinnedSlab.SizeOf<uint>(CountsCapacity);
+
+    /// <summary>A store whose counts are in <paramref name="slab"/>, or in a slab of their own.</summary>
+    public SequenceStore(PinnedSlab? slab = null)
     {
-        Counts = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_counts));
+        _slab = slab ?? new PinnedSlab(SlabSize);
+        Counts = _slab.Take<uint>(CountsCapacity);
         Reset();
     }
 

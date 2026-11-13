@@ -32,10 +32,16 @@ public sealed unsafe partial class ZstdCompressor
     private byte[] _blockBuffer = [];
     private byte* _blockStart;
     private int _blockBufferSize;
-    private readonly SequenceStore _store = new();
-    private readonly HuffmanWorkspace _huffmanWorkspace = new();
-    private BlockState _previous = new();
-    private BlockState _next = new();
+    /// <summary>
+    /// The compressor's small pinned tables in one array (see <see cref="PinnedSlab"/>): the block
+    /// states', the Huffman workspace's, the sequence counts, the row hash cache and candidates, the
+    /// post-splitter's counts, partitions and scratch.
+    /// </summary>
+    private readonly PinnedSlab _slab;
+    private readonly SequenceStore _store;
+    private readonly HuffmanWorkspace _huffmanWorkspace;
+    private BlockState _previous;
+    private BlockState _next;
     private uint[] _hashTable = [];
     private uint[] _chainTable = [];
     private byte[] _tagTable = [];
@@ -54,8 +60,8 @@ public sealed unsafe partial class ZstdCompressor
     private OptimalState? _optimal;
     private LongDistanceMatcher? _longDistanceMatcher;
     private bool _longDistance;
-    private readonly uint[] _hashCache = GC.AllocateArray<uint>(LazyMatchFinder.RowHashCacheSize, pinned: true);
-    private readonly uint[] _candidates = GC.AllocateArray<uint>(64, pinned: true);
+    private readonly uint* _hashCache;
+    private readonly uint* _candidates;
     private MatchState _matchState;
     private CompressionParameters _parameters;
     private bool _isFirstBlock;
@@ -134,7 +140,7 @@ public sealed unsafe partial class ZstdCompressor
             _overflowCorrections = 0;
         }
 
-        Array.Clear(_hashCache);
+        new Span<uint>(_hashCache, LazyMatchFinder.RowHashCacheSize).Clear();
         _rowHashSalt = NextSalt(_rowHashSalt);
         uint start = Math.Max(_nextIndex, minimumStart);
         _matchState = new MatchState
@@ -149,8 +155,8 @@ public sealed unsafe partial class ZstdCompressor
             TagTable = tagTable,
             HashTable3 = hashTable3,
             HashLog3 = hashLog3,
-            HashCache = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_hashCache)),
-            Candidates = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_candidates)),
+            HashCache = _hashCache,
+            Candidates = _candidates,
             RowHashLog = parameters.HashLog - Math.Clamp(parameters.SearchLog, 4, 6),
             RowHashSalt = _rowHashSalt,
             Parameters = parameters,

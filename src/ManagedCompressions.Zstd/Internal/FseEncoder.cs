@@ -18,19 +18,25 @@ internal struct FseSymbolTransform
 /// libzstd's <c>FSE_CTable</c>: an encoding table, the next state of each state and symbol
 /// (<see cref="StateTable"/>, by symbol) and each symbol's transform.
 /// </summary>
-/// <remarks>Its storage is pinned for the compressor's lifetime, so that the encoders hold plain pointers.</remarks>
+/// <remarks>
+/// Its storage is pinned for the compressor's lifetime, so that the encoders hold plain pointers: in the
+/// compressor's slab, or a slab of its own.
+/// </remarks>
 internal sealed unsafe class FseCTable
 {
-    private readonly ushort[] _states;
-    private readonly FseSymbolTransform[] _symbols;
+    /// <summary>The slab the tables are in, kept alive with them.</summary>
+    private readonly PinnedSlab _slab;
 
-    public FseCTable(int maxTableLog, int maxSymbolValue)
+    public FseCTable(int maxTableLog, int maxSymbolValue, PinnedSlab? slab = null)
     {
-        _states = GC.AllocateArray<ushort>(1 << maxTableLog, pinned: true);
-        _symbols = GC.AllocateArray<FseSymbolTransform>(maxSymbolValue + 1, pinned: true);
-        StateTable = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_states));
-        Symbols = (FseSymbolTransform*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_symbols));
+        _slab = slab ?? new PinnedSlab(SlabSize(maxTableLog, maxSymbolValue));
+        StateTable = _slab.Take<ushort>(1 << maxTableLog);
+        Symbols = _slab.Take<FseSymbolTransform>(maxSymbolValue + 1);
     }
+
+    /// <summary>The room the table takes in a slab.</summary>
+    public static int SlabSize(int maxTableLog, int maxSymbolValue) =>
+        PinnedSlab.SizeOf<ushort>(1 << maxTableLog) + PinnedSlab.SizeOf<FseSymbolTransform>(maxSymbolValue + 1);
 
     public int TableLog;
 

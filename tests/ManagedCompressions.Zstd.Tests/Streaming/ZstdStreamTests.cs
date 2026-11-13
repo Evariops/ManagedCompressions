@@ -148,14 +148,22 @@ public sealed class ZstdStreamTests
         using var zstd = new ZstdStream(new MemoryStream(Compressed), CompressionMode.Decompress);
         int[] read = new int[10_000];
         read[0] = zstd.ReadByte();
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 1; i < read.Length; i++)
+
+        // The least of several rounds: an allocation of ReadByte's shows in every round, while the
+        // runtime's own (tiering, the test framework on a shared thread) come and go.
+        long allocated = long.MaxValue;
+        for (int round = 0; round < 5; round++)
         {
-            read[i] = zstd.ReadByte();
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 1 + (round * 1000); i < 1 + ((round + 1) * 1000); i++)
+            {
+                read[i] = zstd.ReadByte();
+            }
+
+            allocated = Math.Min(allocated, GC.GetAllocatedBytesForCurrentThread() - before);
         }
 
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        for (int i = 0; i < read.Length; i++)
+        for (int i = 0; i < 5001; i++)
         {
             Assert.True(read[i] == Content[i], $"byte {i}");
         }

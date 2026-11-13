@@ -40,8 +40,11 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>libzstd's <c>ZSTD_c_overlapLog</c>, 0 for the strategy's (<see cref="OverlapSize"/>): for the tests.</summary>
     internal int OverlapLogOverride { get; set; }
 
-    /// <summary>The compressors that run the jobs of <see cref="CompressAsync"/>, kept from one call to the next.</summary>
-    private readonly Stack<ZstdCompressor> _idleWorkers = new();
+    /// <summary>
+    /// The compressors that run the jobs of <see cref="CompressAsync"/>, kept from one call to the next;
+    /// created by the first call, before its jobs run.
+    /// </summary>
+    private Stack<ZstdCompressor>? _idleWorkers;
 
     /// <summary>zstdmt's serial long-distance matcher: the jobs' sequences, made in their order.</summary>
     private LongDistanceMatcher? _jobsMatcher;
@@ -125,9 +128,10 @@ public sealed unsafe partial class ZstdCompressor
 
     private ZstdCompressor RentWorker()
     {
-        lock (_idleWorkers)
+        Stack<ZstdCompressor> idle = _idleWorkers!;
+        lock (idle)
         {
-            if (_idleWorkers.TryPop(out ZstdCompressor? worker))
+            if (idle.TryPop(out ZstdCompressor? worker))
             {
                 return worker;
             }
@@ -138,9 +142,10 @@ public sealed unsafe partial class ZstdCompressor
 
     private void ReturnWorker(ZstdCompressor worker)
     {
-        lock (_idleWorkers)
+        Stack<ZstdCompressor> idle = _idleWorkers!;
+        lock (idle)
         {
-            _idleWorkers.Push(worker);
+            idle.Push(worker);
         }
     }
 

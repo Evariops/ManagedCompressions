@@ -19,10 +19,16 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>libzstd's <c>ZSTD_MAX_HUF_HEADER_SIZE</c>: the room for a tree's description in an estimate.</summary>
     private const nuint MaxHuffmanHeaderSize = 128;
 
-    // The counts of a part and of its two halves, then a literal histogram.
-    private readonly uint[] _splitCounts = GC.AllocateArray<uint>((3 * SequenceStore.AllCodes) + 256, pinned: true);
-    private readonly uint[] _partitions = GC.AllocateArray<uint>(MaxBlockSplits + 1, pinned: true);
-    private readonly byte[] _splitScratch = GC.AllocateArray<byte>(1024, pinned: true);
+    /// <summary>The size of <see cref="_splitCounts"/>: the counts of a part and of its two halves, then a literal histogram.</summary>
+    private const int SplitCountsSize = (3 * SequenceStore.AllCodes) + 256;
+
+    /// <summary>The size of <see cref="_splitScratch"/>.</summary>
+    private const int SplitScratchSize = 1024;
+
+    // In the compressor's slab.
+    private readonly uint* _splitCounts;
+    private readonly uint* _partitions;
+    private readonly byte* _splitScratch;
     private uint[] _literalPrefix = [];
     private uint[] _sourcePrefix = [];
     private int _splitCount;
@@ -33,7 +39,7 @@ public sealed unsafe partial class ZstdCompressor
     /// </summary>
     private bool PostSplitterEnabled => _frameParameters.Strategy >= Strategy.BinaryTreeOptimal && _frameParameters.WindowLog >= 17;
 
-    private uint* SplitCounts(int index) => (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_splitCounts)) + (index * SequenceStore.AllCodes);
+    private uint* SplitCounts(int index) => _splitCounts + (index * SequenceStore.AllCodes);
 
     /// <summary>
     /// libzstd's <c>ZSTD_compressBlock_splitBlock</c>: the block's sequences found, cut where the
@@ -96,7 +102,7 @@ public sealed unsafe partial class ZstdCompressor
             decoderRep[r] = encoderRep[r] = _previous.Rep[r];
         }
 
-        uint* partitions = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_partitions));
+        uint* partitions = _partitions;
         int splits = DeriveBlockSplits(partitions, sequenceCount);
         if (splits == 0)
         {
@@ -363,7 +369,7 @@ public sealed unsafe partial class ZstdCompressor
         SequenceEncoder.Statistics statistics;
         if (section.SequenceCount != 0)
         {
-            byte* tables = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_splitScratch));
+            byte* tables = _splitScratch;
             statistics = SequenceEncoder.BuildStatistics(section, _previous, _next, tables, _parameters.Strategy);
         }
         else
@@ -426,7 +432,7 @@ public sealed unsafe partial class ZstdCompressor
         huffLog = HuffmanEncoder.BuildCTable(fresh, count, maxSymbol, huffLog);
 
         nuint newSize = HuffmanEncoder.EstimateCompressedSize(fresh, count, maxSymbol);
-        byte* description = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_splitScratch));
+        byte* description = _splitScratch;
         nuint headerSize = HuffmanEncoder.WriteCTable(description, MaxHuffmanHeaderSize, fresh, maxSymbol, huffLog, _huffmanWorkspace.Weights);
         if (headerSize == 0)
         {
