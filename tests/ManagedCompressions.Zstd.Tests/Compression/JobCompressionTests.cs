@@ -132,6 +132,36 @@ public sealed class JobCompressionTests
         Assert.Equal(sha256, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(output.AsSpan(0, written))));
     }
 
+    /// <summary>
+    /// The jobs write into the destination itself, each at the sum of the bounds of the jobs before it,
+    /// then move down: the frame is the sequential one whatever room the destination has, from the
+    /// bound down to the frame's own size, where the last jobs' slots fall past its end; a byte less is
+    /// refused.
+    /// </summary>
+    [Theory]
+    [InlineData("mixed", 1, false)]
+    [InlineData("text", 3, true)]
+    [InlineData("incompressible", 3, true)]
+    [InlineData("json", 9, false)]
+    public async Task Writes_the_frame_into_any_destination_that_holds_it(string kind, int level, bool checksum)
+    {
+        byte[] data = DataKinds.Generate(kind, 3_000_000, level);
+        var compressor = new ZstdCompressor(level) { AppendChecksum = checksum, JobSizeOverride = 512 << 10 };
+        int bound = ZstdCompressor.GetMaxCompressedLength(data.Length);
+        byte[] expected = new byte[bound];
+        Assert.Equal(OperationStatus.Done, compressor.CompressInJobs(data, expected, out int length));
+        foreach (int room in (int[])[bound, length + 5000, length + 1, length])
+        {
+            byte[] output = new byte[room];
+            output.AsSpan().Fill(0xA5);
+            int written = await compressor.CompressAsync(data, output, 3, TestContext.Current.CancellationToken);
+            Corpus.AssertSameBytes(expected.AsSpan(0, length), output.AsSpan(0, written), $"{kind} L{level}, room {room}");
+        }
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => compressor.CompressAsync(data, new byte[length - 1], 3, TestContext.Current.CancellationToken).AsTask());
+    }
+
     public static TheoryData<string> DictionaryCases()
     {
         var data = new TheoryData<string>();

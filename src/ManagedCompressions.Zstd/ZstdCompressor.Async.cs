@@ -1,6 +1,8 @@
 using System;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.IO.Hashing;
 using System.Threading;
 using System.Threading.Tasks;
 using ManagedCompressions.Zstd.Internal;
@@ -43,19 +45,27 @@ public sealed partial class ZstdCompressor
         int degree = Math.Min(maxDegreeOfParallelism > 0 ? maxDegreeOfParallelism : Environment.ProcessorCount, plan.Count);
         _idleWorkers ??= new Stack<ZstdCompressor>();
         using var slots = new SemaphoreSlim(degree);
-        var jobs = new Task<(byte[] Buffer, int Size)>[plan.Count];
+        var jobs = new Task<JobOutput>[plan.Count];
         int started = 0;
         int written = 0;
         bool fits = true;
         using MemoryHandle pin = source.Pin();
+        using MemoryHandle destinationPin = destination.Pin();
         nint address = AddressOf(pin);
+        var output = new JobDestination(AddressOf(destinationPin), destination.Length);
         if (plan.LongDistance)
         {
             BeginJobsMatcher(plan, address);
         }
 
+        // zstdmt's serial state sums the content as the jobs go: here a task of its own, which reads the
+        // source beside the jobs rather than after them all, on one core while the others wait.
+        Task<ulong>? checksum = AppendChecksum ? Task.Run(() => XxHash64.HashToUInt64(source.Span), CancellationToken.None) : null;
         try
         {
+            // Each job writes into the destination itself, at the sum of the bounds of the jobs before it
+            // (its slot), and is moved down to the end of the frame so far once the jobs before it are.
+            long slot = 0;
             for (int flushed = 0; flushed < plan.Count; flushed++)
             {
                 // The jobs written out oldest first (zstdmt's flush), up to twice the degree of them
@@ -68,32 +78,53 @@ public sealed partial class ZstdCompressor
                     (RawSequence[]? sequences, int count) = plan.LongDistance
                         ? await Task.Run(() => GenerateJobSequences(plan, address, job), CancellationToken.None).ConfigureAwait(false)
                         : (null, 0);
-                    jobs[job] = RunJobAsync(slots, plan, address, job, sequences, count);
+                    jobs[job] = RunJobAsync(slots, plan, address, job, sequences, count, output, slot);
+                    slot += JobCapacity(plan.Size(job));
                     started++;
                 }
 
-                (byte[] buffer, int size) = await jobs[flushed].ConfigureAwait(false);
-                fits = fits && size <= destination.Length - written;
+                JobOutput result = await jobs[flushed].ConfigureAwait(false);
+                fits = fits && result.Size <= destination.Length - written;
                 if (fits)
                 {
-                    buffer.AsSpan(0, size).CopyTo(destination.Span[written..]);
-                    written += size;
+                    // The frame so far ends at or before the job's slot, which no later job's overlaps.
+                    Span<byte> frame = destination.Span;
+                    ReadOnlySpan<byte> content = result.Buffer is null ? frame.Slice(result.Offset, result.Size) : result.Buffer.AsSpan(0, result.Size);
+                    if (result.Buffer is not null || result.Offset != written)
+                    {
+                        content.CopyTo(frame[written..]);
+                    }
+
+                    written += result.Size;
                 }
 
-                ArrayPool<byte>.Shared.Return(buffer);
+                result.Return();
                 jobs[flushed] = null!;
+            }
+
+            if (checksum is not null)
+            {
+                ulong hash = await checksum.ConfigureAwait(false);
+                checksum = null;
+                fits = fits && FrameFormat.ChecksumSize <= destination.Length - written;
+                if (fits)
+                {
+                    BinaryPrimitives.WriteUInt32LittleEndian(destination.Span.Slice(written, FrameFormat.ChecksumSize), (uint)hash);
+                    written += FrameFormat.ChecksumSize;
+                }
             }
         }
         finally
         {
-            // A job left running would read the source after its pin.
+            // A job, or the checksum, left running would read the source after its pin, or write the
+            // destination after its own.
             for (int job = 0; job < started; job++)
             {
                 if (jobs[job] is { } running)
                 {
                     try
                     {
-                        ArrayPool<byte>.Shared.Return((await running.ConfigureAwait(false)).Buffer);
+                        (await running.ConfigureAwait(false)).Return();
                     }
                     catch (Exception)
                     {
@@ -101,15 +132,17 @@ public sealed partial class ZstdCompressor
                     }
                 }
             }
-        }
 
-        if (AppendChecksum)
-        {
-            fits = fits && FrameFormat.ChecksumSize <= destination.Length - written;
-            if (fits)
+            if (checksum is not null)
             {
-                WriteChecksum(source.Span, destination.Span.Slice(written, FrameFormat.ChecksumSize));
-                written += FrameFormat.ChecksumSize;
+                try
+                {
+                    await checksum.ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Nor is the checksum's.
+                }
             }
         }
 
@@ -120,14 +153,15 @@ public sealed partial class ZstdCompressor
     /// A job on the thread pool once one of the <paramref name="slots"/> is free, in the order asked, its
     /// long-distance sequences (if any) returned after.
     /// </summary>
-    private async Task<(byte[] Buffer, int Size)> RunJobAsync(SemaphoreSlim slots, JobPlan plan, nint address, int job, RawSequence[]? sequences, int count)
+    private async Task<JobOutput> RunJobAsync(
+        SemaphoreSlim slots, JobPlan plan, nint address, int job, RawSequence[]? sequences, int count, JobDestination output, long slot)
     {
         try
         {
             await slots.WaitAsync().ConfigureAwait(false);
             try
             {
-                return await Task.Run(() => RunJob(plan, address, job, sequences, count)).ConfigureAwait(false);
+                return await Task.Run(() => RunJob(plan, address, job, sequences, count, output, slot)).ConfigureAwait(false);
             }
             finally
             {

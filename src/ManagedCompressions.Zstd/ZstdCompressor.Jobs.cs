@@ -149,22 +149,47 @@ public sealed unsafe partial class ZstdCompressor
         }
     }
 
+    /// <summary>The room a job of <paramref name="size"/> bytes is given: its bound, and the frame header the first one writes.</summary>
+    private static int JobCapacity(int size) => GetMaxCompressedLength(size) + FrameHeaderSizeMax;
+
+    /// <summary>The destination of <see cref="CompressAsync"/>, pinned, which the jobs write into.</summary>
+    private readonly record struct JobDestination(nint Address, int Length);
+
     /// <summary>
-    /// A job of <paramref name="plan"/>, run on a worker into a buffer of its own (rented, returned by
-    /// the caller once copied out): libzstd's job with its <c>dstBuff</c>.
+    /// Where a job's output is: at <see cref="Offset"/> in the destination, or at the start of a rented
+    /// <see cref="Buffer"/> when its slot did not fit there.
     /// </summary>
-    private (byte[] Buffer, int Size) RunJob(in JobPlan plan, nint source, int job, RawSequence[]? sequences, int sequenceCount)
+    private readonly record struct JobOutput(byte[]? Buffer, int Offset, int Size)
+    {
+        /// <summary>The rented buffer, if any, returned once the output is copied out.</summary>
+        public void Return()
+        {
+            if (Buffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(Buffer);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A job of <paramref name="plan"/>, run on a worker: libzstd's job, into its slot of the destination,
+    /// at <paramref name="slot"/>, the sum of the bounds of the jobs before it, which no other job's
+    /// overlaps; or, past the destination's end, into a buffer of its own (libzstd's <c>dstBuff</c>),
+    /// rented, returned by the caller once copied out.
+    /// </summary>
+    private JobOutput RunJob(in JobPlan plan, nint source, int job, RawSequence[]? sequences, int sequenceCount, JobDestination output, long slot)
     {
         int size = plan.Size(job);
-        int capacity = GetMaxCompressedLength(size) + FrameHeaderSizeMax;
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(capacity);
+        int capacity = JobCapacity(size);
+        byte[]? buffer = capacity <= output.Length - slot ? null : ArrayPool<byte>.Shared.Rent(capacity);
         ZstdCompressor worker = RentWorker();
         try
         {
             int written;
-            fixed (byte* destination = buffer)
+            fixed (byte* rented = buffer)
             fixed (RawSequence* jobSequences = sequences)
             {
+                byte* destination = buffer is null ? (byte*)output.Address + (nint)slot : rented;
                 written = worker.CompressJob(
                     plan.Parameters, (byte*)source, plan.FrameSize, plan.Start(job), size, plan.PrefixSize(job), destination, capacity, AppendChecksum,
                     jobSequences, (nuint)sequenceCount);
@@ -175,11 +200,15 @@ public sealed unsafe partial class ZstdCompressor
                 throw new InvalidOperationException("A job's frame exceeded its bound.");
             }
 
-            return (buffer, written);
+            return new JobOutput(buffer, buffer is null ? (int)slot : 0, written);
         }
         catch
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            if (buffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
             throw;
         }
         finally
