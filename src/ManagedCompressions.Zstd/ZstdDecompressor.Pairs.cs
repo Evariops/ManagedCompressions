@@ -253,6 +253,7 @@ public sealed partial class ZstdDecompressor
         a.Rep0 = _rep0;
         a.Rep1 = _rep1;
         a.Rep2 = _rep2;
+        a.HistoryGuard = _historyGuard;
         a.Dst = ref Unsafe.Add(ref frameStart, op);
         a.Lit = ref MemoryMarshal.GetReference(literalsA);
         if (decoded > 0)
@@ -280,6 +281,7 @@ public sealed partial class ZstdDecompressor
         b.Rep0 = _rep0;
         b.Rep1 = _rep1;
         b.Rep2 = _rep2;
+        b.HistoryGuard = _historyGuard;
         b.Dst = ref Unsafe.Add(ref frameStart, opB);
         b.Lit = ref MemoryMarshal.GetReference(literalsB);
         ExecuteRecords(ref b, ref Unsafe.Add(ref records, RecordStride / 2), decoded, literalsB, literalCountB, destination, opB, blockSizeMax, history);
@@ -633,7 +635,7 @@ public sealed partial class ZstdDecompressor
                 // A match in the dictionary, as in ExecuteSequencesFast: copied from there when it
                 // ends there; one that runs on into the frame is the careful path's.
                 nuint back = offset - prefix;
-                if ((back > (nuint)s.HistoryLength) | ((nint)back < matchLength))
+                if ((back > (nuint)s.HistoryLength) | ((nint)back - s.HistoryGuard < matchLength))
                 {
                     goto Pending;
                 }

@@ -17,6 +17,8 @@ public sealed partial class ZstdDecompressor
     /// </summary>
     internal void BeginStreamFrame(DictionaryEntropy? entropy, int blockSizeMax)
     {
+        // The stream's history, its window or the constructor's dictionary, has room after it.
+        _historyGuard = 0;
         EnsureLiterals(ref _literals, blockSizeMax);
         BeginFrame(entropy);
     }

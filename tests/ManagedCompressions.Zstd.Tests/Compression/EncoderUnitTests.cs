@@ -14,6 +14,36 @@ public sealed unsafe class EncoderUnitTests
 {
     public static TheoryData<int> Seeds() => [1, 2, 3, 4, 5, 6, 7, 8];
 
+    /// <summary>The vector loop that strips a copied dictionary table's tags, against one index at a time, at every length's tail.</summary>
+    [Fact]
+    public void Tags_are_stripped_as_one_at_a_time()
+    {
+        var random = new Random(7);
+        uint[] source = new uint[300];
+        for (int i = 0; i < source.Length; i++)
+        {
+            source[i] = (uint)random.NextInt64(0, 1L << 32);
+        }
+
+        for (int size = 0; size <= source.Length; size++)
+        {
+            uint[] stripped = new uint[source.Length + 1];
+            stripped[size] = 0xDEADBEEF;
+            fixed (uint* destination = stripped)
+            fixed (uint* tagged = source)
+            {
+                ZstdCompressor.StripTags(destination, tagged, size);
+            }
+
+            for (int i = 0; i < size; i++)
+            {
+                Assert.Equal(source[i] >> MatchFinder.TagBits, stripped[i]);
+            }
+
+            Assert.Equal(0xDEADBEEF, stripped[size]);
+        }
+    }
+
     [Theory]
     [MemberData(nameof(Seeds))]
     public void Normalized_distributions_read_back(int seed)

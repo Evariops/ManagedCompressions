@@ -256,7 +256,7 @@ public sealed partial class ZstdDecompressor
                     goto Pending;
                 }
 
-                if ((nint)back < matchLength)
+                if ((nint)back - s.HistoryGuard < matchLength)
                 {
                     goto Pending;
                 }

@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.Intrinsics;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -264,10 +265,52 @@ public sealed unsafe partial class ZstdCompressor
                 return;
             }
 
-            for (int i = 0; i < size; i++)
+            StripTags(destination, source, size);
+        }
+    }
+
+    /// <summary>
+    /// The tagged indices of <paramref name="source"/> into <paramref name="destination"/>, their tags
+    /// stripped: a frame that copies a prepared dictionary's fast tables does so for every frame, over
+    /// the whole tables (768 KiB at level 3), which the JIT does not vectorize by itself as clang does.
+    /// </summary>
+    internal static void StripTags(uint* destination, uint* source, int size)
+    {
+        int i = 0;
+        if (Vector512.IsHardwareAccelerated)
+        {
+            for (; i + 32 <= size; i += 32)
             {
-                destination[i] = source[i] >> MatchFinder.TagBits;
+                Vector512<uint> first = Vector512.Load(source + i);
+                Vector512<uint> second = Vector512.Load(source + i + 16);
+                Vector512.ShiftRightLogical(first, MatchFinder.TagBits).Store(destination + i);
+                Vector512.ShiftRightLogical(second, MatchFinder.TagBits).Store(destination + i + 16);
             }
+        }
+        else if (Vector256.IsHardwareAccelerated)
+        {
+            for (; i + 16 <= size; i += 16)
+            {
+                Vector256<uint> first = Vector256.Load(source + i);
+                Vector256<uint> second = Vector256.Load(source + i + 8);
+                Vector256.ShiftRightLogical(first, MatchFinder.TagBits).Store(destination + i);
+                Vector256.ShiftRightLogical(second, MatchFinder.TagBits).Store(destination + i + 8);
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            for (; i + 8 <= size; i += 8)
+            {
+                Vector128<uint> first = Vector128.Load(source + i);
+                Vector128<uint> second = Vector128.Load(source + i + 4);
+                Vector128.ShiftRightLogical(first, MatchFinder.TagBits).Store(destination + i);
+                Vector128.ShiftRightLogical(second, MatchFinder.TagBits).Store(destination + i + 4);
+            }
+        }
+
+        for (; i < size; i++)
+        {
+            destination[i] = source[i] >> MatchFinder.TagBits;
         }
     }
 }
