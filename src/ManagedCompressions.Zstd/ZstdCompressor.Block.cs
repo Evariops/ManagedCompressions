@@ -69,6 +69,14 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>The index the next frame starts at: where the last one ended.</summary>
     private uint _nextIndex = WindowStartIndex;
 
+    /// <summary>
+    /// The memory the compressor holds on to, roughly: its tables and block buffers, the long-distance
+    /// matcher's table; not its workers'.
+    /// </summary>
+    internal long RetainedBytes =>
+        (4L * (_hashTable.Length + _chainTable.Length + _hashTable3.Length)) + _tagTable.Length + _blockBuffer.Length
+        + (3L * _store.Capacity) + (_longDistanceMatcher?.RetainedBytes ?? 0);
+
     /// <summary>The last frame's <see cref="MatchState.RowHashSalt"/>, of which the next frame's is drawn.</summary>
     private ulong _rowHashSalt;
 

@@ -84,6 +84,9 @@ public sealed partial class ZstdDecompressor
         }
     }
 
+    /// <summary>The memory the decompressor holds on to beyond its tables, roughly: its literals and records, a copied dictionary.</summary>
+    internal long RetainedBytes => (long)_literals.Length + (8L * (_records?.Length ?? 0)) + _callHistory.Length;
+
     /// <summary>
     /// Why the last call refused its frame: the check that failed, where the status it returned says
     /// what to do next. <see cref="ZstdError.None"/> after a call that returned

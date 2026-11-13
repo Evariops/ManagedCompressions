@@ -185,6 +185,12 @@ was written. `CompressionLevel` maps as `ZstandardStream` maps it: `Optimal` to 
 `Fastest` to 1, `SmallestSize` to 22, `NoCompression` to the fastest level, -131072, which stores the
 content nearly as it is.
 
+A `ZstdStream` created without an encoder or a decoder of yours takes one from a pool the library
+keeps, by its settings, and puts it back when disposed of: a stream per request or per file reuses the
+tables and buffers of the streams before it instead of allocating some megabytes of its own. The pool
+keeps a few codecs per setting, none with a dictionary or holding more than 16 MiB, and releases those
+left unused between two gen 2 collections.
+
 ### Dictionaries
 
 ```csharp
