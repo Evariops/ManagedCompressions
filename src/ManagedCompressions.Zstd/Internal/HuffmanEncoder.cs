@@ -25,11 +25,16 @@ internal enum HuffmanRepeat
 /// </summary>
 internal sealed unsafe class HuffmanCTable
 {
-    private readonly ulong[] _elements = GC.AllocateArray<ulong>(HuffmanTable.MaxSymbols, pinned: true);
+    /// <summary>The room the table takes in a slab.</summary>
+    public static readonly int SlabSize = PinnedSlab.SizeOf<ulong>(HuffmanTable.MaxSymbols);
 
-    public HuffmanCTable()
+    /// <summary>The slab the table is in (the compressor's, or its own), kept alive with it.</summary>
+    private readonly PinnedSlab _slab;
+
+    public HuffmanCTable(PinnedSlab? slab = null)
     {
-        Elements = (ulong*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_elements));
+        _slab = slab ?? new PinnedSlab(SlabSize);
+        Elements = _slab.Take<ulong>(HuffmanTable.MaxSymbols);
     }
 
     public ulong* Elements { get; }
@@ -52,11 +57,23 @@ internal sealed unsafe class HuffmanWorkspace
     /// </summary>
     public static int StreamCapacityFor(int blockSize) => ((((blockSize + 3) / 4) * HuffmanTable.MaxTableLog) / 8) + 64;
 
+    /// <summary>The room the workspace's tables take in a slab.</summary>
+    public static readonly int SlabSize =
+        HuffmanCTable.SlabSize + FseCTable.SlabSize(HuffmanEncoder.WeightsMaxTableLog, HuffmanTable.MaxTableLog);
+
+    /// <summary>A workspace whose tables are in <paramref name="slab"/>, or in a slab of their own.</summary>
+    public HuffmanWorkspace(PinnedSlab? slab = null)
+    {
+        slab ??= new PinnedSlab(SlabSize);
+        Table = new HuffmanCTable(slab);
+        Weights = new FseCTable(HuffmanEncoder.WeightsMaxTableLog, HuffmanTable.MaxTableLog, slab);
+    }
+
     /// <summary>The trees the search of the optimal depth tries; the new tree is built into a block state's table.</summary>
-    public readonly HuffmanCTable Table = new();
+    public readonly HuffmanCTable Table;
 
     /// <summary>The encoding table of the tree's weights.</summary>
-    public readonly FseCTable Weights = new(HuffmanEncoder.WeightsMaxTableLog, HuffmanTable.MaxTableLog);
+    public readonly FseCTable Weights;
 
     private byte[] _streams = [];
 

@@ -404,6 +404,21 @@ internal sealed unsafe class LongDistanceMatcher
     }
 
     /// <summary>
+    /// The stream's buffer moved by <paramref name="delta"/> bytes: the window's pointers into it move
+    /// too, its extDict's when the buffer <paramref name="wrapped"/> (it is a dictionary's otherwise).
+    /// The table holds indices, which stay.
+    /// </summary>
+    public void MoveWindow(nint delta, bool wrapped)
+    {
+        _base += delta;
+        _nextSource += delta;
+        if (wrapped)
+        {
+            _dictBase += delta;
+        }
+    }
+
+    /// <summary>
     /// libzstd's <c>ZSTD_loadDictionaryContent</c> for the matcher, after <see cref="BeginFrame"/>: the
     /// window over <paramref name="content"/> from index 2, its split points into the table
     /// (<c>ZSTD_ldm_fillHashTable</c>), then the frame's <paramref name="source"/> past it, not

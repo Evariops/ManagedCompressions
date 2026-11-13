@@ -19,7 +19,7 @@ public sealed unsafe class SequenceCodeTests
         Assert.SkipUnless(SequenceStore.DefersCodes, "the codes are computed as the sequences are stored");
         var random = new Random(seed);
         var store = new SequenceStore();
-        store.EnsureCapacity(FrameFormat.MaxBlockSize);
+        store.EnsureCapacity(FrameFormat.MaxBlockSize, minMatch: 3);
         uint* expectedCounts = stackalloc uint[SequenceStore.AllCodes];
         for (int round = 0; round < 50; round++)
         {

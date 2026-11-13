@@ -28,6 +28,12 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>libzstd's <c>window.nextSrc</c>: where the last chunk ended, to tell whether the next one follows it.</summary>
     private byte* _streamNextSource;
 
+    /// <summary>
+    /// Whether a chunk of the frame did not follow the last one: the window's extDict is then the
+    /// encoder's buffer too, below the chunk, rather than a dictionary's content.
+    /// </summary>
+    private bool _streamWrapped;
+
     /// <summary>libzstd's <c>ZSTD_compressionStage_e</c> once a frame has begun.</summary>
     private enum StreamStage
     {
@@ -128,6 +134,7 @@ public sealed unsafe partial class ZstdCompressor
 
                 _streamNextSource = source;
                 _streamWindowStarted = true;
+                _streamWrapped = false;
             }
 
             UpdateWindow(source, size);
@@ -180,6 +187,33 @@ public sealed unsafe partial class ZstdCompressor
     }
 
     /// <summary>
+    /// The encoder's buffer, which the frame's chunks lie in, moved from <paramref name="from"/> to
+    /// <paramref name="to"/>, its bytes with it (<see cref="ZstdEncoder"/> grows it as the input comes):
+    /// the pointers into it move too, the window's prefix, its extDict when the buffer wrapped, the
+    /// long-distance matcher's. No index changes, so no byte of the frame does.
+    /// </summary>
+    internal void MoveStreamBuffer(byte* from, byte* to)
+    {
+        if (!_streamWindowStarted)
+        {
+            return;
+        }
+
+        nint delta = (nint)(to - from);
+        _matchState.Base += delta;
+        _streamNextSource += delta;
+        if (_streamWrapped)
+        {
+            _matchState.DictionaryBase += delta;
+        }
+
+        if (_streamLongDistance)
+        {
+            _longDistanceMatcher!.MoveWindow(delta, _streamWrapped);
+        }
+    }
+
+    /// <summary>
     /// libzstd's <c>ZSTD_window_update</c>: a chunk that does not follow the last one starts a segment
     /// of its own, the window's bytes before it becoming an extDict below it (unless too few to search);
     /// an extDict the chunk overlaps, being the buffer the chunk was copied into, shrinks past it.
@@ -189,6 +223,7 @@ public sealed unsafe partial class ZstdCompressor
         ref MatchState window = ref _matchState;
         if (source != _streamNextSource)
         {
+            _streamWrapped = true;
             uint distanceFromBase = (uint)(_streamNextSource - window.Base);
             window.LowLimit = window.DictLimit;
             window.DictLimit = distanceFromBase;

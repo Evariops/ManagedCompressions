@@ -23,6 +23,9 @@ internal static unsafe class LazyMatchFinder
     /// <summary>libzstd's <c>ZSTD_ROW_HASH_CACHE_SIZE</c>: hashes computed that many positions ahead.</summary>
     public const int RowHashCacheSize = 8;
 
+    /// <summary>The candidates a row search gathers at most: a row of 64 entries (<see cref="MatchState.Candidates"/>).</summary>
+    public const int MaxRowCandidates = 64;
+
     /// <summary>libzstd's <c>ZSTD_ROW_HASH_TAG_BITS</c>: the low bits of a row hash, kept as a tag.</summary>
     public const int RowHashTagBits = 8;
 

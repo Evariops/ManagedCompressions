@@ -43,17 +43,32 @@ internal enum SymbolEncodingType
 /// </remarks>
 internal sealed unsafe class BlockState
 {
-    private readonly uint[] _rep = GC.AllocateArray<uint>(SequenceEncoder.RepeatOffsetCount, pinned: true);
+    /// <summary>The room a state's repeat offsets and tables take in a slab.</summary>
+    public static readonly int SlabSize =
+        PinnedSlab.SizeOf<uint>(SequenceEncoder.RepeatOffsetCount)
+        + HuffmanCTable.SlabSize
+        + FseCTable.SlabSize(SequenceEncoder.LiteralLengthFseLog, SequenceCodes.MaxLiteralLength)
+        + FseCTable.SlabSize(SequenceEncoder.OffsetFseLog, SequenceCodes.MaxOffset)
+        + FseCTable.SlabSize(SequenceEncoder.MatchLengthFseLog, SequenceCodes.MaxMatchLength);
+
+    /// <summary>The slab the repeat offsets are in, kept alive with them.</summary>
+    private readonly PinnedSlab _slab;
 
     // The tables this state owns, which this state or the next builds its new tables into.
-    private readonly HuffmanCTable _huffman = new();
-    private readonly FseCTable _literalLengths = new(SequenceEncoder.LiteralLengthFseLog, SequenceCodes.MaxLiteralLength);
-    private readonly FseCTable _offsets = new(SequenceEncoder.OffsetFseLog, SequenceCodes.MaxOffset);
-    private readonly FseCTable _matchLengths = new(SequenceEncoder.MatchLengthFseLog, SequenceCodes.MaxMatchLength);
+    private readonly HuffmanCTable _huffman;
+    private readonly FseCTable _literalLengths;
+    private readonly FseCTable _offsets;
+    private readonly FseCTable _matchLengths;
 
-    public BlockState()
+    /// <summary>A state whose repeat offsets and tables are in <paramref name="slab"/>, or in a slab of its own.</summary>
+    public BlockState(PinnedSlab? slab = null)
     {
-        Rep = (uint*)Unsafe.AsPointer(ref _rep[0]);
+        _slab = slab ?? new PinnedSlab(SlabSize);
+        Rep = _slab.Take<uint>(SequenceEncoder.RepeatOffsetCount);
+        _huffman = new HuffmanCTable(_slab);
+        _literalLengths = new FseCTable(SequenceEncoder.LiteralLengthFseLog, SequenceCodes.MaxLiteralLength, _slab);
+        _offsets = new FseCTable(SequenceEncoder.OffsetFseLog, SequenceCodes.MaxOffset, _slab);
+        _matchLengths = new FseCTable(SequenceEncoder.MatchLengthFseLog, SequenceCodes.MaxMatchLength, _slab);
         Huffman = _huffman;
         LiteralLengths = _literalLengths;
         Offsets = _offsets;

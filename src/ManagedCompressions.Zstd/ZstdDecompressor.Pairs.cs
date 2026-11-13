@@ -239,7 +239,8 @@ public sealed partial class ZstdDecompressor
             nint count = Math.Min(Math.Min(nbSeqA, nbSeqB) - 1, MaxPairSequences);
             if (_records is null || _records.Length < RecordStride * count)
             {
-                _records = new ulong[RecordStride * (int)BitOperations.RoundUpToPowerOf2((uint)count)];
+                // Not cleared: a record is written before it is read, and only the decoded ones are.
+                _records = GC.AllocateUninitializedArray<ulong>(RecordStride * (int)BitOperations.RoundUpToPowerOf2((uint)count));
             }
 
             records = ref MemoryMarshal.GetArrayDataReference(_records);
