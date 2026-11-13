@@ -1835,6 +1835,27 @@ internal readonly unsafe struct RowSearch<THash, TRow, TDictionary> : ILazySearc
             return ((mask >> (int)head) | (mask << (16 - (int)head))) & 0xFFFF;
         }
 
+        // Rows of 32 and 64 in one compare where the vectors are that wide (x64 with AVX2, AVX-512).
+        if (TRow.Log == 5 && Vector256.IsHardwareAccelerated)
+        {
+            uint mask = Vector256.Equals(Vector256.Load(tagRow), Vector256.Create(tag)).ExtractMostSignificantBits();
+            return BitOperations.RotateRight(mask, (int)head);
+        }
+
+        if (TRow.Log == 6 && Vector512.IsHardwareAccelerated)
+        {
+            ulong mask = Vector512.Equals(Vector512.Load(tagRow), Vector512.Create(tag)).ExtractMostSignificantBits();
+            return BitOperations.RotateRight(mask, (int)head);
+        }
+
+        if (TRow.Log == 6 && Vector256.IsHardwareAccelerated)
+        {
+            Vector256<byte> wideTags = Vector256.Create(tag);
+            ulong mask = Vector256.Equals(Vector256.Load(tagRow), wideTags).ExtractMostSignificantBits()
+                | ((ulong)Vector256.Equals(Vector256.Load(tagRow + 32), wideTags).ExtractMostSignificantBits() << 32);
+            return BitOperations.RotateRight(mask, (int)head);
+        }
+
         if (TRow.Log == 5)
         {
             uint mask = Vector128.Equals(Vector128.Load(tagRow), tags).ExtractMostSignificantBits()
