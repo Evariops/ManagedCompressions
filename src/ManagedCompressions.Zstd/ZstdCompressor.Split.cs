@@ -179,16 +179,26 @@ public sealed unsafe partial class ZstdCompressor
         }
 
         _splitCount = 0;
-        DeriveBlockSplits(partitions, 0, sequenceCount);
+        if (sequenceCount >= MinSequencesBlockSplitting)
+        {
+            DeriveBlockSplits(partitions, 0, sequenceCount, EstimateSize(Section(0, sequenceCount, SplitCounts(0))));
+        }
+
         partitions[_splitCount] = (uint)sequenceCount;
         return _splitCount;
     }
 
     /// <summary>
     /// libzstd's <c>ZSTD_deriveBlockSplitsHelper</c>: a part cut in two halves when their estimated
-    /// sizes add up to less than its own, each half then tried in turn.
+    /// sizes add up to less than its own, <paramref name="fullSize"/>, each half then tried in turn.
     /// </summary>
-    private void DeriveBlockSplits(uint* partitions, nuint start, nuint end)
+    /// <remarks>
+    /// libzstd estimates each part again where it is tried, where it was a half: an estimate is a
+    /// function of the part and of the block state before it, which stays the same throughout, so the
+    /// half's estimate is the part's, and is passed down rather than made again: a third of the
+    /// estimates, the same splits.
+    /// </remarks>
+    private void DeriveBlockSplits(uint* partitions, nuint start, nuint end, nuint fullSize)
     {
         if (end - start < MinSequencesBlockSplitting || _splitCount >= MaxBlockSplits)
         {
@@ -196,10 +206,8 @@ public sealed unsafe partial class ZstdCompressor
         }
 
         nuint middle = (start + end) / 2;
-        SequenceSection full = Section(start, end, SplitCounts(0));
         SequenceSection first = Section(start, middle, SplitCounts(1));
         SequenceSection second = Section(middle, end, SplitCounts(2));
-        nuint fullSize = EstimateSize(full);
         nuint firstSize = EstimateSize(first);
         nuint secondSize = EstimateSize(second);
         if (fullSize == nuint.MaxValue || firstSize == nuint.MaxValue || secondSize == nuint.MaxValue)
@@ -209,9 +217,9 @@ public sealed unsafe partial class ZstdCompressor
 
         if (firstSize + secondSize < fullSize)
         {
-            DeriveBlockSplits(partitions, start, middle);
+            DeriveBlockSplits(partitions, start, middle, firstSize);
             partitions[_splitCount++] = (uint)middle;
-            DeriveBlockSplits(partitions, middle, end);
+            DeriveBlockSplits(partitions, middle, end, secondSize);
         }
     }
 
@@ -360,7 +368,7 @@ public sealed unsafe partial class ZstdCompressor
     /// <returns>The estimated size, or <see cref="nuint.MaxValue"/> for libzstd's error.</returns>
     private nuint EstimateSize(in SequenceSection section)
     {
-        SymbolEncodingType literalsType = BuildLiteralStatistics(section.LiteralsStart, section.LiteralCount, out nuint descriptionSize);
+        SymbolEncodingType literalsType = BuildLiteralStatistics(section.LiteralsStart, section.LiteralCount, out nuint descriptionSize, out uint maxSymbol);
         if (descriptionSize == nuint.MaxValue)
         {
             return nuint.MaxValue;
@@ -381,7 +389,7 @@ public sealed unsafe partial class ZstdCompressor
             _next.MatchLengthRepeat = FseRepeat.None;
         }
 
-        nuint literals = EstimateLiteralsSize(section.LiteralsStart, section.LiteralCount, literalsType, descriptionSize);
+        nuint literals = EstimateLiteralsSize(section.LiteralCount, literalsType, descriptionSize, maxSymbol);
         nuint sequences = EstimateSequencesSize(section, statistics);
         return literals + sequences + FrameFormat.BlockHeaderSize;
     }
@@ -393,9 +401,14 @@ public sealed unsafe partial class ZstdCompressor
     /// <param name="literals">The part's literals.</param>
     /// <param name="size">Their number.</param>
     /// <param name="descriptionSize">The size of a new tree's description; <see cref="nuint.MaxValue"/> for libzstd's error.</param>
-    private SymbolEncodingType BuildLiteralStatistics(byte* literals, nuint size, out nuint descriptionSize)
+    /// <param name="maxSymbol">
+    /// The largest literal, when the literals are counted (in <c>SplitCounts(3)</c>, for a type that
+    /// codes them: <see cref="EstimateLiteralsSize"/> reads the counts there).
+    /// </param>
+    private SymbolEncodingType BuildLiteralStatistics(byte* literals, nuint size, out nuint descriptionSize, out uint maxSymbol)
     {
         descriptionSize = 0;
+        maxSymbol = 0;
         _next.Huffman = _previous.Huffman;
         _next.HuffmanRepeat = _previous.HuffmanRepeat;
 
@@ -406,7 +419,7 @@ public sealed unsafe partial class ZstdCompressor
         }
 
         uint* count = SplitCounts(3);
-        uint largest = Histogram.CountFast(count, out uint maxSymbol, literals, size);
+        uint largest = Histogram.CountFast(count, out maxSymbol, literals, size);
         if (largest == size)
         {
             return SymbolEncodingType.Rle;
@@ -460,8 +473,12 @@ public sealed unsafe partial class ZstdCompressor
         return SymbolEncodingType.Compressed;
     }
 
-    /// <summary>libzstd's <c>ZSTD_estimateBlockSize_literal</c>, a new tree's description counted.</summary>
-    private nuint EstimateLiteralsSize(byte* literals, nuint size, SymbolEncodingType type, nuint descriptionSize)
+    /// <summary>
+    /// libzstd's <c>ZSTD_estimateBlockSize_literal</c>, a new tree's description counted. libzstd counts
+    /// the literals again; their counts are still those <see cref="BuildLiteralStatistics"/> made, which
+    /// nothing between the two touches.
+    /// </summary>
+    private nuint EstimateLiteralsSize(nuint size, SymbolEncodingType type, nuint descriptionSize, uint maxSymbol)
     {
         nuint headerSize = 3 + (size >= 1 << 10 ? 1u : 0u) + (size >= 16 << 10 ? 1u : 0u);
         bool singleStream = size < 256;
@@ -473,9 +490,7 @@ public sealed unsafe partial class ZstdCompressor
                 return 1;
             default:
             {
-                uint* count = SplitCounts(3);
-                Histogram.CountFast(count, out uint maxSymbol, literals, size);
-                nuint estimate = HuffmanEncoder.EstimateCompressedSize(_next.Huffman, count, maxSymbol);
+                nuint estimate = HuffmanEncoder.EstimateCompressedSize(_next.Huffman, SplitCounts(3), maxSymbol);
                 if (type == SymbolEncodingType.Compressed)
                 {
                     estimate += descriptionSize;
