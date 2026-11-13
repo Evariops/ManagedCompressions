@@ -208,16 +208,25 @@ internal sealed class SequenceTableSet
 
     public readonly SeqSymbol[] Entries = new SeqSymbol[Size];
 
+    // The per-code values are inline in the set: four arrays of three fewer, and their indirections.
+
     /// <summary>Per code: the shared table in use, null when the slot's own build is.</summary>
-    private readonly SeqTable?[] _current = new SeqTable?[3];
+    private PerCode<SeqTable?> _current;
 
     /// <summary>Per code: the shared table the slot holds a copy of, null when it holds its own build.</summary>
-    private readonly SeqTable?[] _held = new SeqTable?[3];
+    private PerCode<SeqTable?> _held;
 
-    private readonly int[] _tableLog = new int[3];
+    private PerCode<int> _tableLog;
 
     /// <summary>Per code: twice the value its table's states stand for on average.</summary>
-    private readonly nint[] _expectedTimes2 = new nint[3];
+    private PerCode<nint> _expectedTimes2;
+
+    /// <summary>A value for each of the three codes, indexed by <see cref="SequenceCode"/>.</summary>
+    [InlineArray(3)]
+    private struct PerCode<T>
+    {
+        private T _element;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Slot(SequenceCode code) => code switch
@@ -250,8 +259,8 @@ internal sealed class SequenceTableSet
     /// </remarks>
     public void Forget()
     {
-        Array.Clear(_current);
-        Array.Clear(_held);
+        ((Span<SeqTable?>)_current).Clear();
+        ((Span<SeqTable?>)_held).Clear();
     }
 
     /// <summary>The state every frame starts from: a dictionary's tables, if it has them.</summary>

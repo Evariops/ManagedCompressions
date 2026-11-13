@@ -79,23 +79,28 @@ internal sealed unsafe class SequenceStore
 
     /// <summary>
     /// Grows the buffers to hold a block of <paramref name="blockSize"/> bytes: its literals, and its
-    /// sequences, a third of its size at most (a match is three bytes at least). They are sized for the
-    /// largest block so far, never shrunk, so that a compressor of small frames keeps small buffers;
+    /// sequences, as libzstd's <c>ZSTD_maxNbSeq</c> bounds them: a third of its size when a match may be
+    /// three bytes, a quarter when <paramref name="minMatch"/> makes it four at least. They are sized for
+    /// the largest block so far, never shrunk, so that a compressor of small frames keeps small buffers;
     /// growing them resets the store.
     /// </summary>
-    public void EnsureCapacity(int blockSize)
+    public void EnsureCapacity(int blockSize, int minMatch)
     {
-        if (blockSize <= Capacity)
+        if (blockSize > Capacity)
         {
-            return;
+            _literals = GC.AllocateUninitializedArray<byte>(blockSize + WildCopyOverlength, pinned: true);
+            LiteralsStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_literals));
+            Capacity = blockSize;
+            Reset();
         }
 
-        _literals = GC.AllocateUninitializedArray<byte>(blockSize + WildCopyOverlength, pinned: true);
-        _sequences = GC.AllocateUninitializedArray<SequenceRecord>((blockSize / 3) + 1, pinned: true);
-        LiteralsStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_literals));
-        SequencesStart = (SequenceRecord*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_sequences));
-        Capacity = blockSize;
-        Reset();
+        int sequences = (Capacity / (minMatch == 3 ? 3 : 4)) + 1;
+        if (sequences > _sequences.Length)
+        {
+            _sequences = GC.AllocateUninitializedArray<SequenceRecord>(sequences, pinned: true);
+            SequencesStart = (SequenceRecord*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_sequences));
+            Reset();
+        }
     }
 
     /// <summary>The counts of the codes, at their places in the common arrays.</summary>

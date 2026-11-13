@@ -71,7 +71,7 @@ public sealed unsafe class ZstdEncoder
 
     /// <summary>Creates an encoder at <see cref="ZstdCompressor.DefaultLevel"/>.</summary>
     public ZstdEncoder()
-        : this(new ZstdCompressionOptions())
+        : this(ZstdCompressor.DefaultLevel)
     {
     }
 
@@ -79,8 +79,8 @@ public sealed unsafe class ZstdEncoder
     /// <param name="level">From <see cref="ZstdCompressor.MinLevel"/> to <see cref="ZstdCompressor.MaxLevel"/>; 0 is the default.</param>
     /// <exception cref="ArgumentOutOfRangeException">The level is out of range.</exception>
     public ZstdEncoder(int level)
-        : this(new ZstdCompressionOptions { Level = level })
     {
+        _compressor = new ZstdCompressor(level);
     }
 
     /// <summary>Creates an encoder at <paramref name="level"/>, with a window of 2^<paramref name="windowLog"/> bytes.</summary>
@@ -88,8 +88,8 @@ public sealed unsafe class ZstdEncoder
     /// <param name="windowLog">From <see cref="ZstdCompressionOptions.MinWindowLog"/> to <see cref="ZstdCompressionOptions.MaxWindowLog"/>; 0 for the level's.</param>
     /// <exception cref="ArgumentOutOfRangeException">The level or the window is out of range.</exception>
     public ZstdEncoder(int level, int windowLog)
-        : this(new ZstdCompressionOptions { Level = level, WindowLog = windowLog })
     {
+        _compressor = new ZstdCompressor(level, windowLog);
     }
 
     /// <summary>
@@ -150,6 +150,13 @@ public sealed unsafe class ZstdEncoder
         ArgumentOutOfRangeException.ThrowIfGreaterThan(bound, (UInt128)long.MaxValue, nameof(inputLength));
         return (long)bound;
     }
+
+    /// <summary>
+    /// <see cref="GetMaxCompressedLength"/> of a span's length, as each call asks it: in 64 bits, where
+    /// it always fits, without the checks.
+    /// </summary>
+    private static long Bound(int length) =>
+        length + ((long)length >> 8) + (length < FrameFormat.MaxBlockSize ? (FrameFormat.MaxBlockSize - length) >> 11 : 0);
 
     /// <summary>
     /// Pledges the size of the next frame's content, which the frame then declares (unless
@@ -248,7 +255,7 @@ public sealed unsafe class ZstdEncoder
                 if (_stage == Stage.Load)
                 {
                     if (directive == Directive.End
-                        && destination.Length - op >= GetMaxCompressedLength(source.Length - ip)
+                        && destination.Length - op >= Bound(source.Length - ip)
                         && _inputPosition == 0)
                     {
                         // The shortcut: the rest of the source compressed straight into the destination.
@@ -278,7 +285,7 @@ public sealed unsafe class ZstdEncoder
 
                     // Compresses it, into the destination when it has the room, else into the output buffer.
                     int chunk = _inputPosition - _inputToCompress;
-                    bool direct = destination.Length - op >= GetMaxCompressedLength(chunk);
+                    bool direct = destination.Length - op >= Bound(chunk);
                     bool lastBlock = directive == Directive.End && ip == source.Length;
                     int compressed = _compressor.CompressStreamChunk(
                         _inputStart + _inputToCompress,
@@ -373,7 +380,7 @@ public sealed unsafe class ZstdEncoder
             _inputStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_input));
         }
 
-        int outputSize = (int)GetMaxCompressedLength(_blockSizeMax) + 1;
+        int outputSize = (int)Bound(_blockSizeMax) + 1;
         if (_output.Length < outputSize)
         {
             _output = GC.AllocateUninitializedArray<byte>(outputSize, pinned: true);

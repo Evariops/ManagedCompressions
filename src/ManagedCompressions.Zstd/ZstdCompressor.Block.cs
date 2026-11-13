@@ -288,17 +288,19 @@ public sealed unsafe partial class ZstdCompressor
     /// </summary>
     private void EnsureBlockCapacity(int blockSize)
     {
-        if (blockSize <= _store.Capacity)
+        if (blockSize > _store.Capacity)
         {
+            int capacity = (int)Math.Min(FrameFormat.MaxBlockSize, BitOperations.RoundUpToPowerOf2((uint)Math.Max(blockSize, MinBlockCapacity)));
+            _blockBufferSize = capacity + BlockBufferMargin;
+            _blockBuffer = GC.AllocateUninitializedArray<byte>(_blockBufferSize, pinned: true);
+            _blockStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_blockBuffer));
+            _store.EnsureCapacity(capacity, _parameters.MinMatch);
+            _huffmanWorkspace.EnsureCapacity(capacity);
             return;
         }
 
-        int capacity = (int)Math.Min(FrameFormat.MaxBlockSize, BitOperations.RoundUpToPowerOf2((uint)Math.Max(blockSize, MinBlockCapacity)));
-        _blockBufferSize = capacity + BlockBufferMargin;
-        _blockBuffer = GC.AllocateUninitializedArray<byte>(_blockBufferSize, pinned: true);
-        _blockStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_blockBuffer));
-        _store.EnsureCapacity(capacity);
-        _huffmanWorkspace.EnsureCapacity(capacity);
+        // The sequences, for a frame whose minimum match is shorter than the last ones'.
+        _store.EnsureCapacity(_store.Capacity, _parameters.MinMatch);
     }
 
     /// <summary>

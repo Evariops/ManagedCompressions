@@ -41,7 +41,9 @@ public sealed class ZstdDecoder
 
     private readonly ZstdDecompressor _engine;
     private readonly ulong _maxWindowSize;
-    private readonly XxHash64 _checksum = new();
+
+    /// <summary>The checksum of the frame's content, created by the first frame that has one.</summary>
+    private XxHash64? _checksum;
 
     /// <summary>The header being read, then a block header or the checksum: whatever arrives across calls.</summary>
     private readonly byte[] _header = new byte[MaxHeaderSize];
@@ -323,7 +325,7 @@ public sealed class ZstdDecoder
                         return OperationStatus.NeedMoreData;
                     }
 
-                    if (BinaryPrimitives.ReadUInt32LittleEndian(_header) != (uint)_checksum.GetCurrentHashAsUInt64())
+                    if (BinaryPrimitives.ReadUInt32LittleEndian(_header) != (uint)_checksum!.GetCurrentHashAsUInt64())
                     {
                         Throw.Error(ZstdError.ChecksumMismatch);
                     }
@@ -493,7 +495,7 @@ public sealed class ZstdDecoder
         _engine.BeginStreamFrame(dictionary?.Entropy, _frame.BlockSizeMax);
         if (_frame.HasChecksum)
         {
-            _checksum.Reset();
+            (_checksum ??= new XxHash64()).Reset();
         }
 
         _stage = Stage.BlockHeader;
@@ -588,7 +590,7 @@ public sealed class ZstdDecoder
 
         if (_frame.HasChecksum)
         {
-            _checksum.Append(_window.AsSpan(start, produced));
+            _checksum!.Append(_window.AsSpan(start, produced));
         }
     }
 

@@ -69,6 +69,24 @@ public sealed unsafe partial class ZstdCompressor
     }
 
     /// <summary>
+    /// A compressor at <paramref name="level"/> with a window of 2^<paramref name="windowLog"/> bytes, 0
+    /// for the level's: <see cref="ZstdCompressor(ZstdCompressionOptions)"/> with those two options,
+    /// without the options object.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The level or the window is out of range.</exception>
+    internal ZstdCompressor(int level, int windowLog)
+        : this(level)
+    {
+        if (windowLog != 0)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(windowLog, ZstdCompressionOptions.MinWindowLog);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(windowLog, ZstdCompressionOptions.MaxWindowLog);
+        }
+
+        _windowLog = windowLog;
+    }
+
+    /// <summary>
     /// Creates a compressor at <paramref name="level"/> with experimental features: its frames are
     /// standard Zstandard frames, which any decoder reads back, but not libzstd's bytes (see
     /// <see cref="ZstdExperimentalOptions"/>).
