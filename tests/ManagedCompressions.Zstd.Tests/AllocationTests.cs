@@ -97,6 +97,52 @@ public sealed class AllocationTests
         Assert.True(allocated <= maxBytes, $"level {level}: {allocated} bytes allocated");
     }
 
+    /// <summary>
+    /// A frame cut short, or a destination smaller than the content the frame declares, is a status a
+    /// caller meets in normal use: reported without an exception, so without allocating.
+    /// </summary>
+    [Theory]
+    [InlineData("text", 400_000, 3)]
+    [InlineData("json", 131073, 19)]
+    [InlineData("repeats", 50_000, 1)]
+    public void A_cut_frame_or_a_small_destination_is_refused_without_allocating(string kind, int size, int level)
+    {
+#if DEBUG
+        Assert.Skip("allocations are a property of the optimized build");
+#endif
+        byte[] data = DataKinds.Generate(kind, size, level);
+        byte[] frame = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
+        new ZstdCompressor(level) { AppendChecksum = true }.Compress(data, frame, out _, out int length);
+        byte[] output = new byte[data.Length];
+        var decoder = new ZstdDecompressor();
+        int[] cuts = [2, 6, length / 3, length - 5, length - 1];
+        for (int round = 0; round < 2; round++)
+        {
+            foreach (int cut in cuts)
+            {
+                Assert.Equal(OperationStatus.NeedMoreData, decoder.Decompress(frame.AsSpan(0, cut), output, out _, out _));
+            }
+
+            Assert.Equal(OperationStatus.DestinationTooSmall, decoder.Decompress(frame.AsSpan(0, length), output.AsSpan(0, data.Length - 1), out _, out _));
+        }
+
+        long allocated = long.MaxValue;
+        for (int round = 0; round < 5; round++)
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            foreach (int cut in cuts)
+            {
+                decoder.Decompress(frame.AsSpan(0, cut), output, out _, out _);
+            }
+
+            decoder.Decompress(frame.AsSpan(0, length), output.AsSpan(0, data.Length - 1), out _, out _);
+            allocated = Math.Min(allocated, GC.GetAllocatedBytesForCurrentThread() - before);
+        }
+
+        Assert.Equal(0, allocated);
+        Assert.Equal(ZstdError.DestinationTooSmall, decoder.LastError);
+    }
+
     /// <summary>A decompressor of records of 1 KiB takes some tens of kilobytes too.</summary>
     [Fact]
     public void A_decompressor_of_small_records_stays_small()
