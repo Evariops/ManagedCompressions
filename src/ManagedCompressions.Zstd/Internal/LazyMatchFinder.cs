@@ -160,6 +160,10 @@ internal static unsafe class LazyMatchFinder
         byte* dictStart = dictBase + state.LowLimit;
         uint offset1 = rep[0];
         uint offset2 = rep[1];
+        ExtDictWindow window = new(ref state, iend);
+        byte* lit = store.Literals;
+        SequenceRecord* sequence = store.Sequences;
+        uint* counts = store.Counts;
 
         state.LazySkipping = false;
         ip += ip == prefixStart ? 1 : 0;
@@ -178,7 +182,7 @@ internal static unsafe class LazyMatchFinder
 
             // The first repeat offset at ip + 1.
             {
-                nuint repLength = ExtDictRepeatLength(ref state, ip + 1, current + 1, offset1, dictBase, dictEnd, iend);
+                nuint repLength = window.RepeatLength(ip + 1, current + 1, offset1);
                 if (repLength != 0)
                 {
                     matchLength = repLength;
@@ -216,7 +220,7 @@ internal static unsafe class LazyMatchFinder
                     ip++;
                     current++;
                     {
-                        nuint repLength = ExtDictRepeatLength(ref state, ip, current, offset1, dictBase, dictEnd, iend);
+                        nuint repLength = window.RepeatLength(ip, current, offset1);
                         int gain2 = (int)(repLength * 3);
                         int gain1 = (int)(((nint)matchLength * 3) - HighBit(offBase) + 1);
                         if (X86Base.IsSupported ? repLength >= 4 && gain2 > gain1 : (repLength >= 4) & (gain2 > gain1))
@@ -246,7 +250,7 @@ internal static unsafe class LazyMatchFinder
                         ip++;
                         current++;
                         {
-                            nuint repLength = ExtDictRepeatLength(ref state, ip, current, offset1, dictBase, dictEnd, iend);
+                            nuint repLength = window.RepeatLength(ip, current, offset1);
                             int gain2 = (int)(repLength * 4);
                             int gain1 = (int)(((nint)matchLength * 4) - HighBit(offBase) + 1);
                             if (X86Base.IsSupported ? repLength >= 4 && gain2 > gain1 : (repLength >= 4) & (gain2 > gain1))
@@ -295,7 +299,7 @@ internal static unsafe class LazyMatchFinder
             }
 
         StoreSequence:
-            store.Store((nuint)(start - anchor), anchor, iend, (uint)offBase, matchLength);
+            SequenceStore.Store(ref lit, ref sequence, counts, (nuint)(start - anchor), anchor, iend, (uint)offBase, matchLength);
             anchor = ip = start + matchLength;
             if (state.LazySkipping)
             {
@@ -311,41 +315,75 @@ internal static unsafe class LazyMatchFinder
             // The second repeat offset, at once.
             while (ip <= ilimit)
             {
-                matchLength = ExtDictRepeatLength(ref state, ip, (uint)(ip - @base), offset2, dictBase, dictEnd, iend);
+                matchLength = window.RepeatLength(ip, (uint)(ip - @base), offset2);
                 if (matchLength == 0)
                 {
                     break;
                 }
 
                 (offset1, offset2) = (offset2, offset1);
-                store.Store(0, anchor, iend, RepeatCode1, matchLength);
+                SequenceStore.StoreOnly(ref sequence, counts, 0, RepeatCode1, matchLength);
                 ip += matchLength;
                 anchor = ip;
             }
         }
 
+        store.Literals = lit;
+        store.Sequences = sequence;
         rep[0] = offset1;
         rep[1] = offset2;
         return (nuint)(iend - anchor);
     }
 
     /// <summary>
-    /// The match of a repeat offset at <paramref name="ip"/> (index <paramref name="current"/>) over an
-    /// extDict: within the window, not straddling the segments; its length, 0 when there is none.
+    /// What the repeat offsets of the extDict parser are checked against, read from the state once a
+    /// block: the window's segments, its lowest index, and the block's end.
     /// </summary>
-    private static nuint ExtDictRepeatLength(ref MatchState state, byte* ip, uint current, uint offset, byte* dictBase, byte* dictEnd, byte* iend)
+    private readonly struct ExtDictWindow
     {
-        uint dictLimit = state.DictLimit;
-        uint windowLow = state.LowestMatchIndex(current);
-        uint repIndex = current - offset;
-        byte* repMatch = (repIndex < dictLimit ? dictBase : state.Base) + repIndex;
-        if (!(IndexOverlapCheck(dictLimit, repIndex) & (offset <= current - windowLow)) || Read32(ip) != Read32(repMatch))
+        private readonly byte* _base;
+        private readonly nint _dictDelta;
+        private readonly byte* _dictEnd;
+        private readonly byte* _prefixStart;
+        private readonly byte* _end;
+        private readonly uint _dictLimit;
+        private readonly uint _lowLimit;
+        private readonly uint _maxDistance;
+        private readonly bool _loadedDictionary;
+
+        public ExtDictWindow(ref MatchState state, byte* end)
         {
-            return 0;
+            _base = state.Base;
+            _dictDelta = (nint)(state.DictionaryBase - state.Base);
+            _dictLimit = state.DictLimit;
+            _dictEnd = state.DictionaryBase + state.DictLimit;
+            _prefixStart = state.Base + state.DictLimit;
+            _end = end;
+            _lowLimit = state.LowLimit;
+            _maxDistance = 1u << state.Parameters.WindowLog;
+            _loadedDictionary = state.LoadedDictEnd != 0;
         }
 
-        byte* repEnd = repIndex < dictLimit ? dictEnd : iend;
-        return Count2Segments(ip + 4, repMatch + 4, iend, repEnd, state.Base + dictLimit) + 4;
+        /// <summary>
+        /// The match of a repeat offset at <paramref name="ip"/> (index <paramref name="current"/>): within
+        /// the window (<see cref="MatchState.LowestMatchIndex"/>), not straddling the segments; its length,
+        /// 0 when there is none.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public nuint RepeatLength(byte* ip, uint current, uint offset)
+        {
+            uint withinWindow = current - _lowLimit > _maxDistance ? current - _maxDistance : _lowLimit;
+            uint windowLow = _loadedDictionary ? _lowLimit : withinWindow;
+            uint repIndex = current - offset;
+            byte* repMatch = InSegment(_base, _dictDelta, repIndex, _dictLimit);
+            if (!(IndexOverlapCheck(_dictLimit, repIndex) & (offset <= current - windowLow)) || Read32(ip) != Read32(repMatch))
+            {
+                return 0;
+            }
+
+            byte* repEnd = repIndex < _dictLimit ? _dictEnd : _end;
+            return Count2Segments(ip + 4, repMatch + 4, _end, repEnd, _prefixStart) + 4;
+        }
     }
 
     /// <summary>libzstd's <c>ZSTD_compressBlock_lazy_generic</c> for one search and one depth, without a dictionary.</summary>
@@ -1429,6 +1467,7 @@ internal readonly unsafe struct RowSearch<THash, TRow, TDictionary> : ILazySearc
         uint lowLimit = state.LowestMatchIndex(current);
         uint attempts = state.RowAttempts;
 
+
         // The candidates, newest first, up to the attempts allowed or the first below the window,
         // gathered before they are compared, as libzstd does, so that their misses overlap. Into
         // the compressor's buffer: one on the stack brought a probe and a cookie to every search.
@@ -1794,6 +1833,27 @@ internal readonly unsafe struct RowSearch<THash, TRow, TDictionary> : ILazySearc
         {
             uint mask = Vector128.Equals(Vector128.Load(tagRow), tags).ExtractMostSignificantBits();
             return ((mask >> (int)head) | (mask << (16 - (int)head))) & 0xFFFF;
+        }
+
+        // Rows of 32 and 64 in one compare where the vectors are that wide (x64 with AVX2, AVX-512).
+        if (TRow.Log == 5 && Vector256.IsHardwareAccelerated)
+        {
+            uint mask = Vector256.Equals(Vector256.Load(tagRow), Vector256.Create(tag)).ExtractMostSignificantBits();
+            return BitOperations.RotateRight(mask, (int)head);
+        }
+
+        if (TRow.Log == 6 && Vector512.IsHardwareAccelerated)
+        {
+            ulong mask = Vector512.Equals(Vector512.Load(tagRow), Vector512.Create(tag)).ExtractMostSignificantBits();
+            return BitOperations.RotateRight(mask, (int)head);
+        }
+
+        if (TRow.Log == 6 && Vector256.IsHardwareAccelerated)
+        {
+            Vector256<byte> wideTags = Vector256.Create(tag);
+            ulong mask = Vector256.Equals(Vector256.Load(tagRow), wideTags).ExtractMostSignificantBits()
+                | ((ulong)Vector256.Equals(Vector256.Load(tagRow + 32), wideTags).ExtractMostSignificantBits() << 32);
+            return BitOperations.RotateRight(mask, (int)head);
         }
 
         if (TRow.Log == 5)

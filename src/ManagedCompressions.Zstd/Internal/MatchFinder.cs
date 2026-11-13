@@ -363,6 +363,17 @@ internal static unsafe class MatchFinder
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint Read32(byte* p) => Unsafe.ReadUnaligned<uint>(p);
 
+    /// <summary>
+    /// The address of <paramref name="index"/> in a window of two segments, without a branch: in the
+    /// extDict below <paramref name="prefixStart"/> (<paramref name="dictionaryDelta"/> is its base less
+    /// the prefix's), in the prefix from there. The select it replaces, which the JIT turns into a branch
+    /// inside a loop, goes either way at random when both segments hold candidates: as a streamed
+    /// frame's blocks see it, the window wrapped in the encoder's buffer.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static byte* InSegment(byte* @base, nint dictionaryDelta, uint index, uint prefixStart) =>
+        @base + index + ((nint)(((long)index - prefixStart) >> 63) & dictionaryDelta);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong Read64(byte* p) => Unsafe.ReadUnaligned<ulong>(p);
 

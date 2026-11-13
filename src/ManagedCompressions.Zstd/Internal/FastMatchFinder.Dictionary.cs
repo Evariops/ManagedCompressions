@@ -249,6 +249,7 @@ internal static unsafe partial class FastMatchFinder
         nuint stepSize = (nuint)parameters.TargetLength + (parameters.TargetLength == 0 ? 1u : 0u) + 1;
         byte* @base = state.Base;
         byte* dictBase = state.DictionaryBase;
+        nint dictDelta = (nint)(dictBase - @base);
         byte* istart = source;
         byte* anchor = istart;
         uint endIndex = (uint)(istart - @base) + (uint)size;
@@ -274,7 +275,6 @@ internal static unsafe partial class FastMatchFinder
         nuint hash0;
         nuint hash1;
         uint index;
-        byte* indexBase;
         uint offBase;
         byte* match0;
         nuint matchLength;
@@ -287,6 +287,10 @@ internal static unsafe partial class FastMatchFinder
         {
             return CompressBlock(ref state, store, rep, source, size);
         }
+
+        byte* lit = store.Literals;
+        SequenceRecord* sequence = store.Sequences;
+        uint* counts = store.Counts;
 
         {
             uint current = (uint)(ip0 - @base);
@@ -318,7 +322,6 @@ internal static unsafe partial class FastMatchFinder
         hash0 = THash.Hash(Read64(ip0), hashLog);
         hash1 = THash.Hash(Read64(ip1), hashLog);
         index = hashTable[hash0];
-        indexBase = index < prefixStartIndex ? dictBase : @base;
 
         do
         {
@@ -326,14 +329,14 @@ internal static unsafe partial class FastMatchFinder
                 // The repeat offset at ip2.
                 uint current2 = (uint)(ip2 - @base);
                 uint repIndex = current2 - offset1;
-                byte* repBase = repIndex < prefixStartIndex ? dictBase : @base;
-                uint repValue = ((prefixStartIndex - repIndex >= 4) & (offset1 > 0)) ? Read32(repBase + repIndex) : Read32(ip2) ^ 1;
+                byte* repMatch = InSegment(@base, dictDelta, repIndex, prefixStartIndex);
+                uint repValue = ((prefixStartIndex - repIndex >= 4) & (offset1 > 0)) ? Read32(repMatch) : Read32(ip2) ^ 1;
                 current0 = (uint)(ip0 - @base);
                 hashTable[hash0] = current0;
                 if (Read32(ip2) == repValue)
                 {
                     ip0 = ip2;
-                    match0 = repBase + repIndex;
+                    match0 = repMatch;
                     matchEnd = repIndex < prefixStartIndex ? dictEnd : iend;
                     matchLength = ip0[-1] == match0[-1] ? 1u : 0u;
                     ip0 -= matchLength;
@@ -344,13 +347,12 @@ internal static unsafe partial class FastMatchFinder
                 }
             }
 
-            if (Read32(ip0) == (index >= dictStartIndex ? Read32(indexBase + index) : Read32(ip0) ^ 1))
+            if (Read32(ip0) == (index >= dictStartIndex ? Read32(InSegment(@base, dictDelta, index, prefixStartIndex)) : Read32(ip0) ^ 1))
             {
                 goto Offset;
             }
 
             index = hashTable[hash1];
-            indexBase = index < prefixStartIndex ? dictBase : @base;
             hash0 = hash1;
             hash1 = THash.Hash(Read64(ip2), hashLog);
             ip0 = ip1;
@@ -359,13 +361,12 @@ internal static unsafe partial class FastMatchFinder
             current0 = (uint)(ip0 - @base);
             hashTable[hash0] = current0;
 
-            if (Read32(ip0) == (index >= dictStartIndex ? Read32(indexBase + index) : Read32(ip0) ^ 1))
+            if (Read32(ip0) == (index >= dictStartIndex ? Read32(InSegment(@base, dictDelta, index, prefixStartIndex)) : Read32(ip0) ^ 1))
             {
                 goto Offset;
             }
 
             index = hashTable[hash1];
-            indexBase = index < prefixStartIndex ? dictBase : @base;
             hash0 = hash1;
             hash1 = THash.Hash(Read64(ip2), hashLog);
             ip0 = ip1;
@@ -381,6 +382,9 @@ internal static unsafe partial class FastMatchFinder
         while (ip3 < ilimit);
 
     Cleanup:
+        store.Literals = lit;
+        store.Sequences = sequence;
+
         // An offset invalid at the start that became valid rotates the saved ones.
         offsetSaved2 = offsetSaved1 != 0 && offset1 != 0 ? offsetSaved1 : offsetSaved2;
         rep[0] = offset1 != 0 ? offset1 : offsetSaved1;
@@ -392,7 +396,7 @@ internal static unsafe partial class FastMatchFinder
             uint offset = current0 - index;
             byte* lowMatchPointer = index < prefixStartIndex ? dictStart : prefixStart;
             matchEnd = index < prefixStartIndex ? dictEnd : iend;
-            match0 = indexBase + index;
+            match0 = InSegment(@base, dictDelta, index, prefixStartIndex);
             offset2 = offset1;
             offset1 = offset;
             offBase = OffsetToOffBase(offset);
@@ -407,7 +411,7 @@ internal static unsafe partial class FastMatchFinder
 
     Match:
         matchLength += Count2Segments(ip0 + matchLength, match0 + matchLength, iend, matchEnd, prefixStart);
-        store.Store((nuint)(ip0 - anchor), anchor, iend, offBase, matchLength);
+        SequenceStore.Store(ref lit, ref sequence, counts, (nuint)(ip0 - anchor), anchor, iend, offBase, matchLength);
         ip0 += matchLength;
         anchor = ip0;
         if (ip1 < ip0)
@@ -425,13 +429,13 @@ internal static unsafe partial class FastMatchFinder
             while (ip0 <= ilimit)
             {
                 uint repIndex2 = (uint)(ip0 - @base) - offset2;
-                byte* repMatch2 = (repIndex2 < prefixStartIndex ? dictBase : @base) + repIndex2;
+                byte* repMatch2 = InSegment(@base, dictDelta, repIndex2, prefixStartIndex);
                 if ((IndexOverlapCheck(prefixStartIndex, repIndex2) & (offset2 > 0)) && Read32(repMatch2) == Read32(ip0))
                 {
                     byte* repEnd2 = repIndex2 < prefixStartIndex ? dictEnd : iend;
                     nuint repLength2 = Count2Segments(ip0 + 4, repMatch2 + 4, iend, repEnd2, prefixStart) + 4;
                     (offset1, offset2) = (offset2, offset1);
-                    store.Store(0, anchor, iend, RepeatCode1, repLength2);
+                    SequenceStore.StoreOnly(ref sequence, counts, 0, RepeatCode1, repLength2);
                     hashTable[THash.Hash(Read64(ip0), hashLog)] = (uint)(ip0 - @base);
                     ip0 += repLength2;
                     anchor = ip0;

@@ -344,6 +344,12 @@ internal static unsafe partial class DoubleFastMatchFinder
     /// libzstd's <c>ZSTD_compressBlock_doubleFast_extDict_generic</c>: one pair of tables over both
     /// segments, an index below the prefix's start read from the extDict's base.
     /// </summary>
+    /// <remarks>
+    /// The search of a streamed frame, whose blocks see the window wrapped in the encoder's buffer: the
+    /// candidates fall in either segment at random, so the segment of each is chosen without a branch
+    /// (<see cref="MatchFinder.InSegment"/>), and only once the candidate is valid; the store's cursors
+    /// are locals, a repeat that follows a match is stored without literals to copy.
+    /// </remarks>
     private static nuint CompressBlockExtDict<THash>(ref MatchState state, SequenceStore store, uint* rep, byte* source, nuint size)
         where THash : IMatchHash
     {
@@ -365,6 +371,7 @@ internal static unsafe partial class DoubleFastMatchFinder
         uint prefixStartIndex = dictLimit > lowLimit ? dictLimit : lowLimit;
         byte* prefixStart = @base + prefixStartIndex;
         byte* dictBase = state.DictionaryBase;
+        nint dictDelta = (nint)(dictBase - @base);
         byte* dictStart = dictBase + dictStartIndex;
         byte* dictEnd = dictBase + prefixStartIndex;
         uint offset1 = rep[0];
@@ -376,33 +383,35 @@ internal static unsafe partial class DoubleFastMatchFinder
             return CompressBlock(ref state, store, rep, source, size);
         }
 
+        byte* lit = store.Literals;
+        SequenceRecord* sequence = store.Sequences;
+        uint* counts = store.Counts;
         while (ip < ilimit)
         {
             ulong bytes = Read64(ip);
             nuint hashSmallIndex = THash.Hash(bytes, hashLogSmall);
             uint matchIndex = hashSmall[hashSmallIndex];
-            byte* match = (matchIndex < prefixStartIndex ? dictBase : @base) + matchIndex;
 
             nuint hashLongIndex = Hash8.Hash(bytes, hashLogLong);
             uint matchLongIndex = hashLong[hashLongIndex];
-            byte* matchLong = (matchLongIndex < prefixStartIndex ? dictBase : @base) + matchLongIndex;
 
             uint current = (uint)(ip - @base);
             uint repIndex = current + 1 - offset1;
-            byte* repMatch = (repIndex < prefixStartIndex ? dictBase : @base) + repIndex;
             nuint matchLength;
             hashSmall[hashSmallIndex] = hashLong[hashLongIndex] = current;
 
             if ((IndexOverlapCheck(prefixStartIndex, repIndex) & (offset1 <= current + 1 - dictStartIndex))
-                && Read32(repMatch) == Read32(ip + 1))
+                && Read32(InSegment(@base, dictDelta, repIndex, prefixStartIndex)) == Read32(ip + 1))
             {
+                byte* repMatch = InSegment(@base, dictDelta, repIndex, prefixStartIndex);
                 byte* repMatchEnd = repIndex < prefixStartIndex ? dictEnd : iend;
                 matchLength = CountAcross(ip + 1 + 4, repMatch + 4, iend, repMatchEnd, prefixStart) + 4;
                 ip++;
-                store.Store((nuint)(ip - anchor), anchor, iend, RepeatCode1, matchLength);
+                SequenceStore.Store(ref lit, ref sequence, counts, (nuint)(ip - anchor), anchor, iend, RepeatCode1, matchLength);
             }
-            else if (matchLongIndex > dictStartIndex && Read64(matchLong) == bytes)
+            else if (matchLongIndex > dictStartIndex && Read64(InSegment(@base, dictDelta, matchLongIndex, prefixStartIndex)) == bytes)
             {
+                byte* matchLong = InSegment(@base, dictDelta, matchLongIndex, prefixStartIndex);
                 byte* matchEnd = matchLongIndex < prefixStartIndex ? dictEnd : iend;
                 byte* lowMatchPointer = matchLongIndex < prefixStartIndex ? dictStart : prefixStart;
                 matchLength = CountAcross(ip + 8, matchLong + 8, iend, matchEnd, prefixStart) + 8;
@@ -416,14 +425,15 @@ internal static unsafe partial class DoubleFastMatchFinder
 
                 offset2 = offset1;
                 offset1 = offset;
-                store.Store((nuint)(ip - anchor), anchor, iend, OffsetToOffBase(offset), matchLength);
+                SequenceStore.Store(ref lit, ref sequence, counts, (nuint)(ip - anchor), anchor, iend, OffsetToOffBase(offset), matchLength);
             }
-            else if (matchIndex > dictStartIndex && Read32(match) == (uint)bytes)
+            else if (matchIndex > dictStartIndex && Read32(InSegment(@base, dictDelta, matchIndex, prefixStartIndex)) == (uint)bytes)
             {
+                byte* match = InSegment(@base, dictDelta, matchIndex, prefixStartIndex);
                 ulong nextBytes = Read64(ip + 1);
                 nuint h3 = Hash8.Hash(nextBytes, hashLogLong);
                 uint matchIndex3 = hashLong[h3];
-                byte* match3 = (matchIndex3 < prefixStartIndex ? dictBase : @base) + matchIndex3;
+                byte* match3 = InSegment(@base, dictDelta, matchIndex3, prefixStartIndex);
                 uint offset;
                 hashLong[h3] = current + 1;
                 if (matchIndex3 > dictStartIndex && Read64(match3) == nextBytes)
@@ -456,7 +466,7 @@ internal static unsafe partial class DoubleFastMatchFinder
 
                 offset2 = offset1;
                 offset1 = offset;
-                store.Store((nuint)(ip - anchor), anchor, iend, OffsetToOffBase(offset), matchLength);
+                SequenceStore.Store(ref lit, ref sequence, counts, (nuint)(ip - anchor), anchor, iend, OffsetToOffBase(offset), matchLength);
             }
             else
             {
@@ -481,14 +491,14 @@ internal static unsafe partial class DoubleFastMatchFinder
                 {
                     uint current2 = (uint)(ip - @base);
                     uint repIndex2 = current2 - offset2;
-                    byte* repMatch2 = (repIndex2 < prefixStartIndex ? dictBase : @base) + repIndex2;
                     if ((IndexOverlapCheck(prefixStartIndex, repIndex2) & (offset2 <= current2 - dictStartIndex))
-                        && Read32(repMatch2) == Read32(ip))
+                        && Read32(InSegment(@base, dictDelta, repIndex2, prefixStartIndex)) == Read32(ip))
                     {
+                        byte* repMatch2 = InSegment(@base, dictDelta, repIndex2, prefixStartIndex);
                         byte* repEnd2 = repIndex2 < prefixStartIndex ? dictEnd : iend;
                         nuint repLength2 = CountAcross(ip + 4, repMatch2 + 4, iend, repEnd2, prefixStart) + 4;
                         (offset1, offset2) = (offset2, offset1);
-                        store.Store(0, anchor, iend, RepeatCode1, repLength2);
+                        SequenceStore.StoreOnly(ref sequence, counts, 0, RepeatCode1, repLength2);
                         ulong repBytes = Read64(ip);
                         hashSmall[THash.Hash(repBytes, hashLogSmall)] = current2;
                         hashLong[Hash8.Hash(repBytes, hashLogLong)] = current2;
@@ -502,6 +512,8 @@ internal static unsafe partial class DoubleFastMatchFinder
             }
         }
 
+        store.Literals = lit;
+        store.Sequences = sequence;
         rep[0] = offset1;
         rep[1] = offset2;
         return (nuint)(iend - anchor);
