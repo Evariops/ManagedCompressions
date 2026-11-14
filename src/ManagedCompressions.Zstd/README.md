@@ -224,9 +224,10 @@ var decompressor = new ZstdDecompressor();
 OperationStatus status = decompressor.Decompress(frame, content, dictionary, out int consumed, out int written);
 ```
 
-The dictionary is read in place for the call and not kept, but its tables are kept for the next calls
-that pass the same dictionary. From then on, a frame costs what it would if the decompressor had been
-created with the dictionary. Another dictionary rebuilds the tables without allocating.
+The dictionary is read in place for the call (copied when it is of 2 KiB or less) and not kept, but
+its tables are kept for the next calls that pass the same dictionary. From then on, a frame costs what
+it would if the decompressor had been created with the dictionary. Another dictionary rebuilds the
+tables without allocating.
 
 ### Parallel compression
 

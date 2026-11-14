@@ -56,6 +56,28 @@ public sealed partial class ZstdDecompressor
     private nint _historyGuard;
 
     /// <summary>
+    /// The largest dictionary given with the frame that is copied, with <see cref="DecoderDictionary.Margin"/>
+    /// bytes of room after it, rather than read in place.
+    /// </summary>
+    /// <remarks>
+    /// Read in place, a dictionary leaves to the careful path the rest of a block from its first match
+    /// that ends within the margin of the dictionary's end, and zstd's trainer puts the content it values
+    /// most at that end: the smaller the dictionary, the more blocks meet such a match early. Copied, it
+    /// costs its weight at every frame, which weighs the most on the smallest frames. Measured on the 500
+    /// github records, a frame each of 0.8 KiB on average, with dictionaries trained on them: copied, one
+    /// of 256 bytes to 1.5 KiB decodes 1.4 to 1.7x faster, one of 1.75 to 2 KiB even (0.98 to 1.015),
+    /// one of 2.5 to 4 KiB 1.1 to 1.25x slower. On frames of 8 KiB the copy still wins at 16 KiB (1.4x); a column of
+    /// 64-bit integers in frames of 8 KiB with a dictionary of 319 bytes decodes 1.96x faster copied.
+    /// </remarks>
+    internal const int CopiedDictionaryMax = 2048;
+
+    /// <summary>
+    /// The dictionary given with the frame, copied with <see cref="DecoderDictionary.Margin"/> bytes of
+    /// room after it when it is no larger than <see cref="CopiedDictionaryMax"/>: grown, never shrunk.
+    /// </summary>
+    private byte[] _callHistory = [];
+
+    /// <summary>
     /// Whether the call fills its destination with the start of the frame's content and stops there:
     /// <see cref="DecompressPrefix"/>'s, which every other call leaves false.
     /// </summary>
@@ -97,8 +119,8 @@ public sealed partial class ZstdDecompressor
         _dictionary = dictionary.Decoder;
     }
 
-    /// <summary>The memory the decompressor holds on to beyond its tables, roughly: its literals and records.</summary>
-    internal long RetainedBytes => (long)_literals.Length + (8L * (_records?.Length ?? 0));
+    /// <summary>The memory the decompressor holds on to beyond its tables, roughly: its literals and records, a copied small dictionary.</summary>
+    internal long RetainedBytes => (long)_literals.Length + (8L * (_records?.Length ?? 0)) + _callHistory.Length;
 
     /// <summary>
     /// Why the last call refused its frame: the check that failed, where the status it returned says
@@ -165,9 +187,10 @@ public sealed partial class ZstdDecompressor
     /// <param name="destination">Where the frame's content is written.</param>
     /// <param name="dictionary">
     /// A dictionary in the zstd format, or any other bytes as raw content; empty for none. It is read
-    /// in place for the call and not kept, but the tables built from it are, for the next calls that
-    /// give the same dictionary: once they are built, a frame costs what it would with the
-    /// dictionary given to the constructor, and another dictionary rebuilds them without allocating.
+    /// in place for the call, or copied when it is of 2 KiB or less, and not kept, but the tables built
+    /// from it are, for the next calls that give the same dictionary: once they are built, a frame costs
+    /// what it would with the dictionary given to the constructor, and another dictionary rebuilds them
+    /// without allocating.
     /// </param>
     /// <param name="bytesConsumed">The size of the frame, once it is decoded; otherwise 0.</param>
     /// <param name="bytesWritten">The size of the frame's content, once it is decoded; otherwise 0.</param>
@@ -313,16 +336,20 @@ public sealed partial class ZstdDecompressor
 
     /// <summary>
     /// libzstd's <c>ZSTD_decompress_usingDict</c>, without its tables for the same dictionary again:
-    /// <paramref name="dictionary"/> made the history of the next frame, read in place.
+    /// <paramref name="dictionary"/> made the history of the next frame, read in place or copied.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The constructor's dictionary is copied with <see cref="DecoderDictionary.Margin"/> bytes after
     /// it, which the fast sequence loops read past the end of a match that ends near its end, copying
-    /// it 32 bytes at a time. This one has no such room: the loops leave a match that ends within the
-    /// margin of its end to the careful path (<see cref="_historyGuard"/>), which copies it exactly,
-    /// and read the rest in place. It used to be copied too, which cost what the dictionary weighs at
+    /// it 32 bytes at a time. This one, read in place, has no such room: the loops leave a match that
+    /// ends within the margin of its end to the careful path (<see cref="_historyGuard"/>), which
+    /// copies it exactly, and read the rest in place. A copy would cost what the dictionary weighs at
     /// every frame, 110 KiB for zstd's default, several times the decoding of a small frame.
+    /// </para>
+    /// <para>
+    /// A small dictionary is copied all the same, as the constructor's is: read in place, it would send
+    /// most blocks to the careful path, which costs more than copying it (<see cref="CopiedDictionaryMax"/>).
     /// </para>
     /// <para>
     /// The entropy tables are a function of the dictionary's first bytes, up to its repeat offsets,
@@ -330,7 +357,7 @@ public sealed partial class ZstdDecompressor
     /// were built from, they are taken as they are.
     /// </para>
     /// </remarks>
-    /// <returns>The history: the dictionary.</returns>
+    /// <returns>The history: the dictionary, or its copy.</returns>
     private ReadOnlySpan<byte> UseDictionary(ReadOnlySpan<byte> dictionary, out DictionaryEntropy? entropy, out uint id)
     {
         entropy = null;
@@ -345,6 +372,17 @@ public sealed partial class ZstdDecompressor
         {
             entropy = LoadCallEntropy(dictionary);
             id = entropy.Id;
+        }
+
+        if (dictionary.Length <= CopiedDictionaryMax)
+        {
+            if (_callHistory.Length < dictionary.Length + DecoderDictionary.Margin)
+            {
+                _callHistory = new byte[dictionary.Length + DecoderDictionary.Margin];
+            }
+
+            dictionary.CopyTo(_callHistory);
+            return _callHistory.AsSpan(0, dictionary.Length);
         }
 
         _historyGuard = DecoderDictionary.Margin;
