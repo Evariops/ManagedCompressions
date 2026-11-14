@@ -36,12 +36,30 @@ public sealed class DictionaryPerFrameTests
     [InlineData(19)]
     public void A_small_dictionary_given_with_the_frame_decodes_like_libzstd(int level)
     {
-        // A dictionary trained for small frames: a hundredth of the bytes it serves.
+        // A dictionary trained for small frames: a hundredth of the bytes it serves, small enough to be copied.
         byte[] dictionary = DataKinds.Generate("json", 600, 21);
         byte[] data = [.. DictionaryEdgeTests.EdgeContent(dictionary), .. DataKinds.Generate("json", 64 * 1024, 6)];
         using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
         byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, Dictionary = prepared });
         AssertDecodes(frame, data, dictionary, $"600 bytes L{level}");
+    }
+
+    [Theory]
+    [InlineData(ZstdDecompressor.CopiedDictionaryMax)]
+    [InlineData(ZstdDecompressor.CopiedDictionaryMax + 1)]
+    public void A_dictionary_on_either_side_of_the_copy_threshold_decodes_like_libzstd(int size)
+    {
+        // Copied at the threshold, read in place one byte past it: against a guard page either way,
+        // with matches that end on its last bytes.
+        byte[] dictionary = DataKinds.Generate("json", size, 22);
+        Assert.Equal(size, dictionary.Length);
+        byte[] data = [.. DictionaryEdgeTests.EdgeContent(dictionary), .. DataKinds.Generate("json", 64 * 1024, 8)];
+        foreach (int level in new[] { 1, 19 })
+        {
+            using NativeZstdDictionary prepared = NativeZstdDictionary.Create(dictionary, level);
+            byte[] frame = NativeZstd.Compress(data, new NativeZstdOptions { Quality = level, Dictionary = prepared });
+            AssertDecodes(frame, data, dictionary, $"{size} bytes L{level}");
+        }
     }
 
     [Fact]
