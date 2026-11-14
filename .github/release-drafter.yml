@@ -12,7 +12,8 @@ name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 
 # Below 1.0.0 a breaking change moves the minor version, as SemVer allows there; it moves the major
-# from 1.0 on. A category without `semver-increment` moves the patch.
+# from 1.0 on. A feature moves the minor. A category without `semver-increment` moves the patch: a
+# performance change among them, since it changes no API.
 categories:
   - type: pre-exclude
     when:
@@ -37,7 +38,6 @@ categories:
         type: fix
   - title: '⚡ Performance'
     exclusive: true
-    semver-increment: minor
     when:
       conventional:
         type: perf
