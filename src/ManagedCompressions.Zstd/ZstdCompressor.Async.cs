@@ -144,6 +144,8 @@ public sealed partial class ZstdCompressor
                     // Nor is the checksum's.
                 }
             }
+
+            TrimIdleWorkers();
         }
 
         return fits ? written : throw new ArgumentException("The frame does not fit in the destination.", nameof(destination));
