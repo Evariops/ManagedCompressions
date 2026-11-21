@@ -149,18 +149,6 @@ public sealed unsafe partial class ZstdCompressor
         }
     }
 
-    /// <summary>
-    /// Once a call's jobs are done, lets go of the job compressors that hold more than
-    /// <see cref="CodecPool.MaxRetainedBytes"/>, as <see cref="CodecPool"/> does with streams' codecs;
-    /// the others are kept for the next call.
-    /// </summary>
-    /// <remarks>
-    /// A level 19 job compressor holds some 84 MiB of tables: 32 of them, a degree of parallelism of 32
-    /// on a Ryzen 9 7950X, held 2.1 GiB after the call that made them, for as long as the compressor
-    /// lived. Making them again costs the next call some tens of milliseconds each, against seconds a
-    /// job at those levels; the compressors of the fast levels, which hold a few MiB and whose jobs take
-    /// milliseconds, are kept.
-    /// </remarks>
     /// <summary>The memory each kept job compressor holds, for the tests.</summary>
     internal long[] IdleWorkerBytes()
     {
@@ -175,6 +163,18 @@ public sealed unsafe partial class ZstdCompressor
         }
     }
 
+    /// <summary>
+    /// Once a call's jobs are done, lets go of the job compressors that hold more than
+    /// <see cref="CodecPool.MaxRetainedBytes"/>, as <see cref="CodecPool"/> does with streams' codecs;
+    /// the others are kept for the next call.
+    /// </summary>
+    /// <remarks>
+    /// A level 19 job compressor holds some 84 MiB of tables: 32 of them, a degree of parallelism of 32
+    /// on a Ryzen 9 7950X, held 2.1 GiB after the call that made them, for as long as the compressor
+    /// lived. Making them again costs the next call some tens of milliseconds each, against seconds a
+    /// job at those levels; the compressors of the fast levels, which hold a few MiB and whose jobs take
+    /// milliseconds, are kept.
+    /// </remarks>
     private void TrimIdleWorkers()
     {
         Stack<ZstdCompressor> idle = _idleWorkers!;
