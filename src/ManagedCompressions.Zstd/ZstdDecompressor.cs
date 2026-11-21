@@ -601,6 +601,7 @@ public sealed partial class ZstdDecompressor
                     return Fail(ZstdError.ReservedBlockType);
             }
 
+            _checksumHelper?.Publish(op);
             if (lastBlock)
             {
                 break;
@@ -620,7 +621,7 @@ public sealed partial class ZstdDecompressor
             }
 
             uint expected = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(ip));
-            uint actual = (uint)XxHash64.HashToUInt64(destination.Slice(0, op));
+            uint actual = _checksumHelper is { } helper ? (uint)helper.Finish(op) : (uint)XxHash64.HashToUInt64(destination.Slice(0, op));
             if (actual != expected)
             {
                 return Fail(ZstdError.ChecksumMismatch);

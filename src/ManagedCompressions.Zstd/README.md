@@ -239,6 +239,24 @@ int length = await compressor.CompressAsync(content, frame, maxDegreeOfParalleli
 frame as libzstd with worker threads (`ZSTD_c_nbWorkers`), so the frame does not depend on the degree
 of parallelism. Up to 512 KiB, it writes the same frame as `Compress`.
 
+That single frame decodes on one thread. To decode on several, compress a frame per job instead:
+
+```csharp
+var compressor = new ZstdCompressor(3) { JobFrames = ZstdJobFrames.Independent };
+int length = await compressor.CompressAsync(content, compressed);
+
+var decompressor = new ZstdDecompressor();
+int size = await decompressor.DecompressAsync(compressed.AsMemory(0, length), content, maxDegreeOfParallelism: 8);
+```
+
+Each job is then the frame `Compress` writes of its section, with its content size: a standard
+Zstandard stream that any decoder reads, 0.1% to 0.3% larger on silesia at levels 1 to 9.
+`DecompressAsync` decodes every frame of a source, and when each declares its size, as libzstd's
+one-shot frames do, it decodes them at once, each into its place. On a Ryzen 9 7950X, independent
+frames of silesia decode 7.5x faster on 8 threads than on one at level 1, and 6.9x at level 3. A
+single large frame with a checksum has the checksum verified on a second thread as it decodes, 13% to
+16% faster. Errors are those of decoding the frames one after the other.
+
 At the end of each call, `CompressAsync` lets go of the job compressors that hold more than 16 MiB
 (some 84 MiB each at level 19, against 12 MiB at level 9), and keeps the others for the next call.
 
