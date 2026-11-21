@@ -150,7 +150,7 @@ internal static class DataSets
         return content.ToArray();
     }
 
-    private static string RepositoryRoot()
+    internal static string RepositoryRoot()
     {
         for (string? at = AppContext.BaseDirectory; at is not null; at = Path.GetDirectoryName(at))
         {

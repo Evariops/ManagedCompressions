@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
     <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+    <Compile Include="../ManagedCompressions.Zstd.Shared/PairedRatio.cs" LinkBase="Shared" />
   </ItemGroup>
 
 </Project>
