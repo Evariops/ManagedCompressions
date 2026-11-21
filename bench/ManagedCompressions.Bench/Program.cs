@@ -18,7 +18,7 @@ namespace ManagedCompressions.Bench;
 /// <para>
 /// Usage: <c>ManagedCompressions.Bench [--codecs zstd,lz4] [--sets silesia,github] [--levels 1,3]
 /// [--seconds S] [--directions compression,decompression] [--results file.tsv] [--markdown file.md]
-/// [--core N] [--aa 1] [--checksum 1] [--samples 1] [--crowd N [--crowd-cpus 0-15]] [--jobs 1,2,4 [--repeat N]]</c>,
+/// [--core N] [--aa 1] [--checksum 1] [--samples 1] [--crowd N [--crowd-cpus 0-15]] [--jobs 1,2,4 | --frames 1,2,4] [--repeat N]</c>,
 /// or <c>--report file.tsv [--markdown file.md]</c>
 /// to render results already measured, or <c>--compare-base a.tsv;b.tsv --compare-head c.tsv;d.tsv</c> to
 /// compare two builds measured in alternate processes (<c>bench/ab.ps1</c>, <c>bench/ab.sh</c>).
@@ -32,7 +32,8 @@ namespace ManagedCompressions.Bench;
 /// kept by <c>--crowd-cpus</c> on the logical processors given. <c>--checksum 1</c> has both Zstandard
 /// implementations write and verify the content checksum. <c>--samples 1</c> prints every round's times.
 /// <c>--jobs 1,2,4</c> measures Zstandard's CompressAsync at those degrees of parallelism against
-/// libzstd with as many workers (<see cref="Jobs"/>), on the data set repeated <c>--repeat</c> times.
+/// libzstd with as many workers (<see cref="Jobs"/>), on the data set repeated <c>--repeat</c> times;
+/// <c>--frames 1,2,4</c> measures independent frames and DecompressAsync at those degrees (<see cref="Frames"/>).
 /// <c>--results</c> appends each level's measures as soon as they are taken, and the tables are rendered
 /// from the whole file, a later measure replacing an earlier one.
 /// </para>
@@ -102,6 +103,9 @@ internal static class Program
             ? degrees.Split(',').Select(x => int.Parse(x, CultureInfo.InvariantCulture)).ToArray()
             : null;
         int repeat = int.Parse(options.GetValueOrDefault("repeat", "1"), CultureInfo.InvariantCulture);
+        int[]? frames = options.TryGetValue("frames", out string? frameDegrees)
+            ? frameDegrees.Split(',').Select(x => int.Parse(x, CultureInfo.InvariantCulture)).ToArray()
+            : null;
 
         Console.WriteLine($"{RuntimeInformation.FrameworkDescription}, {(RuntimeFeature.IsDynamicCodeSupported ? "JIT" : "Native AOT")}, " +
             $"{RuntimeInformation.OSDescription} {RuntimeInformation.ProcessArchitecture}, some {budget} s a direction" +
@@ -131,6 +135,16 @@ internal static class Program
                 foreach (int level in levels)
                 {
                     List<Row> measured;
+                    if (frames is not null)
+                    {
+                        if (codec == "zstd")
+                        {
+                            Frames.Measure(set, level, frames, repeat, budget, Candidates.Checksum, int.Parse(options.GetValueOrDefault("size", "0"), CultureInfo.InvariantCulture));
+                        }
+
+                        continue;
+                    }
+
                     if (jobs is not null)
                     {
                         if (codec != "zstd")
@@ -171,7 +185,7 @@ internal static class Program
         }
 
         // --jobs prints its own table, a line a degree; the level table would mix the degrees.
-        return jobs is not null ? 0 : Render(results is null ? rows : Read(results), options.GetValueOrDefault("markdown"));
+        return jobs is not null || frames is not null ? 0 : Render(results is null ? rows : Read(results), options.GetValueOrDefault("markdown"));
     }
 
     private static Dictionary<string, string> Options(string[] args)

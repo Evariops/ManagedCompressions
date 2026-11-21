@@ -24,10 +24,18 @@ public sealed partial class ZstdCompressor
     /// <param name="cancellationToken">Stops the jobs not started yet; the frame is then abandoned.</param>
     /// <returns>The size of the frame.</returns>
     /// <remarks>
+    /// <para>
     /// The frame is the one libzstd writes whatever the number of its workers, and so whatever the
     /// degree of parallelism; up to 512 KiB, it is the one <see cref="Compress"/> writes (libzstd runs
     /// no workers for it). The source and the destination must not change until the task completes,
     /// and the compressor must not be used meanwhile.
+    /// </para>
+    /// <para>
+    /// With <see cref="JobFrames"/> at <see cref="ZstdJobFrames.Independent"/>, each job is a frame of
+    /// its own instead, the one <see cref="Compress"/> writes of the job's section: the result is those
+    /// frames one after the other, which <see cref="ZstdDecompressor.DecompressAsync"/> decodes on
+    /// several threads, for 0.1% to 0.3% more bytes (silesia at levels 1 to 9).
+    /// </para>
     /// </remarks>
     /// <exception cref="ArgumentException">The frame does not fit in <paramref name="destination"/>.</exception>
     public async ValueTask<int> CompressAsync(
@@ -53,14 +61,18 @@ public sealed partial class ZstdCompressor
         using MemoryHandle destinationPin = destination.Pin();
         nint address = AddressOf(pin);
         var output = new JobDestination(AddressOf(destinationPin), destination.Length);
-        if (plan.LongDistance)
+
+        // Independent frames have their own long-distance matching and checksums, each its frame's.
+        bool single = JobFrames == ZstdJobFrames.Single;
+        bool serialMatcher = plan.LongDistance && single;
+        if (serialMatcher)
         {
             BeginJobsMatcher(plan, address);
         }
 
         // zstdmt's serial state sums the content as the jobs go: here a task of its own, which reads the
         // source beside the jobs rather than after them all, on one core while the others wait.
-        Task<ulong>? checksum = AppendChecksum ? Task.Run(() => XxHash64.HashToUInt64(source.Span), CancellationToken.None) : null;
+        Task<ulong>? checksum = AppendChecksum && single ? Task.Run(() => XxHash64.HashToUInt64(source.Span), CancellationToken.None) : null;
         try
         {
             // Each job writes into the destination itself, at the sum of the bounds of the jobs before it
@@ -75,7 +87,7 @@ public sealed partial class ZstdCompressor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     int job = started;
-                    (RawSequence[]? sequences, int count) = plan.LongDistance
+                    (RawSequence[]? sequences, int count) = serialMatcher
                         ? await Task.Run(() => GenerateJobSequences(plan, address, job), CancellationToken.None).ConfigureAwait(false)
                         : (null, 0);
                     jobs[job] = RunJobAsync(slots, plan, address, job, sequences, count, output, slot);

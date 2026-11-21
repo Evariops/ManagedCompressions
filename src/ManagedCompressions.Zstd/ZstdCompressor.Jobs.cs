@@ -66,7 +66,15 @@ public sealed unsafe partial class ZstdCompressor
         _windowLog = owner._windowLog;
         _writeContentSize = owner._writeContentSize;
         _writeDictionaryId = owner._writeDictionaryId;
+        _noLongDistanceMatching = owner._noLongDistanceMatching;
     }
+
+    /// <summary>
+    /// The frames <see cref="CompressAsync"/> writes: <see cref="ZstdJobFrames.Single"/>, libzstd's with
+    /// workers, by default; <see cref="ZstdJobFrames.Independent"/>, a frame per job, which
+    /// <see cref="ZstdDecompressor.DecompressAsync"/> decodes on several threads.
+    /// </summary>
+    public ZstdJobFrames JobFrames { get; set; }
 
     /// <summary>
     /// The jobs of a frame of <see cref="FrameSize"/> bytes: every one <see cref="JobSize"/> bytes but
@@ -149,18 +157,6 @@ public sealed unsafe partial class ZstdCompressor
         }
     }
 
-    /// <summary>
-    /// Once a call's jobs are done, lets go of the job compressors that hold more than
-    /// <see cref="CodecPool.MaxRetainedBytes"/>, as <see cref="CodecPool"/> does with streams' codecs;
-    /// the others are kept for the next call.
-    /// </summary>
-    /// <remarks>
-    /// A level 19 job compressor holds some 84 MiB of tables: 32 of them, a degree of parallelism of 32
-    /// on a Ryzen 9 7950X, held 2.1 GiB after the call that made them, for as long as the compressor
-    /// lived. Making them again costs the next call some tens of milliseconds each, against seconds a
-    /// job at those levels; the compressors of the fast levels, which hold a few MiB and whose jobs take
-    /// milliseconds, are kept.
-    /// </remarks>
     /// <summary>The memory each kept job compressor holds, for the tests.</summary>
     internal long[] IdleWorkerBytes()
     {
@@ -175,6 +171,18 @@ public sealed unsafe partial class ZstdCompressor
         }
     }
 
+    /// <summary>
+    /// Once a call's jobs are done, lets go of the job compressors that hold more than
+    /// <see cref="CodecPool.MaxRetainedBytes"/>, as <see cref="CodecPool"/> does with streams' codecs;
+    /// the others are kept for the next call.
+    /// </summary>
+    /// <remarks>
+    /// A level 19 job compressor holds some 84 MiB of tables: 32 of them, a degree of parallelism of 32
+    /// on a Ryzen 9 7950X, held 2.1 GiB after the call that made them, for as long as the compressor
+    /// lived. Making them again costs the next call some tens of milliseconds each, against seconds a
+    /// job at those levels; the compressors of the fast levels, which hold a few MiB and whose jobs take
+    /// milliseconds, are kept.
+    /// </remarks>
     private void TrimIdleWorkers()
     {
         Stack<ZstdCompressor> idle = _idleWorkers!;
@@ -233,9 +241,20 @@ public sealed unsafe partial class ZstdCompressor
             fixed (RawSequence* jobSequences = sequences)
             {
                 byte* destination = buffer is null ? (byte*)output.Address + (nint)slot : rented;
-                written = worker.CompressJob(
-                    plan.Parameters, (byte*)source, plan.FrameSize, plan.Start(job), size, plan.PrefixSize(job), destination, capacity, AppendChecksum,
-                    jobSequences, (nuint)sequenceCount);
+                if (JobFrames == ZstdJobFrames.Independent)
+                {
+                    // The job's section alone, the frame Compress writes of it.
+                    worker.AppendChecksum = AppendChecksum;
+                    worker.LongDistanceMatching = LongDistanceMatching;
+                    written = worker.Compress(new ReadOnlySpan<byte>((byte*)source + plan.Start(job), size), new Span<byte>(destination, capacity), out _, out int frame)
+                        == OperationStatus.Done ? frame : -1;
+                }
+                else
+                {
+                    written = worker.CompressJob(
+                        plan.Parameters, (byte*)source, plan.FrameSize, plan.Start(job), size, plan.PrefixSize(job), destination, capacity, AppendChecksum,
+                        jobSequences, (nuint)sequenceCount);
+                }
             }
 
             if (written < 0)
