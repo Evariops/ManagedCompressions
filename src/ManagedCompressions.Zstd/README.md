@@ -239,6 +239,9 @@ int length = await compressor.CompressAsync(content, frame, maxDegreeOfParalleli
 frame as libzstd with worker threads (`ZSTD_c_nbWorkers`), so the frame does not depend on the degree
 of parallelism. Up to 512 KiB, it writes the same frame as `Compress`.
 
+At the end of each call, `CompressAsync` lets go of the job compressors that hold more than 16 MiB
+(some 84 MiB each at level 19, against 12 MiB at level 9), and keeps the others for the next call.
+
 ### Threading
 
 Instances are not thread-safe. Use one per thread, or one per concurrent operation.

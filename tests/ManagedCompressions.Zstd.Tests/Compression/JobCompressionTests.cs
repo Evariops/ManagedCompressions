@@ -210,4 +210,27 @@ public sealed class JobCompressionTests
         int parallel = await compressor.CompressAsync(data, output, 4, TestContext.Current.CancellationToken);
         Corpus.AssertSameBytes(expected, output.AsSpan(0, parallel), name + " in parallel");
     }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(19)]
+    public async Task Keeps_only_the_job_compressors_that_hold_little(int level)
+    {
+        byte[] data = DataKinds.Generate("text", 3_000_000, seed: 5);
+        var compressor = new ZstdCompressor(level) { JobSizeOverride = 512 << 10 };
+        byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
+        await compressor.CompressAsync(data, output, 4, TestContext.Current.CancellationToken);
+        long[] kept = compressor.IdleWorkerBytes();
+        Assert.All(kept, bytes => Assert.True(bytes <= 16L << 20, $"{bytes} bytes kept"));
+        if (level == 1)
+        {
+            // The fast levels' compressors hold a few MiB: they are kept for the next call.
+            Assert.NotEmpty(kept);
+        }
+
+        // The next call writes the same frame, with the compressors kept or made again.
+        byte[] again = new byte[output.Length];
+        int first = await compressor.CompressAsync(data, again, 4, TestContext.Current.CancellationToken);
+        Assert.True(again.AsSpan(0, first).SequenceEqual(output.AsSpan(0, first)));
+    }
 }
