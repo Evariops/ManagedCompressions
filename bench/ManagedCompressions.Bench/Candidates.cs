@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using NativeCompressions.Interop;
@@ -20,6 +21,19 @@ internal sealed record Candidate(string Name, string Label, bool Native, SpanCod
 /// <summary>The native and the managed implementations of each codec, at a level, sharing nothing but the data.</summary>
 internal static unsafe class Candidates
 {
+    /// <summary>
+    /// The suffix of an A/A arm's name (<c>--aa 1</c>): a second, separate instance of the managed
+    /// codec, timed in the same rounds. Its speedup over the managed candidate should be 1 within the
+    /// noise; a run where it is not measured noise, whatever its other figures say.
+    /// </summary>
+    public const string AaSuffix = "-aa";
+
+    /// <summary>
+    /// <c>--checksum 1</c>: both Zstandard implementations write the content checksum (XXH64), which
+    /// their decoders then verify; without it neither does, libzstd's default.
+    /// </summary>
+    public static bool Checksum { get; set; }
+
     private static string Runtime => RuntimeFeature.IsDynamicCodeSupported ? "JIT" : "Native AOT";
 
     public static int Bound(string codec, int length) => codec switch
@@ -28,12 +42,27 @@ internal static unsafe class Candidates
         _ => Math.Max(Lz4Block.MaxCompressedLength(length), LZ4NativeMethods.LZ4_compressBound(length)),
     };
 
-    public static List<Candidate> For(string codec, DataSet set, int level, List<Action> release) => codec switch
+    /// <summary>
+    /// The native reference first, then the managed codec, then with <paramref name="aa"/> a second
+    /// managed instance, the A/A arm (<see cref="AaSuffix"/>).
+    /// </summary>
+    public static List<Candidate> For(string codec, DataSet set, int level, List<Action> release, bool aa = false)
     {
-        "zstd" => Zstd(set, level, release),
-        "lz4" => Lz4(level, release),
-        _ => throw new ArgumentException("unknown codec " + codec + " (zstd, lz4)", nameof(codec)),
-    };
+        List<Candidate> candidates = codec switch
+        {
+            "zstd" => Zstd(set, level, release),
+            "lz4" => Lz4(level, release),
+            _ => throw new ArgumentException("unknown codec " + codec + " (zstd, lz4)", nameof(codec)),
+        };
+        if (aa)
+        {
+            // A fresh managed instance: its tables in other pages, as the A/B arms of another build are.
+            Candidate twin = (codec == "zstd" ? Zstd(set, level, release) : Lz4(level, release)).Single(c => !c.Native);
+            candidates.Add(twin with { Name = twin.Name + AaSuffix, Label = twin.Label + " (A/A)" });
+        }
+
+        return candidates;
+    }
 
     /// <summary>
     /// libzstd 1.5.7 as NativeCompressions ships it, on its fastest path: one compression and one
@@ -57,7 +86,12 @@ internal static unsafe class Candidates
 
             Check(ZstandardNativeMethods.ZSTD_CCtx_refCDict(cctx, cdict));
         }
+        else
+        {
+            Check(ZstandardNativeMethods.ZSTD_CCtx_setParameter(cctx, ZSTD_cParameter.ZSTD_c_compressionLevel, level));
+        }
 
+        Check(ZstandardNativeMethods.ZSTD_CCtx_setParameter(cctx, ZSTD_cParameter.ZSTD_c_checksumFlag, Checksum ? 1 : 0));
         release.Add(() =>
         {
             ZstandardNativeMethods.ZSTD_freeCCtx(cctx);
@@ -70,6 +104,7 @@ internal static unsafe class Candidates
         });
 
         var compressor = dictionary is null ? new ZstdCompressor(level) : new ZstdCompressor(level, dictionary);
+        compressor.AppendChecksum = Checksum;
         var decompressor = dictionary is null ? new ZstdDecompressor() : new ZstdDecompressor(dictionary);
         return
         [
@@ -79,7 +114,10 @@ internal static unsafe class Candidates
                     fixed (byte* src = s)
                     fixed (byte* dst = d)
                     {
-                        nuint r = cdict is null
+                        // With --checksum 1 the flag is a parameter of the context, which
+                        // ZSTD_compress2 applies and ZSTD_compressCCtx would reset; without it, the
+                        // call the published results were measured with.
+                        nuint r = cdict is null && !Checksum
                             ? ZstandardNativeMethods.ZSTD_compressCCtx(cctx, dst, (nuint)d.Length, src, (nuint)s.Length, level)
                             : ZstandardNativeMethods.ZSTD_compress2(cctx, dst, (nuint)d.Length, src, (nuint)s.Length);
                         return ZstandardNativeMethods.ZSTD_isError(r) != 0 ? -1 : (int)r;

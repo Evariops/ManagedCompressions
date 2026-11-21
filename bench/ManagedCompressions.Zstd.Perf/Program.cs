@@ -111,7 +111,7 @@ public static class Program
                 $"AOT: {!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported}, passes {passes} x {reps} reps, compression");
             foreach (string name in frames)
             {
-                if (!RunCompress(name, passes, reps, only, args.Contains("--ab")))
+                if (!RunCompress(name, passes, reps, only, args.Contains("--ab"), args.Contains("--aa")))
                 {
                     return 1;
                 }
@@ -135,6 +135,12 @@ public static class Program
             new("zstd", (f, o) => { zstd.Reset(); zstd.Decompress(f, o, out _, out int w); return w; }),
             new("platform", (f, o) => { platform.Reset(); platform.Decompress(f, o, out _, out int w); return w; }),
         };
+        if (args.Contains("--aa"))
+        {
+            var twin = new ZstdDecompressor { PairsBlocks = zstd.PairsBlocks };
+            candidates.Insert(1, new(AaName, (f, o) => { twin.Reset(); twin.Decompress(f, o, out _, out int w); return w; }));
+        }
+
         if (native is not null)
         {
             candidates.Add(new("libzstd-ref", (f, o) => native.Decompress(f, o)));
@@ -260,7 +266,7 @@ public static class Program
     /// out; one ending in <c>-dict</c> compresses with a dictionary of the content's kind
     /// (<see cref="BenchFrames.Dictionary"/>), prepared at the level, every candidate the same way.
     /// </summary>
-    private static bool RunCompress(string name, int passes, int reps, string? only, bool ab)
+    private static bool RunCompress(string name, int passes, int reps, string? only, bool ab, bool aa)
     {
         int workers = name.LastIndexOf("-mt", StringComparison.Ordinal) is int at and > 0 && int.TryParse(name.AsSpan(at + 3), out int n) ? n : 0;
         if (workers > 0)
@@ -301,6 +307,12 @@ public static class Program
             candidates.Add(dictionary is null
                 ? new("libzstd-ref", (s, o) => native.Compress(s, o, level))
                 : new("libzstd-ref", native.WithDictionary(dictionary, level)));
+        }
+
+        if (aa)
+        {
+            ZstdCompressor twin = NewCompressor();
+            candidates.Insert(1, new(AaName, (s, o) => { twin.Compress(s, o, out _, out int w); return w; }));
         }
 
         if (ab)
@@ -467,7 +479,7 @@ public static class Program
         var medians = new double[count];
         for (int c = 0; c < count; c++)
         {
-            double[] all = samples[c];
+            double[] all = (double[])samples[c].Clone();
             Array.Sort(all);
             medians[c] = all[all.Length / 2];
             // Two decimals: the small frames take a few microseconds, where a tenth is 4%.
@@ -475,6 +487,9 @@ public static class Program
                 string.Join(" ", passMedians[c].Select(m => m.ToString("F2", CultureInfo.InvariantCulture))));
         }
 
+        // Every speedup is ManagedCompressions.Zstd's over the other candidate, from the samples paired
+        // as they were taken (the same repetition of the same pass), with its 95% interval; an A/A arm's
+        // is checked against ±1%.
         int zstdIndex = candidates.FindIndex(c => c.Name == "zstd");
         if (zstdIndex >= 0)
         {
@@ -482,12 +497,20 @@ public static class Program
             {
                 if (c != zstdIndex)
                 {
-                    Console.WriteLine($"  speedup vs {candidates[c].Name}: {medians[c] / medians[zstdIndex]:F3}x " +
+                    PairedRatio paired = PairedRatio.OfMedian(samples[c], samples[zstdIndex]);
+                    string aa = candidates[c].Name == AaName ? (paired.PassesAa ? ", A/A ok" : ", A/A NOT VALID: beyond ±1%") : string.Empty;
+                    Console.WriteLine($"  speedup vs {candidates[c].Name}: {paired}{aa} " +
                         $"(per pass: {string.Join(" ", Enumerable.Range(0, passes).Select(p => (passMedians[c][p] / passMedians[zstdIndex][p]).ToString("F2", CultureInfo.InvariantCulture)))})");
                 }
             }
         }
     }
+
+    /// <summary>
+    /// The A/A arm (<c>--aa</c>): a second instance of ManagedCompressions.Zstd, whose paired speedup
+    /// against the first must hold 1 within ±1%, or the run measured noise.
+    /// </summary>
+    private const string AaName = "zstd-aa";
 
     /// <summary>
     /// From <c>--no-check</c>: time a decoder whose output differs, which a probe that alters the
