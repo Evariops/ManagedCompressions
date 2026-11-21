@@ -16,11 +16,12 @@ namespace ManagedCompressions.Zstd.Perf;
 /// moment lands on all of them alike. Several passes show how stable the figures are.
 /// </summary>
 /// <remarks>
-/// Usage: <c>ManagedCompressions.Zstd.Perf [--frames a,b] [--passes N] [--reps N] [--only zstd,libzstd-ref] [--ab] [--dump dir] [--no-check] [--no-pair | --pair]
+/// Usage: <c>ManagedCompressions.Zstd.Perf [--frames a,b] [--passes N] [--reps N] [--only zstd,libzstd-ref] [--ab] [--aa] [--pairs-ab] [--dump dir] [--no-check] [--no-pair | --pair]
 /// [--compress] [--core N]</c>; <c>--core N</c> keeps the timed thread on logical processor N (Windows, where the process and
 /// the thread also run at a high priority, as macOS's user-interactive QoS); <c>--ab</c>
 /// adds a "before" candidate that runs with the legacy switches of the point under work (see
-/// <see cref="AbSwitch"/>). <c>--compress</c> times compression instead: each frame's content, at the
+/// <see cref="AbSwitch"/>); <c>--aa</c> a second instance of the decoder, an A/A arm; <c>--pairs-ab</c> a decoder
+/// that makes the other choice of pairing blocks than the machine's default, timed beside it. <c>--compress</c> times compression instead: each frame's content, at the
 /// level its name gives (3 for the reference). Before timing,
 /// every candidate's output is checked against the platform's. <c>--corpus silesia,github,github-dict</c>
 /// measures zstd's own benchmark data instead, level by level (see <see cref="Corpus"/>).
@@ -139,6 +140,13 @@ public static class Program
         {
             var twin = new ZstdDecompressor { PairsBlocks = zstd.PairsBlocks };
             candidates.Insert(1, new(AaName, (f, o) => { twin.Reset(); twin.Decompress(f, o, out _, out int w); return w; }));
+        }
+
+        if (args.Contains("--pairs-ab"))
+        {
+            // The other choice of PairsBlocks than this machine's, timed beside it in the same rounds.
+            var other = new ZstdDecompressor { PairsBlocks = !zstd.PairsBlocks };
+            candidates.Insert(1, new(other.PairsBlocks ? "zstd-pairs" : "zstd-nopairs", (f, o) => { other.Reset(); other.Decompress(f, o, out _, out int w); return w; }));
         }
 
         if (native is not null)
