@@ -1,7 +1,6 @@
 using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using System.Threading;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -151,14 +150,14 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
-        // Not past the input, after a copy to its end: nothing ahead to fetch there.
-        if (TParams.BucketBits >= 17 && (ix & mask) <= (nuint)data.Length - 8)
+        // The large tables only, and not past the input, after a copy to its end: nothing ahead to fetch there.
+        if (Internal.Prefetch.IsSupported && TParams.BucketBits >= 17 && (ix & mask) <= (nuint)data.Length - 8)
         {
             uint key = HashBytes(data, ix & mask);
-            Volatile.Read(ref _buckets[(int)key]);
+            Internal.Prefetch.Element(_buckets, key);
             if (BucketSweep > 1)
             {
-                Volatile.Read(ref _buckets[(key + ((uint)(BucketSweep - 1) << 3)) & BucketMask]);
+                Internal.Prefetch.Element(_buckets, (key + ((uint)(BucketSweep - 1) << 3)) & BucketMask);
             }
         }
     }

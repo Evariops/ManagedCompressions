@@ -11,16 +11,27 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
-  <!-- Safe code only: no unsafe context, nor the escape hatches of Unsafe and MemoryMarshal, which
-       src/BannedSymbols.txt bans. Every access to memory is a checked index into an array or a span. -->
+  <!-- Safe code, but for one file: every access to memory is a checked index into an array or a span.
+       src/BannedSymbols.txt bans the escape hatches of Unsafe and MemoryMarshal, and CheckUnsafeKernel
+       below keeps unsafe code to Internal/Prefetch.cs, a cache hint that .NET takes as an address only. -->
   <PropertyGroup>
-    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UnsafeKernel>Internal/Prefetch.cs</UnsafeKernel>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" PrivateAssets="all" />
     <AdditionalFiles Include="../BannedSymbols.txt" Link="BannedSymbols.txt" />
   </ItemGroup>
+
+  <!-- Fails the build when a file other than the kernel says unsafe, or silences the banned-API rule. -->
+  <Target Name="CheckUnsafeKernel" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <_OutsideUnsafeKernel Include="@(Compile)" Exclude="$(UnsafeKernel)" />
+      <_UnsafeOutsideKernel Include="@(_OutsideUnsafeKernel)" Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.IO.File]::ReadAllText('%(FullPath)')), '\bunsafe\b|RS0030'))" />
+    </ItemGroup>
+    <Error Condition="'@(_UnsafeOutsideKernel)' != ''" Text="Unsafe code outside $(UnsafeKernel): @(_UnsafeOutsideKernel)" />
+  </Target>
 
   <!-- Its own readme on the package page, which covers Brotli alone. -->
   <ItemGroup>
