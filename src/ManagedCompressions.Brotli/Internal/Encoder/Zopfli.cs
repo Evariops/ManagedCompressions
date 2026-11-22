@@ -60,6 +60,43 @@ internal sealed unsafe class Zopfli
     private const int MaxZopfliLenQuality10 = 150;
     private const int MaxZopfliLenQuality11 = 325;
 
+    /// <summary>The lengths <see cref="CopyLengthCodes"/> holds: from 2118 on, the copy code is 23.</summary>
+    private const int CopyLengthCodesSize = 2118;
+
+    private static readonly byte[] CopyLengthCodesArray = BuildCopyLengthCodes();
+    private static readonly ushort[] CommandCodesArray = BuildCommandCodes();
+
+    /// <summary><see cref="Commands.GetCopyLengthCode"/> of the lengths 2 to 2117.</summary>
+    private static readonly byte* CopyLengthCodes = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(CopyLengthCodesArray));
+
+    /// <summary><see cref="Commands.CombineLengthCodes"/> of each insert code times 24 plus copy code, without the last distance.</summary>
+    private static readonly ushort* CommandCodes = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(CommandCodesArray));
+
+    private static byte[] BuildCopyLengthCodes()
+    {
+        byte[] codes = GC.AllocateArray<byte>(CopyLengthCodesSize, pinned: true);
+        for (int len = 2; len < CopyLengthCodesSize; len++)
+        {
+            codes[len] = (byte)Commands.GetCopyLengthCode((nuint)len);
+        }
+
+        return codes;
+    }
+
+    private static ushort[] BuildCommandCodes()
+    {
+        ushort[] codes = GC.AllocateArray<ushort>(24 * 24, pinned: true);
+        for (uint insCode = 0; insCode < 24; insCode++)
+        {
+            for (uint copyCode = 0; copyCode < 24; copyCode++)
+            {
+                codes[(insCode * 24) + copyCode] = Commands.CombineLengthCodes(insCode, copyCode, false);
+            }
+        }
+
+        return codes;
+    }
+
     private static ReadOnlySpan<byte> DistanceCacheIndex => [0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1];
 
     private static ReadOnlySpan<sbyte> DistanceCacheOffset => [0, 0, 0, 0, -1, 1, -2, 2, -3, 3, -1, 1, -2, 2, -3, 3];
@@ -389,11 +426,20 @@ internal sealed unsafe class Zopfli
         const nuint gap = 0;
         ReadOnlySpan<byte> distanceCacheIndex = DistanceCacheIndex;
         ReadOnlySpan<sbyte> distanceCacheOffset = DistanceCacheOffset;
+
+        // The model in locals: the JIT reloads fields after every store through a pointer.
+        float* costCmd = _costCmdP;
+        float* costDist = _costDistP;
+        float* literalCosts = _literalCostsP;
+        nuint numDirectCodes = _dist.NumDirectCodes;
+        int postfixBits = (int)_dist.PostfixBits;
+        byte* copyCodes = CopyLengthCodes;
+        ushort* commandCodes = CommandCodes;
         EvaluateNode(blockStart, pos, maxBackwardLimit, gap, startingDistCache, ref queue, nodes);
         nuint minLen;
         {
             PosData* posdata = queue.At(0);
-            float minCost = posdata->Cost + _minCostCmd + GetLiteralCosts(posdata->Pos, pos);
+            float minCost = posdata->Cost + _minCostCmd + (literalCosts[pos] - literalCosts[posdata->Pos]);
             minLen = ComputeMinimumCopyLength(minCost, nodes, numBytes, pos);
         }
 
@@ -404,7 +450,7 @@ internal sealed unsafe class Zopfli
             nuint start = posdata->Pos;
             uint insCode = Commands.GetInsertLengthCode(pos - start);
             float startCostdiff = posdata->Costdiff;
-            float baseCost = startCostdiff + (float)Commands.GetInsertExtra(insCode) + GetLiteralCosts(0, pos);
+            float baseCost = startCostdiff + (float)Commands.GetInsertExtra(insCode) + (literalCosts[pos] - literalCosts[0]);
 
             // The last distances, from this start position's cache.
             nuint bestLen = minLen - 1;
@@ -449,12 +495,12 @@ internal sealed unsafe class Zopfli
                 }
 
                 {
-                    float distCost = baseCost + _costDistP[j];
+                    float distCost = baseCost + costDist[j];
                     for (nuint l = bestLen + 1; l <= len; ++l)
                     {
-                        uint copyCode = Commands.GetCopyLengthCode(l);
+                        uint copyCode = l < CopyLengthCodesSize ? copyCodes[l] : 23u;
                         ushort cmdCode = Commands.CombineLengthCodes(insCode, copyCode, j == 0);
-                        float cost = (cmdCode < 128 ? baseCost : distCost) + (float)Commands.GetCopyExtra(copyCode) + _costCmdP[cmdCode];
+                        float cost = (cmdCode < 128 ? baseCost : distCost) + (float)Commands.GetCopyExtra(copyCode) + costCmd[cmdCode];
                         if (cost < nodes[pos + l].Cost)
                         {
                             UpdateZopfliNode(nodes, pos, start, l, l, backward, (nuint)j + 1, cost);
@@ -480,9 +526,9 @@ internal sealed unsafe class Zopfli
                     nuint dist = match.Distance;
                     bool isDictionaryMatch = dist > dictionaryStart + gap;
                     nuint distCode = dist + Prefix.NumDistanceShortCodes - 1;
-                    Commands.PrefixEncodeCopyDistance(distCode, _dist.NumDirectCodes, (int)_dist.PostfixBits, out ushort distSymbol, out _);
+                    Commands.PrefixEncodeCopyDistance(distCode, numDirectCodes, postfixBits, out ushort distSymbol, out _);
                     uint distNumExtra = (uint)distSymbol >> 10;
-                    float distCost = baseCost + (float)distNumExtra + _costDistP[distSymbol & 0x3FF];
+                    float distCost = baseCost + (float)distNumExtra + costDist[distSymbol & 0x3FF];
 
                     // Every length up to the match's; only the longest for a dictionary word or a long match.
                     nuint maxMatchLen = match.Length;
@@ -494,9 +540,9 @@ internal sealed unsafe class Zopfli
                     for (; len <= maxMatchLen; ++len)
                     {
                         nuint lenCode = isDictionaryMatch ? match.LengthCode : len;
-                        uint copyCode = Commands.GetCopyLengthCode(lenCode);
-                        ushort cmdCode = Commands.CombineLengthCodes(insCode, copyCode, false);
-                        float cost = distCost + (float)Commands.GetCopyExtra(copyCode) + _costCmdP[cmdCode];
+                        uint copyCode = lenCode < CopyLengthCodesSize ? copyCodes[lenCode] : 23u;
+                        ushort cmdCode = commandCodes[(insCode * 24) + copyCode];
+                        float cost = distCost + (float)Commands.GetCopyExtra(copyCode) + costCmd[cmdCode];
                         if (cost < nodes[pos + len].Cost)
                         {
                             UpdateZopfliNode(nodes, pos, start, len, lenCode, dist, 0, cost);

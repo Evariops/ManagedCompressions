@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -232,16 +233,15 @@ internal sealed unsafe class BlockSplitter
             nuint ix = byteIx * bitmapLen;
             nuint symbol = nuint.CreateTruncating(data[byteIx]);
             nuint insertCostIx = symbol * numHistograms;
-            double minCost = 1e99;
             double blockSwitchCost = blockSwitchBitcost;
-            for (nuint k = 0; k < numHistograms; ++k)
+
+            // The symbol coded with each code; the cheapest code, the first of the cheapest.
+            AddCosts(cost, insertCost + insertCostIx, numHistograms);
+            double minCost = 1e99;
+            int best = FirstMinimum(cost, numHistograms, ref minCost);
+            if (best >= 0)
             {
-                cost[k] += insertCost[insertCostIx + k];
-                if (cost[k] < minCost)
-                {
-                    minCost = cost[k];
-                    blockId[byteIx] = (byte)k;
-                }
+                blockId[byteIx] = (byte)best;
             }
 
             // More blocks at the beginning.
@@ -250,16 +250,7 @@ internal sealed unsafe class BlockSplitter
                 blockSwitchCost *= 0.77 + (0.07 * (double)byteIx / 2000);
             }
 
-            for (nuint k = 0; k < numHistograms; ++k)
-            {
-                cost[k] -= minCost;
-                if (cost[k] >= blockSwitchCost)
-                {
-                    byte mask = (byte)(1u << (int)(k & 7));
-                    cost[k] = blockSwitchCost;
-                    switchSignal[ix + (k >> 3)] |= mask;
-                }
-            }
+            SubtractAndCap(cost, numHistograms, minCost, blockSwitchCost, switchSignal + ix);
         }
 
         {
@@ -286,6 +277,136 @@ internal sealed unsafe class BlockSplitter
         }
 
         return numBlocks;
+    }
+
+    /// <summary><c>cost[k] += insert[k]</c> for each code: the same additions, a vector at a time.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddCosts(double* cost, double* insert, nuint n)
+    {
+        nuint k = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            for (; k + 4 <= n; k += 4)
+            {
+                (Vector256.Load(cost + k) + Vector256.Load(insert + k)).Store(cost + k);
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            for (; k + 2 <= n; k += 2)
+            {
+                (Vector128.Load(cost + k) + Vector128.Load(insert + k)).Store(cost + k);
+            }
+        }
+
+        for (; k < n; ++k)
+        {
+            cost[k] += insert[k];
+        }
+    }
+
+    /// <summary>
+    /// The first code whose cost is below <paramref name="minCost"/> and the least, as brotli's loop of
+    /// strict comparisons finds it, and its cost in <paramref name="minCost"/>; -1 when none is below.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FirstMinimum(double* cost, nuint n, ref double minCost)
+    {
+        double least = minCost;
+        nuint k = 0;
+        if (Vector256.IsHardwareAccelerated && n >= 4)
+        {
+            Vector256<double> min = Vector256.Create(least);
+            for (; k + 4 <= n; k += 4)
+            {
+                min = Vector256.Min(min, Vector256.Load(cost + k));
+            }
+
+            least = Math.Min(Math.Min(min[0], min[1]), Math.Min(min[2], min[3]));
+        }
+        else if (Vector128.IsHardwareAccelerated && n >= 2)
+        {
+            Vector128<double> min = Vector128.Create(least);
+            for (; k + 2 <= n; k += 2)
+            {
+                min = Vector128.Min(min, Vector128.Load(cost + k));
+            }
+
+            least = Math.Min(min[0], min[1]);
+        }
+
+        for (; k < n; ++k)
+        {
+            least = Math.Min(least, cost[k]);
+        }
+
+        // The first code at the least cost, if it is below the bound: the one the strict comparisons keep.
+        if (!(least < minCost))
+        {
+            return -1;
+        }
+
+        for (k = 0; ; ++k)
+        {
+            if (cost[k] == least)
+            {
+                minCost = cost[k];
+                return (int)k;
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>cost[k] -= minCost</c>, capped at <paramref name="blockSwitchCost"/>, the capped codes marked in
+    /// <paramref name="switchSignal"/>'s bits, a vector at a time.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void SubtractAndCap(double* cost, nuint n, double minCost, double blockSwitchCost, byte* switchSignal)
+    {
+        nuint k = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            Vector256<double> min = Vector256.Create(minCost);
+            Vector256<double> cap = Vector256.Create(blockSwitchCost);
+            for (; k + 8 <= n; k += 8)
+            {
+                Vector256<double> c0 = Vector256.Load(cost + k) - min;
+                Vector256<double> c1 = Vector256.Load(cost + k + 4) - min;
+                Vector256<double> m0 = Vector256.GreaterThanOrEqual(c0, cap);
+                Vector256<double> m1 = Vector256.GreaterThanOrEqual(c1, cap);
+                Vector256.ConditionalSelect(m0, cap, c0).Store(cost + k);
+                Vector256.ConditionalSelect(m1, cap, c1).Store(cost + k + 4);
+                switchSignal[k >> 3] |= (byte)(m0.ExtractMostSignificantBits() | (m1.ExtractMostSignificantBits() << 4));
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            Vector128<double> min = Vector128.Create(minCost);
+            Vector128<double> cap = Vector128.Create(blockSwitchCost);
+            for (; k + 8 <= n; k += 8)
+            {
+                uint bits = 0;
+                for (int i = 0; i < 8; i += 2)
+                {
+                    Vector128<double> c = Vector128.Load(cost + k + (nuint)i) - min;
+                    Vector128<double> m = Vector128.GreaterThanOrEqual(c, cap);
+                    Vector128.ConditionalSelect(m, cap, c).Store(cost + k + (nuint)i);
+                    bits |= m.ExtractMostSignificantBits() << i;
+                }
+
+                switchSignal[k >> 3] |= (byte)bits;
+            }
+        }
+
+        for (; k < n; ++k)
+        {
+            cost[k] -= minCost;
+            if (cost[k] >= blockSwitchCost)
+            {
+                cost[k] = blockSwitchCost;
+                switchSignal[k >> 3] |= (byte)(1u << (int)(k & 7));
+            }
+        }
     }
 
     private static nuint RemapBlockIds(byte* blockIds, nuint length, ushort* newId, nuint numHistograms)
