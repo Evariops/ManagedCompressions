@@ -20,6 +20,7 @@ internal static unsafe class BrotliTargets
     private static readonly GuardedBuffer Destination = new(MaxContent);
     private static readonly BrotliDecompressor Decompressor = new();
     private static readonly Dictionary<(int, int, int), BrotliCompressor> Compressors = [];
+    private static readonly byte[] StreamExpected = new byte[MaxContent];
 
     /// <summary>
     /// <c>[flags][stream]</c>. Flags: bits 0 and 1, the destination: 4 MiB, the content's size, one byte
@@ -196,6 +197,186 @@ internal static unsafe class BrotliTargets
                 yield return [(byte)quality, (byte)((seed * 7) % 45), (byte)(seed & 0xC3), .. content];
                 seed++;
             }
+        }
+    }
+
+    /// <summary>
+    /// <c>[quality][window][seed][content]</c>. Quality: the byte mod 12; window: 10 plus the byte mod 15.
+    /// The seed draws a script of calls: pieces of the content, flushes, the final call, into
+    /// destinations of 0 bytes to 64 KiB.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="BrotliStreamEncoder"/> and .NET's <c>System.IO.Compression.BrotliEncoder</c> take the
+    /// script: each call must get the same status, bytes consumed and written, and stream, which decodes
+    /// back. Qualities 10 and 11 take the first 64 KiB of the content, the others 512 KiB.
+    /// </remarks>
+    public static void StreamCompress(ReadOnlySpan<byte> input)
+    {
+        if (input.Length < 3)
+        {
+            return;
+        }
+
+        int quality = input[0] % 12;
+        int window = 10 + (input[1] % 15);
+        var random = new Random(input[2]);
+        ReadOnlySpan<byte> content = input[3..];
+        int limit = quality >= 10 ? 1 << 16 : 1 << 19;
+        if (content.Length > limit)
+        {
+            content = content[..limit];
+        }
+
+        var native = new System.IO.Compression.BrotliEncoder(quality, window);
+        var managed = new BrotliStreamEncoder(quality, window);
+        byte[] nativeOut = new byte[1 << 16];
+        byte[] managedOut = new byte[1 << 16];
+        var stream = new List<byte>();
+        try
+        {
+            int position = 0;
+            for (int step = 0; ; step++)
+            {
+                int room = random.Next(5) switch { 0 => 0, 1 => random.Next(1, 32), _ => random.Next(32, nativeOut.Length) };
+                bool final = position == content.Length ? random.Next(2) == 0 : random.Next(16) == 0;
+                bool flush = !final && random.Next(8) == 0;
+                int piece = final ? content.Length - position : Math.Min(content.Length - position, random.Next(0, 8192));
+                ReadOnlySpan<byte> source = content.Slice(position, piece);
+                OperationStatus nativeStatus;
+                OperationStatus managedStatus;
+                int nativeConsumed = 0;
+                int managedConsumed = 0;
+                int nativeWritten;
+                int managedWritten;
+                if (flush)
+                {
+                    nativeStatus = native.Flush(nativeOut.AsSpan(0, room), out nativeWritten);
+                    managedStatus = managed.Flush(managedOut.AsSpan(0, room), out managedWritten);
+                }
+                else
+                {
+                    nativeStatus = native.Compress(source, nativeOut.AsSpan(0, room), out nativeConsumed, out nativeWritten, final);
+                    managedStatus = managed.Compress(source, managedOut.AsSpan(0, room), out managedConsumed, out managedWritten, final);
+                }
+
+                if (nativeStatus != managedStatus || nativeConsumed != managedConsumed || nativeWritten != managedWritten || !nativeOut.AsSpan(0, nativeWritten).SequenceEqual(managedOut.AsSpan(0, managedWritten)))
+                {
+                    throw new FuzzFailure($"q{quality} w{window}, step {step}, {(flush ? "flush" : final ? "final" : "compress")} of {piece} into {room}: managed {managedStatus} {managedConsumed}/{managedWritten}, .NET {nativeStatus} {nativeConsumed}/{nativeWritten}");
+                }
+
+                stream.AddRange(managedOut.AsSpan(0, managedWritten));
+                position += managedConsumed;
+                if (final && managedStatus == OperationStatus.Done && position == content.Length)
+                {
+                    break;
+                }
+
+                if (step > 1_000_000)
+                {
+                    throw new FuzzFailure("the script does not end");
+                }
+            }
+        }
+        finally
+        {
+            native.Dispose();
+        }
+
+        byte[] decoded = new byte[content.Length];
+        if (Decompressor.Decompress(stream.ToArray(), decoded, out _, out int decodedLength) != OperationStatus.Done || decodedLength != content.Length || !content.SequenceEqual(decoded))
+        {
+            throw new FuzzFailure($"q{quality} w{window}: the stream does not decode back");
+        }
+    }
+
+    public static IEnumerable<byte[]> StreamCompressSeeds()
+    {
+        int seed = 0;
+        foreach (string kind in DataKinds.All)
+        {
+            for (int quality = 0; quality <= 11; quality += 1 + (seed % 2))
+            {
+                byte[] content = DataKinds.Generate(kind, 100 + (seed * 2711 % 40_000), seed + 1);
+                yield return [(byte)quality, (byte)((seed * 7) % 15), (byte)seed, .. content];
+                seed++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>[seed][stream]</c>. The seed draws the pieces the stream comes in, of up to 64 KiB, and
+    /// the destinations, from 0 bytes to 64 KiB.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="BrotliStreamDecoder"/> must decode what <see cref="BrotliDecompressor"/> decodes into
+    /// 4 MiB, to the same content, consuming the same bytes; refuse what it refuses, with the same error;
+    /// and ask for more input for a stream it finds truncated.
+    /// </remarks>
+    public static void StreamDecompress(ReadOnlySpan<byte> input)
+    {
+        if (input.Length < 1)
+        {
+            return;
+        }
+
+        var random = new Random(input[0]);
+        ReadOnlySpan<byte> stream = input[1..];
+        byte[] expected = StreamExpected;
+        OperationStatus expectedStatus = Decompressor.Decompress(stream, expected, out int expectedConsumed, out int expectedWritten);
+        var decoder = new BrotliStreamDecoder();
+        var content = new List<byte>();
+        byte[] buffer = new byte[1 << 16];
+        int position = 0;
+        OperationStatus status;
+        int steps = 0;
+        do
+        {
+            int piece = Math.Min(stream.Length - position, random.Next(3) == 0 ? random.Next(0, 8) : random.Next(0, 1 << 16));
+            int room = random.Next(4) == 0 ? random.Next(0, 8) : random.Next(0, buffer.Length);
+            status = decoder.Decompress(stream.Slice(position, piece), buffer.AsSpan(0, room), out int consumed, out int written);
+            content.AddRange(buffer.AsSpan(0, written));
+            position += consumed;
+            if (content.Count > MaxContent || ++steps > 10_000_000)
+            {
+                return;
+            }
+        }
+        while (status == OperationStatus.DestinationTooSmall || (status == OperationStatus.NeedMoreData && position < stream.Length));
+
+        string verdict = $"managed {status} ({decoder.LastError}), {position} consumed, {content.Count} written; one-shot {expectedStatus} ({Decompressor.LastError}), {expectedConsumed} consumed, {expectedWritten} written";
+        switch (expectedStatus)
+        {
+            case OperationStatus.Done:
+                if (status != OperationStatus.Done || position != expectedConsumed || content.Count != expectedWritten || !expected.AsSpan(0, expectedWritten).SequenceEqual(content.ToArray()))
+                {
+                    throw new FuzzFailure($"{verdict}: decoded otherwise");
+                }
+
+                return;
+            case OperationStatus.InvalidData:
+                if (status != OperationStatus.InvalidData || decoder.LastError != Decompressor.LastError)
+                {
+                    throw new FuzzFailure($"{verdict}: not refused so");
+                }
+
+                return;
+            case OperationStatus.NeedMoreData:
+                if (status != OperationStatus.NeedMoreData)
+                {
+                    throw new FuzzFailure($"{verdict}: not truncated");
+                }
+
+                return;
+            default:
+                return;
+        }
+    }
+
+    public static IEnumerable<byte[]> StreamDecompressSeeds()
+    {
+        foreach (byte[] seed in DecompressSeeds())
+        {
+            yield return seed;
         }
     }
 

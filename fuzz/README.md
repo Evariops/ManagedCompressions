@@ -21,6 +21,8 @@ fault or a hang (`-timeout`) fails it the same way.
 | `lz4-compress` | `[level][content]` | lz4's block byte for byte, levels -7 to 12, the compressors reused from input to input; it decodes back |
 | `brotli-decompress` | `[flags][stream]` | a status, nothing consumed or written unless decoded; brotli 1.1.1's verdict, content and error code given the whole stream, into 4 MiB, the content's size, one byte less or a few hundred bytes; into less room than the content, a refusal for want of room where brotli may find the stream invalid first |
 | `brotli-compress` | `[quality][window and mode][flags][content]` | brotli 1.1.1's stream byte for byte, qualities 0 to 11, windows 10 to 24, the three modes, into the bound, the stream's size, one byte less or a few hundred bytes, refused where brotli refuses it, nothing consumed or written then; the compressors reused from input to input; it decodes back |
+| `brotli-stream-compress` | `[quality][window][seed][content]` | `BrotliStreamEncoder` and .NET's `BrotliEncoder` given the same calls, which the seed draws (pieces, flushes, the final call, destinations from nothing to 64 KiB): each call takes and writes the same bytes, with the same status; the stream decodes back |
+| `brotli-stream-decompress` | `[seed][stream]` | `BrotliStreamDecoder` given the stream in pieces of up to 64 KiB, into destinations of 0 bytes to 64 KiB, which the seed draws: the content and bytes consumed of the one-shot decoder for a stream it decodes, its error for one it refuses, more input asked for one it finds truncated |
 
 The flags and the exact rules are in [`Targets.cs`](ManagedCompressions.Fuzz/Targets.cs). The LZ4 decoder
 departs from lz4 on three kinds of blocks, all by design. It decodes blocks that break the format's
