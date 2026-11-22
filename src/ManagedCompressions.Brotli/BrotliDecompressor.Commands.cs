@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using ManagedCompressions.Brotli.Internal;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli;
 
@@ -42,6 +43,9 @@ public sealed unsafe partial class BrotliDecompressor
 
     /// <summary>The room a dictionary word's wide stores need past the output: <see cref="Transforms.ApplyFast"/>'s.</summary>
     private const int DictionarySlack = 64;
+
+    /// <summary>The entries of <see cref="StaticDictionary.SizeBitsByLength"/> and <see cref="StaticDictionary.OffsetsByLength"/>.</summary>
+    private const int DictionaryLengths = 32;
 
     /// <summary>What <see cref="Commands{TMode, TRoot}"/> returns when the fast loop hands over to the careful one.</summary>
     private const int SwitchToCareful = -1;
@@ -199,6 +203,10 @@ public sealed unsafe partial class BrotliDecompressor
             goto Suspend;
         }
 
+        // The rest of the meta-block fits in the output, whose room was checked against its length: a
+        // command that writes no more than the rest writes within the output.
+        Bounds.Within(op, remaining, dst, opEnd);
+
         if (blockLength1 == 0)
         {
             _br.Bits = bits;
@@ -230,11 +238,13 @@ public sealed unsafe partial class BrotliDecompressor
             }
 
             int command = DecodeSymbol(commandTree, ref bits, ref count, CommandRootBits);
+            Bounds.Index(command, Prefix.NumCommandSymbols);
             ulong code = Unsafe.Add(ref commandCodes, command);
             int insertExtraBits = (int)(code & 0xFF);
             int copyExtraBits = (int)((code >> 8) & 0xFF);
             distanceCode = (sbyte)(byte)(code >> 16);
             distanceContext = (int)((code >> 24) & 0xFF);
+            Bounds.Index(distanceContext, 1 << Prefix.DistanceContextBits);
             distanceTreeIndex = distContextMapSlice[distanceContext];
             insert = (int)((code >> 32) & 0xFFFF);
             copyLength = (int)(code >> 48);
@@ -298,6 +308,7 @@ public sealed unsafe partial class BrotliDecompressor
 
             insert -= n;
             blockLength0 -= n;
+            Bounds.Within(op, n, dst, opEnd);
             if (trivial)
             {
                 uint* tree = literalTree;
@@ -334,6 +345,8 @@ public sealed unsafe partial class BrotliDecompressor
             }
             else
             {
+                // SAFETY: p1 and p2 are bytes, the lookup table of a mode is 512 bytes, and its values are
+                // contexts, below 64: the constant table holds no other.
                 long written = op - dst;
                 uint p1 = written > 0 ? op[-1] : 0u;
                 uint p2 = written > 1 ? op[-2] : 0u;
@@ -413,6 +426,7 @@ public sealed unsafe partial class BrotliDecompressor
 
                 blockLength2 = _s.BlockLength[2];
                 distContextMapSlice = _distContextMap + (_s.BlockTypeRb[5] << Prefix.DistanceContextBits);
+                Bounds.Index(distanceContext, 1 << Prefix.DistanceContextBits);
                 distanceTreeIndex = distContextMapSlice[distanceContext];
             }
 
@@ -421,6 +435,8 @@ public sealed unsafe partial class BrotliDecompressor
                 Refill<TMode>(ref bits, ref count, ref next, end);
             }
 
+            // SAFETY: the values of a context map are below its number of codes (DecodeContextMap).
+            Debug.Assert((uint)distanceTreeIndex < (uint)_numDistanceTrees, "a distance code of the meta-block");
             int code = DecodeSymbol((uint*)distanceTrees[distanceTreeIndex], ref bits, ref count, DistanceRootBits);
             blockLength2--;
             distanceContext = 0;
@@ -430,6 +446,8 @@ public sealed unsafe partial class BrotliDecompressor
             }
             else
             {
+                // SAFETY: the symbols of a code are below the size of its alphabet (ReadHuffmanCode).
+                Debug.Assert((uint)code < (uint)_distanceAlphabetSize, "a distance code within the alphabet");
                 int extraBits = _distExtraBits[code];
                 distance = _distOffset[code] + (int)((uint)(bits & ((1UL << extraBits) - 1)) << postfixBits);
                 bits >>= extraBits;
@@ -450,6 +468,7 @@ public sealed unsafe partial class BrotliDecompressor
                 if (opEnd - op >= DictionarySlack && distance <= Prefix.MaxAllowedDistance && (uint)(copyLength - 4) <= 20)
                 {
                     // A word of the static dictionary, with room for wide stores: brotli's checks, inline.
+                    Bounds.Index(copyLength, DictionaryLengths);
                     int shift = Unsafe.Add(ref sizeBits, copyLength);
                     int address = distance - maxDistance - 1;
                     int transform = address >> shift;
@@ -461,7 +480,13 @@ public sealed unsafe partial class BrotliDecompressor
                     }
 
                     byte* word = dictionary + Unsafe.Add(ref offsets, copyLength) + ((address & ((1 << shift) - 1)) * copyLength);
-                    Debug.Assert(word >= dictionary && word + copyLength <= dictionary + StaticDictionary.Data.Length, "a word lies in the static dictionary");
+
+                    // SAFETY: the transform writes within the slack checked above, and reads its word 32 bytes
+                    // on from its omitted start, within the zeros past the dictionary.
+                    Debug.Assert(word >= dictionary && word + copyLength <= dictionary + StaticDictionary.Size, "a word lies in the static dictionary");
+                    Bounds.Within(op, DictionarySlack, dst, opEnd);
+                    Bounds.Within(word + Transforms.Infos[transform].OmitFirst, 32, dictionary, dictionary + StaticDictionary.Data.Length);
+                    Bounds.Index(transform, Transforms.Count);
                     int length = Transforms.ApplyFast(op, word, copyLength, ref Unsafe.Add(ref transforms, transform));
                     if (length == 0 && distance <= 120)
                     {
@@ -502,7 +527,9 @@ public sealed unsafe partial class BrotliDecompressor
                 _s.DistRb[_distRbIndex & 3] = distance;
                 ++_distRbIndex;
                 remaining -= copyLength;
-                Debug.Assert(op - distance >= dst && op + copyLength <= opEnd, "a match is copied from the output, within it");
+                // SAFETY: the distance is at most the content written, and the copy at most the rest of the meta-block.
+                Bounds.Within(op - distance, copyLength, dst, opEnd);
+                Bounds.Within(op, copyLength, dst, opEnd);
                 CopyMatch(op, distance, copyLength, opEnd);
                 op += copyLength;
             }
@@ -592,6 +619,9 @@ public sealed unsafe partial class BrotliDecompressor
     {
         if (typeof(TMode) == typeof(FastMode) || end - next >= 8)
         {
+            // SAFETY: the fast loop starts a command FastInputSlack bytes or more from the end, and a
+            // command's refills, or a run of literals bounded by the input left, move on by less.
+            Debug.Assert(end - next >= sizeof(ulong), "a refill within the input");
             bits |= Unsafe.ReadUnaligned<ulong>(next) << count;
             next += (63 - count) >> 3;
             count |= 56;
@@ -621,6 +651,8 @@ public sealed unsafe partial class BrotliDecompressor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int DecodeSymbol(uint* table, ref ulong bits, ref int count, int rootBits = Huffman.RootBits)
     {
+        // SAFETY: the root table holds 1 << rootBits entries, and those of the long codes point at their
+        // second-level tables, within the table Huffman.BuildTable built.
         uint entry = table[(nint)(bits & ((1UL << rootBits) - 1))];
         if ((entry & 0xFF) > (uint)rootBits)
         {
@@ -639,7 +671,9 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The literal decoding state of the current literal block type.</summary>
     private void PrepareLiteralDecoding()
     {
+        // SAFETY: the values of a context map are below its number of codes (DecodeContextMap).
         int blockType = _s.BlockTypeRb[1];
+        Debug.Assert((uint)blockType < (uint)_s.NumBlockTypes[0], "a literal block type of the meta-block");
         byte* slice = _contextMap + (blockType << Prefix.LiteralContextBits);
         nint* trees = _literalGroup.Trees;
         _trivialLiteralContext = ((_s.TrivialLiteralContexts[blockType >> 5] >> (blockType & 31)) & 1) != 0;
@@ -688,6 +722,8 @@ public sealed unsafe partial class BrotliDecompressor
         {
             blockType -= maxBlockType;
         }
+
+        Debug.Assert((uint)blockType < (uint)maxBlockType, "a block type of the meta-block");
 
         _s.BlockTypeRb[treeType * 2] = last;
         _s.BlockTypeRb[(treeType * 2) + 1] = blockType;
@@ -760,7 +796,7 @@ public sealed unsafe partial class BrotliDecompressor
         }
 
         byte* word = DictionaryData + offset;
-        Debug.Assert(offset >= 0 && offset + length <= StaticDictionary.Data.Length, "a word lies in the static dictionary");
+        Debug.Assert(offset >= 0 && offset + length <= StaticDictionary.Size, "a word lies in the static dictionary");
         if (transform == Transforms.Identity)
         {
             if (length > remaining)
@@ -768,6 +804,7 @@ public sealed unsafe partial class BrotliDecompressor
                 return -(int)BrotliError.BlockLength;
             }
 
+            // SAFETY: the word is no longer than the rest of the meta-block, which fits in the output.
             Buffer.MemoryCopy(word, op, length, length);
             return length;
         }
@@ -799,6 +836,7 @@ public sealed unsafe partial class BrotliDecompressor
         byte* s = op - distance;
         if (opEnd - op - length >= CopySlack)
         {
+            // SAFETY: the wide copies write fewer than 16 bytes past the copy, within the slack.
             if (distance >= 16)
             {
                 Copy16(op, s);

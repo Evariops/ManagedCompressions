@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using ManagedCompressions.Brotli.Internal;
 
 namespace ManagedCompressions.Brotli;
@@ -273,6 +274,7 @@ public sealed unsafe partial class BrotliDecompressor
         _br = new BitReader(input + start, (int)(inputLength - start));
         if (used != 0)
         {
+            Debug.Assert(start < inputLength, "a partly read byte within the input");
             _br.Bits = (ulong)(*_br.Next >> used);
             _br.Count = 8 - used;
             _br.Next++;

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -66,6 +67,7 @@ internal unsafe struct BitReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RefillFast()
     {
+        Debug.Assert(End - Next >= sizeof(ulong), "a refill within the input");
         Bits |= Unsafe.ReadUnaligned<ulong>(Next) << Count;
         Next += (63 - Count) >> 3;
         Count |= 56;
@@ -130,6 +132,8 @@ internal unsafe struct BitReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int DecodeSymbol(uint* table)
     {
+        // SAFETY: the root table holds 256 entries, and those of the long codes point at their
+        // second-level tables, within the table Huffman.BuildTable built.
         uint entry = table[(int)(Bits & 0xFF)];
         int length = (int)(entry & 0xFF);
         if (length > Huffman.RootBits)
