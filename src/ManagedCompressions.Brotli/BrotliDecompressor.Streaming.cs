@@ -63,8 +63,8 @@ public sealed partial class BrotliDecompressor
         public int CopyLength;
         public int DistanceCode;
         public int DistanceContext;
-        public int DistanceTreeIndex;
         public int CommandTree;
+        public int DistanceTree;
         public int DistContextMapSlice;
         public int Resume;
         public Fixed S;
@@ -230,6 +230,9 @@ public sealed partial class BrotliDecompressor
         PrepareLiteralDecoding();
         _distContextMapSlice = 0;
         _commandTree = _commandGroup.Trees[0];
+        _commandCodes = _commandGroup.Codes;
+        _distanceCodes = _distanceGroup.Codes;
+        _literalCodes = _literalGroup.Codes;
         _insertRemaining = 0;
         _resume = AtCommandBegin;
         _lastMetaBlock = last;
@@ -327,8 +330,8 @@ public sealed partial class BrotliDecompressor
         _checkpoint.CopyLength = _copyLength;
         _checkpoint.DistanceCode = _distanceCode;
         _checkpoint.DistanceContext = _distanceContext;
-        _checkpoint.DistanceTreeIndex = _distanceTreeIndex;
         _checkpoint.CommandTree = _commandTree;
+        _checkpoint.DistanceTree = _distanceTree;
         _checkpoint.DistContextMapSlice = _distContextMapSlice;
         _checkpoint.Resume = _resume;
         _checkpoint.S = _s;
@@ -344,8 +347,8 @@ public sealed partial class BrotliDecompressor
         _copyLength = _checkpoint.CopyLength;
         _distanceCode = _checkpoint.DistanceCode;
         _distanceContext = _checkpoint.DistanceContext;
-        _distanceTreeIndex = _checkpoint.DistanceTreeIndex;
         _commandTree = _checkpoint.CommandTree;
+        _distanceTree = _checkpoint.DistanceTree;
         _distContextMapSlice = _checkpoint.DistContextMapSlice;
         _resume = _checkpoint.Resume;
         _s = _checkpoint.S;
