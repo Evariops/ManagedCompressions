@@ -1,6 +1,4 @@
 using System;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -11,9 +9,9 @@ namespace ManagedCompressions.Brotli.Internal;
 /// <remarks>
 /// brotli allocates the buffer at the first write's size when that write is smaller than the tail, and
 /// the whole buffer otherwise; the bytes past the written ones, but seven zeros, are never read. The
-/// buffer here lives on the pinned heap and is kept from one stream to the next.
+/// buffer here is kept from one stream to the next.
 /// </remarks>
-internal sealed unsafe class RingBuffer
+internal sealed class RingBuffer
 {
     private const int SlackForEightByteHashingEverywhere = 7;
 
@@ -22,6 +20,7 @@ internal sealed unsafe class RingBuffer
     private uint _tailSize;
     private uint _totalSize;
     private uint _curSize;
+    private bool _hasBuffer;
 
     /// <summary>The window's mask.</summary>
     public uint Mask { get; private set; }
@@ -29,8 +28,14 @@ internal sealed unsafe class RingBuffer
     /// <summary>The position to write at, its bit 31 set past the first lap.</summary>
     public uint Pos { get; private set; }
 
-    /// <summary>The window's first byte; the two before it are the window's last two.</summary>
-    public byte* Buffer { get; private set; }
+    /// <summary>Where the window starts in <see cref="_array"/>: the two bytes before it are the window's last two.</summary>
+    private const int Start = 2;
+
+    /// <summary>Whether the window has its buffer: not before the first write.</summary>
+    public bool HasBuffer => _hasBuffer;
+
+    /// <summary>The window, its tail and the seven bytes past it, from its first byte.</summary>
+    public Span<byte> Buffer => _hasBuffer ? _array.AsSpan(Start, (int)_curSize + SlackForEightByteHashingEverywhere) : default;
 
     /// <summary>brotli's <c>RingBufferSetup</c>, and <c>RingBufferInit</c>: an empty window.</summary>
     public void Setup(int windowBits, int tailBits)
@@ -41,7 +46,7 @@ internal sealed unsafe class RingBuffer
         _totalSize = _size + _tailSize;
         _curSize = 0;
         Pos = 0;
-        Buffer = null;
+        _hasBuffer = false;
     }
 
     /// <summary>
@@ -53,30 +58,32 @@ internal sealed unsafe class RingBuffer
         int needed = 2 + (int)length + SlackForEightByteHashingEverywhere;
         if (_array.Length < needed)
         {
-            byte[] array = GC.AllocateUninitializedArray<byte>(needed, pinned: true);
-            if (Buffer != null)
+            byte[] array = new byte[needed];
+            if (_hasBuffer)
             {
-                new ReadOnlySpan<byte>(Buffer - 2, 2 + (int)_curSize + SlackForEightByteHashingEverywhere).CopyTo(array);
+                _array.AsSpan(0, Start + (int)_curSize + SlackForEightByteHashingEverywhere).CopyTo(array);
             }
 
             _array = array;
         }
 
         _curSize = length;
-        Buffer = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_array)) + 2;
-        Buffer[-2] = Buffer[-1] = 0;
-        new Span<byte>(Buffer + _curSize, SlackForEightByteHashingEverywhere).Clear();
+        _hasBuffer = true;
+        _array[0] = _array[1] = 0;
+        _array.AsSpan(Start + (int)_curSize, SlackForEightByteHashingEverywhere).Clear();
     }
 
     /// <summary>brotli's <c>RingBufferWrite</c>.</summary>
-    public void Write(byte* bytes, nuint n)
+    public void Write(ReadOnlySpan<byte> bytes)
     {
+        nuint n = (nuint)bytes.Length;
+        Span<byte> buffer;
         if (Pos == 0 && n < _tailSize)
         {
             // The first write, smaller than a block: a buffer of its size, without the tail.
             Pos = (uint)n;
             InitBuffer(Pos);
-            System.Buffer.MemoryCopy(bytes, Buffer, n, n);
+            bytes.CopyTo(Buffer);
             return;
         }
 
@@ -84,10 +91,13 @@ internal sealed unsafe class RingBuffer
         {
             // The whole buffer, at last.
             InitBuffer(_totalSize);
-            Buffer[_size - 2] = 0;
-            Buffer[_size - 1] = 0;
-            Buffer[_size] = 241;
+            buffer = Buffer;
+            buffer[(int)_size - 2] = 0;
+            buffer[(int)_size - 1] = 0;
+            buffer[(int)_size] = 241;
         }
+
+        buffer = Buffer;
 
         nuint maskedPos = Pos & Mask;
         if (maskedPos < _tailSize)
@@ -95,25 +105,24 @@ internal sealed unsafe class RingBuffer
             // The tail: a copy of the window's beginning.
             nuint p = _size + maskedPos;
             nuint count = Math.Min(n, _tailSize - maskedPos);
-            System.Buffer.MemoryCopy(bytes, Buffer + p, count, count);
+            bytes.Slice(0, (int)count).CopyTo(buffer.Slice((int)p));
         }
 
         if (maskedPos + n <= _size)
         {
-            System.Buffer.MemoryCopy(bytes, Buffer + maskedPos, n, n);
+            bytes.CopyTo(buffer.Slice((int)maskedPos));
         }
         else
         {
             nuint first = Math.Min(n, _totalSize - maskedPos);
-            System.Buffer.MemoryCopy(bytes, Buffer + maskedPos, first, first);
-            nuint rest = n - (_size - maskedPos);
-            System.Buffer.MemoryCopy(bytes + (_size - maskedPos), Buffer, rest, rest);
+            bytes.Slice(0, (int)first).CopyTo(buffer.Slice((int)maskedPos));
+            bytes.Slice((int)(_size - maskedPos)).CopyTo(buffer);
         }
 
         bool notFirstLap = (Pos & (1u << 31)) != 0;
         const uint posMask = (1u << 31) - 1;
-        Buffer[-2] = Buffer[_size - 2];
-        Buffer[-1] = Buffer[_size - 1];
+        _array[0] = buffer[(int)_size - 2];
+        _array[1] = buffer[(int)_size - 1];
         Pos = (Pos & posMask) + (uint)(n & posMask);
         if (notFirstLap)
         {

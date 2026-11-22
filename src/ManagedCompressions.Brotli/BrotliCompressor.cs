@@ -21,7 +21,7 @@ namespace ManagedCompressions.Brotli;
 /// <see cref="GetMaxCompressedLength"/> bytes: then, as brotli does, it stores the source uncompressed.
 /// </para>
 /// </remarks>
-public sealed unsafe partial class BrotliCompressor
+public sealed partial class BrotliCompressor
 {
     /// <summary>The lowest quality: the fastest.</summary>
     public const int MinQuality = 0;
@@ -112,12 +112,7 @@ public sealed unsafe partial class BrotliCompressor
     {
         bytesConsumed = 0;
         bytesWritten = 0;
-        int written;
-        fixed (byte* src = &MemoryMarshal.GetReference(source))
-        fixed (byte* dst = &MemoryMarshal.GetReference(destination))
-        {
-            written = CompressOneShot(src, source.Length, dst, destination.Length);
-        }
+        int written = CompressOneShot(source, destination);
 
         if (written < 0)
         {
@@ -140,8 +135,10 @@ public sealed unsafe partial class BrotliCompressor
     /// brotli's <c>BrotliEncoderCompress</c>: the stream's size, or -1 when it does not fit and the
     /// destination is smaller than the bound of an uncompressed stream.
     /// </summary>
-    private int CompressOneShot(byte* src, int srcLength, byte* dst, int dstLength)
+    private int CompressOneShot(ReadOnlySpan<byte> src, Span<byte> dst)
     {
+        int srcLength = src.Length;
+        int dstLength = dst.Length;
         if (dstLength == 0)
         {
             return -1;
@@ -156,8 +153,8 @@ public sealed unsafe partial class BrotliCompressor
 
         long maxOut = BitStream.MaxCompressedSize(srcLength);
         int written = Quality <= 1
-            ? CompressFast(src, srcLength, dst, dstLength)
-            : CompressStream(src, srcLength, dst, dstLength);
+            ? CompressFast(src, dst)
+            : CompressStream(src, dst);
         if (written >= 0 && written <= maxOut)
         {
             return written;
@@ -166,7 +163,7 @@ public sealed unsafe partial class BrotliCompressor
         // The fallback: the source in uncompressed meta-blocks, which the bound always holds.
         if (dstLength >= maxOut)
         {
-            return BitStream.MakeUncompressedStream(src, srcLength, dst);
+            return BitStream.MakeUncompressedStream(src, dst);
         }
 
         return -1;

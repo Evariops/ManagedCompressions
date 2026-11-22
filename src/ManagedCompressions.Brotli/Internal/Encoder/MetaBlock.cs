@@ -1,42 +1,86 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
-/// <summary>An array on the pinned heap, grown when needed and kept.</summary>
-internal sealed unsafe class PinnedBuffer<T>
-    where T : unmanaged
+/// <summary>An array grown when needed and kept.</summary>
+internal sealed class GrowableBuffer<T>
 {
     private T[] _array = [];
 
     /// <summary>The buffer, of at least <paramref name="count"/> items; its content is not kept when it grows.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public T* Ensure(nuint count)
+    public T[] Ensure(nuint count)
     {
         if ((nuint)_array.Length < count)
         {
             Grow(count);
         }
 
-        return (T*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_array));
+        return _array;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(nuint count) =>
-        _array = GC.AllocateUninitializedArray<T>(checked((int)Math.Max(count, (nuint)_array.Length * 2)), pinned: true);
+        _array = new T[checked((int)Math.Max(count, (nuint)_array.Length * 2))];
+}
+
+/// <summary>An array for each element type it is asked for, grown when needed and kept: the scratch of generic code.</summary>
+internal sealed class TypedBuffer
+{
+    /// <summary>The arrays, one a type: the three histograms, and a fourth type at most.</summary>
+    private readonly Array?[] _arrays = new Array?[4];
+
+    /// <summary>The buffer, of at least <paramref name="count"/> items; its content is not kept when it grows.</summary>
+    public T[] Ensure<T>(nuint count)
+    {
+        int slot = Slot<T>();
+        if (_arrays[slot] is T[] array && (nuint)array.Length >= count)
+        {
+            return array;
+        }
+
+        nuint length = _arrays[slot] is T[] old ? Math.Max(count, (nuint)old.Length * 2) : Math.Max(count, 1);
+        T[] grown = new T[checked((int)length)];
+        _arrays[slot] = grown;
+        return grown;
+    }
+
+    /// <summary>A buffer of at least <paramref name="count"/> items, which keeps its first <paramref name="keep"/>.</summary>
+    public T[] Grow<T>(nuint keep, nuint count)
+    {
+        int slot = Slot<T>();
+        T[] old = _arrays[slot] as T[] ?? [];
+        T[] grown = new T[checked((int)count)];
+        old.AsSpan(0, (int)keep).CopyTo(grown);
+        _arrays[slot] = grown;
+        return grown;
+    }
+
+    private int Slot<T>()
+    {
+        for (int i = 0; i < _arrays.Length; i++)
+        {
+            if (_arrays[i] is null || _arrays[i] is T[])
+            {
+                return i;
+            }
+        }
+
+        throw new InvalidOperationException("more element types than the buffer keeps");
+    }
 }
 
 /// <summary>brotli's <c>BlockSplit</c>: the blocks of a category, their types and lengths.</summary>
-internal sealed unsafe class BlockSplit
+internal sealed class BlockSplit
 {
-    private readonly PinnedBuffer<byte> _types = new();
-    private readonly PinnedBuffer<uint> _lengths = new();
+    private readonly GrowableBuffer<byte> _types = new();
+    private readonly GrowableBuffer<uint> _lengths = new();
 
     public nuint NumTypes;
     public nuint NumBlocks;
-    public byte* Types;
-    public uint* Lengths;
+    public byte[] Types = [];
+    public uint[] Lengths = [];
 
     /// <summary>brotli's <c>BrotliInitBlockSplit</c>.</summary>
     public void Init()
@@ -54,26 +98,26 @@ internal sealed unsafe class BlockSplit
 }
 
 /// <summary>brotli's <c>MetaBlockSplit</c>: the blocks, context maps and histograms of a meta-block.</summary>
-internal sealed unsafe class MetaBlockSplit
+internal sealed class MetaBlockSplit
 {
-    private readonly PinnedBuffer<uint> _literalContextMap = new();
-    private readonly PinnedBuffer<uint> _distanceContextMap = new();
-    private readonly PinnedBuffer<HistogramLiteral> _literalHistograms = new();
-    private readonly PinnedBuffer<HistogramCommand> _commandHistograms = new();
-    private readonly PinnedBuffer<HistogramDistance> _distanceHistograms = new();
+    private readonly GrowableBuffer<uint> _literalContextMap = new();
+    private readonly GrowableBuffer<uint> _distanceContextMap = new();
+    private readonly GrowableBuffer<HistogramLiteral> _literalHistograms = new();
+    private readonly GrowableBuffer<HistogramCommand> _commandHistograms = new();
+    private readonly GrowableBuffer<HistogramDistance> _distanceHistograms = new();
 
     public readonly BlockSplit LiteralSplit = new();
     public readonly BlockSplit CommandSplit = new();
     public readonly BlockSplit DistanceSplit = new();
-    public uint* LiteralContextMap;
+    public uint[] LiteralContextMap = [];
     public nuint LiteralContextMapSize;
-    public uint* DistanceContextMap;
+    public uint[] DistanceContextMap = [];
     public nuint DistanceContextMapSize;
-    public HistogramLiteral* LiteralHistograms;
+    public HistogramLiteral[] LiteralHistograms = [];
     public nuint LiteralHistogramsSize;
-    public HistogramCommand* CommandHistograms;
+    public HistogramCommand[] CommandHistograms = [];
     public nuint CommandHistogramsSize;
-    public HistogramDistance* DistanceHistograms;
+    public HistogramDistance[] DistanceHistograms = [];
     public nuint DistanceHistogramsSize;
 
     /// <summary>brotli's <c>InitMetaBlockSplit</c>.</summary>
@@ -82,27 +126,27 @@ internal sealed unsafe class MetaBlockSplit
         LiteralSplit.Init();
         CommandSplit.Init();
         DistanceSplit.Init();
-        LiteralContextMap = null;
+        LiteralContextMap = [];
         LiteralContextMapSize = 0;
-        DistanceContextMap = null;
+        DistanceContextMap = [];
         DistanceContextMapSize = 0;
-        LiteralHistograms = null;
+        LiteralHistograms = [];
         LiteralHistogramsSize = 0;
-        CommandHistograms = null;
+        CommandHistograms = [];
         CommandHistogramsSize = 0;
-        DistanceHistograms = null;
+        DistanceHistograms = [];
         DistanceHistogramsSize = 0;
     }
 
-    public uint* AllocateLiteralContextMap(nuint size) => LiteralContextMap = _literalContextMap.Ensure(size);
+    public uint[] AllocateLiteralContextMap(nuint size) => LiteralContextMap = _literalContextMap.Ensure(size);
 
-    public uint* AllocateDistanceContextMap(nuint size) => DistanceContextMap = _distanceContextMap.Ensure(size);
+    public uint[] AllocateDistanceContextMap(nuint size) => DistanceContextMap = _distanceContextMap.Ensure(size);
 
-    public HistogramLiteral* AllocateLiteralHistograms(nuint size) => LiteralHistograms = _literalHistograms.Ensure(size);
+    public HistogramLiteral[] AllocateLiteralHistograms(nuint size) => LiteralHistograms = _literalHistograms.Ensure(size);
 
-    public HistogramCommand* AllocateCommandHistograms(nuint size) => CommandHistograms = _commandHistograms.Ensure(size);
+    public HistogramCommand[] AllocateCommandHistograms(nuint size) => CommandHistograms = _commandHistograms.Ensure(size);
 
-    public HistogramDistance* AllocateDistanceHistograms(nuint size) => DistanceHistograms = _distanceHistograms.Ensure(size);
+    public HistogramDistance[] AllocateDistanceHistograms(nuint size) => DistanceHistograms = _distanceHistograms.Ensure(size);
 }
 
 /// <summary>
@@ -110,17 +154,17 @@ internal sealed unsafe class MetaBlockSplit
 /// category, which merges a block of symbols with the last block or the one before it unless their
 /// entropies say to start a new type.
 /// </summary>
-internal unsafe struct BlockSplitter<THistogram>
-    where THistogram : unmanaged, IHistogram
+internal struct BlockSplitter<THistogram>
+    where THistogram : struct, IHistogram
 {
     private nuint _alphabetSize;
     private nuint _minBlockSize;
     private double _splitThreshold;
     private nuint _numBlocks;
     private BlockSplit _split;
-    private THistogram* _histograms;
-    private nuint* _histogramsSize;
-    private THistogram* _combinedHisto;
+    private THistogram[] _histograms;
+    private nuint _histogramsSize;
+    private THistogram[] _combinedHisto;
     private nuint _targetBlockSize;
     private nuint _blockSize;
     private nuint _currHistogramIx;
@@ -130,8 +174,14 @@ internal unsafe struct BlockSplitter<THistogram>
     private double _lastEntropy1;
     private nuint _mergeLastCount;
 
-    /// <summary>brotli's <c>InitBlockSplitter</c>: <paramref name="combinedHisto"/> holds two histograms.</summary>
-    public void Init(nuint alphabetSize, nuint minBlockSize, double splitThreshold, nuint numSymbols, BlockSplit split, THistogram* histograms, nuint* histogramsSize, THistogram* combinedHisto)
+    /// <summary>The number of histograms, the types', once the last block is finished.</summary>
+    public readonly nuint HistogramsSize => _histogramsSize;
+
+    /// <summary>
+    /// brotli's <c>InitBlockSplitter</c>: <paramref name="histograms"/> holds <paramref name="histogramsSize"/>
+    /// histograms, <paramref name="combinedHisto"/> two.
+    /// </summary>
+    public void Init(nuint alphabetSize, nuint minBlockSize, double splitThreshold, nuint numSymbols, BlockSplit split, THistogram[] histograms, nuint histogramsSize, THistogram[] combinedHisto)
     {
         _alphabetSize = alphabetSize;
         _minBlockSize = minBlockSize;
@@ -145,7 +195,7 @@ internal unsafe struct BlockSplitter<THistogram>
         _mergeLastCount = 0;
         _histograms = histograms;
         _combinedHisto = combinedHisto;
-        Histogram.Clear(_histograms);
+        Histogram.Clear(ref _histograms[0]);
         _lastHistogramIx0 = _lastHistogramIx1 = 0;
     }
 
@@ -160,35 +210,36 @@ internal unsafe struct BlockSplitter<THistogram>
     public void FinishBlock(bool isFinal)
     {
         BlockSplit split = _split;
-        THistogram* histograms = _histograms;
+        THistogram[] histograms = _histograms;
+        int alphabetSize = (int)_alphabetSize;
         _blockSize = Math.Max(_blockSize, _minBlockSize);
         if (_numBlocks == 0)
         {
             // The first block.
             split.Lengths[0] = (uint)_blockSize;
             split.Types[0] = 0;
-            _lastEntropy0 = FastLog.BitsEntropy(Histogram.Data(histograms), (int)_alphabetSize);
+            _lastEntropy0 = FastLog.BitsEntropy(histograms[0].Data.Slice(0, alphabetSize));
             _lastEntropy1 = _lastEntropy0;
             ++_numBlocks;
             ++split.NumTypes;
             ++_currHistogramIx;
-            if (_currHistogramIx < *_histogramsSize)
+            if (_currHistogramIx < _histogramsSize)
             {
-                Histogram.Clear(histograms + _currHistogramIx);
+                Histogram.Clear(ref histograms[_currHistogramIx]);
             }
 
             _blockSize = 0;
         }
         else if (_blockSize > 0)
         {
-            double entropy = FastLog.BitsEntropy(Histogram.Data(histograms + _currHistogramIx), (int)_alphabetSize);
-            double* combinedEntropy = stackalloc double[2];
-            double* diff = stackalloc double[2];
+            double entropy = FastLog.BitsEntropy(histograms[_currHistogramIx].Data.Slice(0, alphabetSize));
+            Span<double> combinedEntropy = stackalloc double[2];
+            Span<double> diff = stackalloc double[2];
             for (int j = 0; j < 2; ++j)
             {
                 nuint lastHistogramIx = j == 0 ? _lastHistogramIx0 : _lastHistogramIx1;
-                Histogram.Sum(_combinedHisto + j, histograms + _currHistogramIx, histograms + lastHistogramIx);
-                combinedEntropy[j] = FastLog.BitsEntropy(Histogram.Data(_combinedHisto + j), (int)_alphabetSize);
+                Histogram.Sum(ref _combinedHisto[j], ref histograms[_currHistogramIx], ref histograms[lastHistogramIx]);
+                combinedEntropy[j] = FastLog.BitsEntropy(_combinedHisto[j].Data.Slice(0, alphabetSize));
                 diff[j] = combinedEntropy[j] - entropy - (j == 0 ? _lastEntropy0 : _lastEntropy1);
             }
 
@@ -204,9 +255,9 @@ internal unsafe struct BlockSplitter<THistogram>
                 ++_numBlocks;
                 ++split.NumTypes;
                 ++_currHistogramIx;
-                if (_currHistogramIx < *_histogramsSize)
+                if (_currHistogramIx < _histogramsSize)
                 {
-                    Histogram.Clear(histograms + _currHistogramIx);
+                    Histogram.Clear(ref histograms[_currHistogramIx]);
                 }
 
                 _blockSize = 0;
@@ -224,7 +275,7 @@ internal unsafe struct BlockSplitter<THistogram>
                 _lastEntropy0 = combinedEntropy[1];
                 ++_numBlocks;
                 _blockSize = 0;
-                Histogram.Clear(histograms + _currHistogramIx);
+                Histogram.Clear(ref histograms[_currHistogramIx]);
                 _mergeLastCount = 0;
                 _targetBlockSize = _minBlockSize;
             }
@@ -240,7 +291,7 @@ internal unsafe struct BlockSplitter<THistogram>
                 }
 
                 _blockSize = 0;
-                Histogram.Clear(histograms + _currHistogramIx);
+                Histogram.Clear(ref histograms[_currHistogramIx]);
                 if (++_mergeLastCount > 1)
                 {
                     _targetBlockSize += _minBlockSize;
@@ -250,7 +301,7 @@ internal unsafe struct BlockSplitter<THistogram>
 
         if (isFinal)
         {
-            *_histogramsSize = split.NumTypes;
+            _histogramsSize = split.NumTypes;
             split.NumBlocks = _numBlocks;
         }
     }
@@ -259,7 +310,7 @@ internal unsafe struct BlockSplitter<THistogram>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AddSymbol(nuint symbol)
     {
-        Histogram.Add(_histograms + _currHistogramIx, symbol);
+        Histogram.Add(ref _histograms[_currHistogramIx], symbol);
         ++_blockSize;
         if (_blockSize == _targetBlockSize)
         {
@@ -272,7 +323,7 @@ internal unsafe struct BlockSplitter<THistogram>
 /// brotli's <c>ContextBlockSplitter</c> (<c>c/enc/metablock.c</c>): the greedy splitter of literals
 /// under a static context map, a histogram per context and block type.
 /// </summary>
-internal unsafe struct ContextBlockSplitter
+internal struct ContextBlockSplitter
 {
     /// <summary>brotli's <c>BROTLI_MAX_STATIC_CONTEXTS</c>.</summary>
     public const int MaxStaticContexts = 13;
@@ -284,19 +335,22 @@ internal unsafe struct ContextBlockSplitter
     private double _splitThreshold;
     private nuint _numBlocks;
     private BlockSplit _split;
-    private HistogramLiteral* _histograms;
-    private nuint* _histogramsSize;
-    private HistogramLiteral* _combinedHisto;
+    private HistogramLiteral[] _histograms;
+    private nuint _histogramsSize;
+    private HistogramLiteral[] _combinedHisto;
     private nuint _targetBlockSize;
     private nuint _blockSize;
     private nuint _currHistogramIx;
     private nuint _lastHistogramIx0;
     private nuint _lastHistogramIx1;
-    private double* _lastEntropy;
+    private double[] _lastEntropy;
     private nuint _mergeLastCount;
 
+    /// <summary>The number of histograms, the types' times the contexts', once the last block is finished.</summary>
+    public readonly nuint HistogramsSize => _histogramsSize;
+
     /// <summary>The number of histograms <see cref="Init"/> needs.</summary>
-    public static nuint HistogramsSize(nuint numContexts, nuint numSymbols, nuint minBlockSize, out nuint maxNumBlocks)
+    public static nuint MaxHistogramsSize(nuint numContexts, nuint numSymbols, nuint minBlockSize, out nuint maxNumBlocks)
     {
         maxNumBlocks = (numSymbols / minBlockSize) + 1;
         nuint maxNumTypes = Math.Min(maxNumBlocks, (Prefix.MaxBlockTypes / numContexts) + 1);
@@ -307,7 +361,7 @@ internal unsafe struct ContextBlockSplitter
     /// brotli's <c>InitContextBlockSplitter</c>: <paramref name="combinedHisto"/> holds 2 *
     /// <see cref="MaxStaticContexts"/> histograms, <paramref name="lastEntropy"/> as many doubles.
     /// </summary>
-    public void Init(nuint alphabetSize, nuint numContexts, nuint minBlockSize, double splitThreshold, BlockSplit split, HistogramLiteral* histograms, nuint* histogramsSize, HistogramLiteral* combinedHisto, double* lastEntropy)
+    public void Init(nuint alphabetSize, nuint numContexts, nuint minBlockSize, double splitThreshold, BlockSplit split, HistogramLiteral[] histograms, nuint histogramsSize, HistogramLiteral[] combinedHisto, double[] lastEntropy)
     {
         _alphabetSize = alphabetSize;
         _numContexts = numContexts;
@@ -324,7 +378,7 @@ internal unsafe struct ContextBlockSplitter
         _histograms = histograms;
         _combinedHisto = combinedHisto;
         _lastEntropy = lastEntropy;
-        Histogram.ClearAll(_histograms, numContexts);
+        Histogram.ClearAll(_histograms.AsSpan(0, (int)numContexts));
         _lastHistogramIx0 = _lastHistogramIx1 = 0;
     }
 
@@ -333,8 +387,9 @@ internal unsafe struct ContextBlockSplitter
     {
         BlockSplit split = _split;
         nuint numContexts = _numContexts;
-        double* lastEntropy = _lastEntropy;
-        HistogramLiteral* histograms = _histograms;
+        double[] lastEntropy = _lastEntropy;
+        HistogramLiteral[] histograms = _histograms;
+        int alphabetSize = (int)_alphabetSize;
         if (_blockSize < _minBlockSize)
         {
             _blockSize = _minBlockSize;
@@ -346,38 +401,38 @@ internal unsafe struct ContextBlockSplitter
             split.Types[0] = 0;
             for (nuint i = 0; i < numContexts; ++i)
             {
-                lastEntropy[i] = FastLog.BitsEntropy(Histogram.Data(histograms + i), (int)_alphabetSize);
+                lastEntropy[i] = FastLog.BitsEntropy(histograms[i].Data.Slice(0, alphabetSize));
                 lastEntropy[numContexts + i] = lastEntropy[i];
             }
 
             ++_numBlocks;
             ++split.NumTypes;
             _currHistogramIx += numContexts;
-            if (_currHistogramIx < *_histogramsSize)
+            if (_currHistogramIx < _histogramsSize)
             {
-                Histogram.ClearAll(histograms + _currHistogramIx, numContexts);
+                Histogram.ClearAll(histograms.AsSpan((int)_currHistogramIx, (int)numContexts));
             }
 
             _blockSize = 0;
         }
         else if (_blockSize > 0)
         {
-            double* entropy = stackalloc double[MaxStaticContexts];
-            double* combinedEntropy = stackalloc double[2 * MaxStaticContexts];
+            Span<double> entropy = stackalloc double[MaxStaticContexts];
+            Span<double> combinedEntropy = stackalloc double[2 * MaxStaticContexts];
             double diff0 = 0.0;
             double diff1 = 0.0;
-            HistogramLiteral* combinedHisto = _combinedHisto;
+            HistogramLiteral[] combinedHisto = _combinedHisto;
             for (nuint i = 0; i < numContexts; ++i)
             {
                 nuint currHistoIx = _currHistogramIx + i;
-                entropy[i] = FastLog.BitsEntropy(Histogram.Data(histograms + currHistoIx), (int)_alphabetSize);
+                entropy[(int)i] = FastLog.BitsEntropy(histograms[currHistoIx].Data.Slice(0, alphabetSize));
                 for (nuint j = 0; j < 2; ++j)
                 {
                     nuint jx = (j * numContexts) + i;
                     nuint lastHistogramIx = (j == 0 ? _lastHistogramIx0 : _lastHistogramIx1) + i;
-                    Histogram.Sum(combinedHisto + jx, histograms + currHistoIx, histograms + lastHistogramIx);
-                    combinedEntropy[jx] = FastLog.BitsEntropy(Histogram.Data(combinedHisto + jx), (int)_alphabetSize);
-                    double d = combinedEntropy[jx] - entropy[i] - lastEntropy[jx];
+                    Histogram.Sum(ref combinedHisto[jx], ref histograms[currHistoIx], ref histograms[lastHistogramIx]);
+                    combinedEntropy[(int)jx] = FastLog.BitsEntropy(combinedHisto[jx].Data.Slice(0, alphabetSize));
+                    double d = combinedEntropy[(int)jx] - entropy[(int)i] - lastEntropy[jx];
                     if (j == 0)
                     {
                         diff0 += d;
@@ -398,15 +453,15 @@ internal unsafe struct ContextBlockSplitter
                 for (nuint i = 0; i < numContexts; ++i)
                 {
                     lastEntropy[numContexts + i] = lastEntropy[i];
-                    lastEntropy[i] = entropy[i];
+                    lastEntropy[i] = entropy[(int)i];
                 }
 
                 ++_numBlocks;
                 ++split.NumTypes;
                 _currHistogramIx += numContexts;
-                if (_currHistogramIx < *_histogramsSize)
+                if (_currHistogramIx < _histogramsSize)
                 {
-                    Histogram.ClearAll(histograms + _currHistogramIx, numContexts);
+                    Histogram.ClearAll(histograms.AsSpan((int)_currHistogramIx, (int)numContexts));
                 }
 
                 _blockSize = 0;
@@ -422,8 +477,8 @@ internal unsafe struct ContextBlockSplitter
                 {
                     histograms[_lastHistogramIx0 + i] = combinedHisto[numContexts + i];
                     lastEntropy[numContexts + i] = lastEntropy[i];
-                    lastEntropy[i] = combinedEntropy[numContexts + i];
-                    Histogram.Clear(histograms + _currHistogramIx + i);
+                    lastEntropy[i] = combinedEntropy[(int)(numContexts + i)];
+                    Histogram.Clear(ref histograms[_currHistogramIx + i]);
                 }
 
                 ++_numBlocks;
@@ -437,13 +492,13 @@ internal unsafe struct ContextBlockSplitter
                 for (nuint i = 0; i < numContexts; ++i)
                 {
                     histograms[_lastHistogramIx0 + i] = combinedHisto[i];
-                    lastEntropy[i] = combinedEntropy[i];
+                    lastEntropy[i] = combinedEntropy[(int)i];
                     if (split.NumTypes == 1)
                     {
                         lastEntropy[numContexts + i] = lastEntropy[i];
                     }
 
-                    Histogram.Clear(histograms + _currHistogramIx + i);
+                    Histogram.Clear(ref histograms[_currHistogramIx + i]);
                 }
 
                 _blockSize = 0;
@@ -456,7 +511,7 @@ internal unsafe struct ContextBlockSplitter
 
         if (isFinal)
         {
-            *_histogramsSize = split.NumTypes * numContexts;
+            _histogramsSize = split.NumTypes * numContexts;
             split.NumBlocks = _numBlocks;
         }
     }
@@ -465,7 +520,7 @@ internal unsafe struct ContextBlockSplitter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AddSymbol(nuint symbol, nuint context)
     {
-        Histogram.Add(_histograms + _currHistogramIx + context, symbol);
+        Histogram.Add(ref _histograms[_currHistogramIx + context], symbol);
         ++_blockSize;
         if (_blockSize == _targetBlockSize)
         {
@@ -475,26 +530,24 @@ internal unsafe struct ContextBlockSplitter
 }
 
 /// <summary>brotli's greedy meta-block builder and its histogram optimization (<c>c/enc/metablock.c</c>).</summary>
-internal sealed unsafe class GreedyMetaBlockBuilder
+internal sealed class GreedyMetaBlockBuilder
 {
-    private readonly PinnedBuffer<HistogramLiteral> _literalCombined = new();
-    private readonly PinnedBuffer<HistogramCommand> _commandCombined = new();
-    private readonly PinnedBuffer<HistogramDistance> _distanceCombined = new();
-    private readonly PinnedBuffer<double> _lastEntropy = new();
-    private readonly PinnedBuffer<byte> _goodForRle = new();
-    /// <summary>The numbers of histograms the splitters update: pinned, as the splitters hold pointers to them.</summary>
-    private readonly PinnedBuffer<nuint> _histogramsSizes = new();
+    private readonly GrowableBuffer<HistogramLiteral> _literalCombined = new();
+    private readonly GrowableBuffer<HistogramCommand> _commandCombined = new();
+    private readonly GrowableBuffer<HistogramDistance> _distanceCombined = new();
+    private readonly GrowableBuffer<double> _lastEntropy = new();
+    private readonly GrowableBuffer<byte> _goodForRle = new();
 
     /// <summary>brotli's <c>BrotliBuildMetaBlockGreedy</c>.</summary>
-    public void Build(byte* ringBuffer, nuint pos, nuint mask, byte prevByte, byte prevByte2, byte* literalContextLut, nuint numContexts, uint* staticContextMap, Command* commands, nuint numCommands, MetaBlockSplit mb)
+    public void Build(ReadOnlySpan<byte> ringBuffer, nuint pos, nuint mask, byte prevByte, byte prevByte2, ReadOnlySpan<byte> literalContextLut, nuint numContexts, ReadOnlySpan<uint> staticContextMap, ReadOnlySpan<Command> commands, MetaBlockSplit mb)
     {
         nuint numLiterals = 0;
-        for (nuint i = 0; i < numCommands; ++i)
+        nuint numCommands = (nuint)commands.Length;
+        for (int i = 0; i < commands.Length; ++i)
         {
             numLiterals += commands[i].InsertLen;
         }
 
-        nuint* sizes = _histogramsSizes.Ensure(3);
         BlockSplitter<HistogramLiteral> plain = default;
         ContextBlockSplitter context = default;
         if (numContexts == 1)
@@ -502,16 +555,14 @@ internal sealed unsafe class GreedyMetaBlockBuilder
             nuint size = BlockSplitter<HistogramLiteral>.MaxNumTypes(numLiterals, 512, out nuint maxNumBlocks);
             mb.LiteralSplit.EnsureCapacity(maxNumBlocks);
             mb.LiteralSplit.NumBlocks = maxNumBlocks;
-            sizes[0] = size;
-            plain.Init(256, 512, 400.0, numLiterals, mb.LiteralSplit, mb.AllocateLiteralHistograms(size), sizes, _literalCombined.Ensure(2));
+            plain.Init(256, 512, 400.0, numLiterals, mb.LiteralSplit, mb.AllocateLiteralHistograms(size), size, _literalCombined.Ensure(2));
         }
         else
         {
-            nuint size = ContextBlockSplitter.HistogramsSize(numContexts, numLiterals, 512, out nuint maxNumBlocks);
+            nuint size = ContextBlockSplitter.MaxHistogramsSize(numContexts, numLiterals, 512, out nuint maxNumBlocks);
             mb.LiteralSplit.EnsureCapacity(maxNumBlocks);
             mb.LiteralSplit.NumBlocks = maxNumBlocks;
-            sizes[0] = size;
-            context.Init(256, numContexts, 512, 400.0, mb.LiteralSplit, mb.AllocateLiteralHistograms(size), sizes, _literalCombined.Ensure(2 * ContextBlockSplitter.MaxStaticContexts), _lastEntropy.Ensure(2 * ContextBlockSplitter.MaxStaticContexts));
+            context.Init(256, numContexts, 512, 400.0, mb.LiteralSplit, mb.AllocateLiteralHistograms(size), size, _literalCombined.Ensure(2 * ContextBlockSplitter.MaxStaticContexts), _lastEntropy.Ensure(2 * ContextBlockSplitter.MaxStaticContexts));
         }
 
         BlockSplitter<HistogramCommand> commandBlocks = default;
@@ -519,8 +570,7 @@ internal sealed unsafe class GreedyMetaBlockBuilder
             nuint size = BlockSplitter<HistogramCommand>.MaxNumTypes(numCommands, 1024, out nuint maxNumBlocks);
             mb.CommandSplit.EnsureCapacity(maxNumBlocks);
             mb.CommandSplit.NumBlocks = maxNumBlocks;
-            sizes[1] = size;
-            commandBlocks.Init(Prefix.NumCommandSymbols, 1024, 500.0, numCommands, mb.CommandSplit, mb.AllocateCommandHistograms(size), sizes + 1, _commandCombined.Ensure(2));
+            commandBlocks.Init(Prefix.NumCommandSymbols, 1024, 500.0, numCommands, mb.CommandSplit, mb.AllocateCommandHistograms(size), size, _commandCombined.Ensure(2));
         }
 
         BlockSplitter<HistogramDistance> distanceBlocks = default;
@@ -528,24 +578,23 @@ internal sealed unsafe class GreedyMetaBlockBuilder
             nuint size = BlockSplitter<HistogramDistance>.MaxNumTypes(numCommands, 512, out nuint maxNumBlocks);
             mb.DistanceSplit.EnsureCapacity(maxNumBlocks);
             mb.DistanceSplit.NumBlocks = maxNumBlocks;
-            sizes[2] = size;
-            distanceBlocks.Init(64, 512, 100.0, numCommands, mb.DistanceSplit, mb.AllocateDistanceHistograms(size), sizes + 2, _distanceCombined.Ensure(2));
+            distanceBlocks.Init(64, 512, 100.0, numCommands, mb.DistanceSplit, mb.AllocateDistanceHistograms(size), size, _distanceCombined.Ensure(2));
         }
 
-        for (nuint i = 0; i < numCommands; ++i)
+        for (int i = 0; i < commands.Length; ++i)
         {
-            Command* cmd = commands + i;
-            commandBlocks.AddSymbol(cmd->CmdPrefix);
-            for (nuint j = cmd->InsertLen; j != 0; --j)
+            ref readonly Command cmd = ref commands[i];
+            commandBlocks.AddSymbol(cmd.CmdPrefix);
+            for (nuint j = cmd.InsertLen; j != 0; --j)
             {
-                byte literal = ringBuffer[pos & mask];
+                byte literal = ringBuffer[(int)(pos & mask)];
                 if (numContexts == 1)
                 {
                     plain.AddSymbol(literal);
                 }
                 else
                 {
-                    nuint ctx = (nuint)(literalContextLut[prevByte] | literalContextLut[256 + prevByte2]);
+                    int ctx = literalContextLut[prevByte] | literalContextLut[256 + prevByte2];
                     context.AddSymbol(literal, staticContextMap[ctx]);
                 }
 
@@ -554,15 +603,15 @@ internal sealed unsafe class GreedyMetaBlockBuilder
                 ++pos;
             }
 
-            uint copyLen = Commands.CopyLen(cmd);
+            uint copyLen = Commands.CopyLen(in cmd);
             pos += copyLen;
             if (copyLen != 0)
             {
-                prevByte2 = ringBuffer[(pos - 2) & mask];
-                prevByte = ringBuffer[(pos - 1) & mask];
-                if (cmd->CmdPrefix >= 128)
+                prevByte2 = ringBuffer[(int)((pos - 2) & mask)];
+                prevByte = ringBuffer[(int)((pos - 1) & mask)];
+                if (cmd.CmdPrefix >= 128)
                 {
-                    distanceBlocks.AddSymbol((nuint)(cmd->DistPrefix & 0x3FF));
+                    distanceBlocks.AddSymbol((nuint)(cmd.DistPrefix & 0x3FF));
                 }
             }
         }
@@ -570,29 +619,29 @@ internal sealed unsafe class GreedyMetaBlockBuilder
         if (numContexts == 1)
         {
             plain.FinishBlock(isFinal: true);
+            mb.LiteralHistogramsSize = plain.HistogramsSize;
         }
         else
         {
             context.FinishBlock(isFinal: true);
+            mb.LiteralHistogramsSize = context.HistogramsSize;
         }
 
         commandBlocks.FinishBlock(isFinal: true);
         distanceBlocks.FinishBlock(isFinal: true);
-        mb.LiteralHistogramsSize = sizes[0];
-        mb.CommandHistogramsSize = sizes[1];
-        mb.DistanceHistogramsSize = sizes[2];
-
+        mb.CommandHistogramsSize = commandBlocks.HistogramsSize;
+        mb.DistanceHistogramsSize = distanceBlocks.HistogramsSize;
         if (numContexts > 1)
         {
             // brotli's MapStaticContexts.
             mb.LiteralContextMapSize = mb.LiteralSplit.NumTypes << Prefix.LiteralContextBits;
-            uint* map = mb.AllocateLiteralContextMap(mb.LiteralContextMapSize);
+            uint[] map = mb.AllocateLiteralContextMap(mb.LiteralContextMapSize);
             for (nuint i = 0; i < mb.LiteralSplit.NumTypes; ++i)
             {
                 uint offset = (uint)(i * numContexts);
-                for (nuint j = 0; j < (1u << Prefix.LiteralContextBits); ++j)
+                for (int j = 0; j < (1 << Prefix.LiteralContextBits); ++j)
                 {
-                    map[(i << Prefix.LiteralContextBits) + j] = offset + staticContextMap[j];
+                    map[(i << Prefix.LiteralContextBits) + (nuint)j] = offset + staticContextMap[j];
                 }
             }
         }
@@ -601,20 +650,20 @@ internal sealed unsafe class GreedyMetaBlockBuilder
     /// <summary>brotli's <c>BrotliOptimizeHistograms</c>.</summary>
     public void OptimizeHistograms(uint numDistanceCodes, MetaBlockSplit mb)
     {
-        byte* goodForRle = _goodForRle.Ensure(Prefix.NumCommandSymbols);
+        byte[] goodForRle = _goodForRle.Ensure(Prefix.NumCommandSymbols);
         for (nuint i = 0; i < mb.LiteralHistogramsSize; ++i)
         {
-            EntropyEncode.OptimizeHuffmanCountsForRle(256, Histogram.Data(mb.LiteralHistograms + i), goodForRle);
+            EntropyEncode.OptimizeHuffmanCountsForRle(256, mb.LiteralHistograms[i].Data, goodForRle);
         }
 
         for (nuint i = 0; i < mb.CommandHistogramsSize; ++i)
         {
-            EntropyEncode.OptimizeHuffmanCountsForRle(Prefix.NumCommandSymbols, Histogram.Data(mb.CommandHistograms + i), goodForRle);
+            EntropyEncode.OptimizeHuffmanCountsForRle(Prefix.NumCommandSymbols, mb.CommandHistograms[i].Data, goodForRle);
         }
 
         for (nuint i = 0; i < mb.DistanceHistogramsSize; ++i)
         {
-            EntropyEncode.OptimizeHuffmanCountsForRle((int)numDistanceCodes, Histogram.Data(mb.DistanceHistograms + i), goodForRle);
+            EntropyEncode.OptimizeHuffmanCountsForRle((int)numDistanceCodes, mb.DistanceHistograms[i].Data, goodForRle);
         }
     }
 }

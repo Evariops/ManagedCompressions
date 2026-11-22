@@ -3,7 +3,7 @@ using System;
 namespace ManagedCompressions.Brotli.Internal;
 
 /// <summary>What <c>BrotliEncoderCompressStream</c> reads and writes of the state, for the streaming encoder.</summary>
-internal sealed unsafe partial class EncoderState
+internal sealed partial class EncoderState
 {
     /// <summary>The bits of the stream's last byte not written yet: brotli's <c>last_bytes_</c>.</summary>
     public ushort LastBytes

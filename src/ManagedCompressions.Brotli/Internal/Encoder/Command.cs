@@ -48,7 +48,7 @@ internal struct DistanceParams
 }
 
 /// <summary>The functions of <c>c/enc/command.h</c> and <c>c/enc/prefix.h</c>.</summary>
-internal static unsafe class Commands
+internal static class Commands
 {
     private static ReadOnlySpan<uint> InsBase => [0, 1, 2, 3, 4, 5, 6, 8, 10, 14, 18, 26, 34, 50, 66, 98, 130, 194, 322, 578, 1090, 2114, 6210, 22594];
 
@@ -159,36 +159,36 @@ internal static unsafe class Commands
 
     /// <summary>brotli's <c>InitCommand</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Init(Command* self, in DistanceParams dist, nuint insertLen, nuint copyLen, int copyLenCodeDelta, nuint distanceCode)
+    public static void Init(ref Command self, in DistanceParams dist, nuint insertLen, nuint copyLen, int copyLenCodeDelta, nuint distanceCode)
     {
         uint delta = (byte)(sbyte)copyLenCodeDelta;
-        self->InsertLen = (uint)insertLen;
-        self->CopyLen = (uint)(copyLen | ((nuint)delta << 25));
-        PrefixEncodeCopyDistance(distanceCode, dist.NumDirectCodes, (int)dist.PostfixBits, out self->DistPrefix, out self->DistExtra);
-        self->CmdPrefix = GetLengthCode(insertLen, (nuint)(nint)((int)copyLen + copyLenCodeDelta), (self->DistPrefix & 0x3FF) == 0);
+        self.InsertLen = (uint)insertLen;
+        self.CopyLen = (uint)(copyLen | ((nuint)delta << 25));
+        PrefixEncodeCopyDistance(distanceCode, dist.NumDirectCodes, (int)dist.PostfixBits, out self.DistPrefix, out self.DistExtra);
+        self.CmdPrefix = GetLengthCode(insertLen, (nuint)(nint)((int)copyLen + copyLenCodeDelta), (self.DistPrefix & 0x3FF) == 0);
     }
 
     /// <summary>brotli's <c>InitInsertCommand</c>: literals and no copy.</summary>
-    public static void InitInsert(Command* self, nuint insertLen)
+    public static void InitInsert(ref Command self, nuint insertLen)
     {
-        self->InsertLen = (uint)insertLen;
-        self->CopyLen = 4 << 25;
-        self->DistExtra = 0;
-        self->DistPrefix = Prefix.NumDistanceShortCodes;
-        self->CmdPrefix = GetLengthCode(insertLen, 4, false);
+        self.InsertLen = (uint)insertLen;
+        self.CopyLen = 4 << 25;
+        self.DistExtra = 0;
+        self.DistPrefix = Prefix.NumDistanceShortCodes;
+        self.CmdPrefix = GetLengthCode(insertLen, 4, false);
     }
 
     /// <summary>brotli's <c>CommandRestoreDistanceCode</c>.</summary>
-    public static uint RestoreDistanceCode(Command* self, in DistanceParams dist)
+    public static uint RestoreDistanceCode(in Command self, in DistanceParams dist)
     {
-        uint dcode = self->DistPrefix & 0x3FFu;
+        uint dcode = self.DistPrefix & 0x3FFu;
         if (dcode < Prefix.NumDistanceShortCodes + dist.NumDirectCodes)
         {
             return dcode;
         }
 
-        int nbits = self->DistPrefix >> 10;
-        uint extra = self->DistExtra;
+        int nbits = self.DistPrefix >> 10;
+        uint extra = self.DistExtra;
         uint postfixMask = (1u << (int)dist.PostfixBits) - 1;
         uint hcode = (dcode - dist.NumDirectCodes - Prefix.NumDistanceShortCodes) >> (int)dist.PostfixBits;
         uint lcode = (dcode - dist.NumDirectCodes - Prefix.NumDistanceShortCodes) & postfixMask;
@@ -198,10 +198,10 @@ internal static unsafe class Commands
 
     /// <summary>brotli's <c>CommandDistanceContext</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint DistanceContext(Command* self)
+    public static uint DistanceContext(in Command self)
     {
-        uint r = (uint)self->CmdPrefix >> 6;
-        uint c = self->CmdPrefix & 7u;
+        uint r = (uint)self.CmdPrefix >> 6;
+        uint c = self.CmdPrefix & 7u;
         if ((r == 0 || r == 2 || r == 4 || r == 7) && c <= 2)
         {
             return c;
@@ -211,14 +211,14 @@ internal static unsafe class Commands
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint CopyLen(Command* self) => self->CopyLen & 0x1FFFFFF;
+    public static uint CopyLen(in Command self) => self.CopyLen & 0x1FFFFFF;
 
     /// <summary>brotli's <c>CommandCopyLenCode</c>: the length the copy code stores.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint CopyLenCode(Command* self)
+    public static uint CopyLenCode(in Command self)
     {
-        uint modifier = self->CopyLen >> 25;
+        uint modifier = self.CopyLen >> 25;
         int delta = (sbyte)(byte)(modifier | ((modifier & 0x40) << 1));
-        return (uint)((int)(self->CopyLen & 0x1FFFFFF) + delta);
+        return (uint)((int)(self.CopyLen & 0x1FFFFFF) + delta);
     }
 }

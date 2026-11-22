@@ -8,16 +8,15 @@ namespace ManagedCompressions.Brotli.Internal;
 /// into the ring buffer a block at a time, backward references searched block by block, and the blocks
 /// merged into meta-blocks, which <see cref="EncodeData"/> writes.
 /// </summary>
-internal sealed unsafe partial class EncoderState
+internal sealed partial class EncoderState
 {
     /// <summary>brotli's <c>MAX_NUM_DELAYED_SYMBOLS</c>.</summary>
     private const int MaxNumDelayedSymbols = 0x2FFF;
 
     private readonly RingBuffer _ringBuffer = new();
     private readonly HasherMemory _hasherMemory = new();
-    private readonly PinnedBuffer<byte> _storage = new();
-    private readonly PinnedBuffer<int> _caches = new();
-    private readonly PinnedBuffer<uint> _contextArena = new();
+    private readonly GrowableBuffer<byte> _storage = new();
+    private readonly GrowableBuffer<uint> _contextArena = new();
     private readonly MetaBlockSplit _mb = new();
     private readonly GreedyMetaBlockBuilder _greedy = new();
     private readonly MetaBlockStorage _metaBlockStorage = new();
@@ -45,8 +44,8 @@ internal sealed unsafe partial class EncoderState
     private bool _isLastBlockEmitted;
 
     /// <summary>The 16 entries of brotli's <c>dist_cache_</c>, then the 4 of <c>saved_dist_cache_</c>.</summary>
-    private int* _distCache;
-    private int* _savedDistCache;
+    private readonly int[] _distCache = new int[16];
+    private readonly int[] _savedDistCache = new int[4];
 
     private int _hasherType;
     private bool _hasherSetup;
@@ -106,13 +105,11 @@ internal sealed unsafe partial class EncoderState
         _isLastBlockEmitted = false;
         _hasherSetup = false;
         _hasherPrepared = false;
-        _distCache = _caches.Ensure(16 + 4);
-        _savedDistCache = _distCache + 16;
         _distCache[0] = 4;
         _distCache[1] = 11;
         _distCache[2] = 15;
         _distCache[3] = 16;
-        new Span<int>(_distCache, 4).CopyTo(new Span<int>(_savedDistCache, 4));
+        _distCache.AsSpan(0, 4).CopyTo(_savedDistCache);
 
         // ComputeRbBits.
         _ringBuffer.Setup(1 + Math.Max(lgwin, _lgblock), _lgblock);
@@ -172,15 +169,15 @@ internal sealed unsafe partial class EncoderState
     }
 
     /// <summary>brotli's <c>CopyInputToRingBuffer</c>.</summary>
-    public void CopyInputToRingBuffer(byte* input, nuint size)
+    public void CopyInputToRingBuffer(ReadOnlySpan<byte> input)
     {
-        _ringBuffer.Write(input, size);
-        _inputPos += size;
+        _ringBuffer.Write(input);
+        _inputPos += (nuint)input.Length;
 
         // In the first lap, seven zeros past the input, which the 8-byte hashing reads.
         if (_ringBuffer.FirstLap)
         {
-            new Span<byte>(_ringBuffer.Buffer + _ringBuffer.Pos, 7).Clear();
+            _ringBuffer.Buffer.Slice((int)_ringBuffer.Pos, 7).Clear();
         }
     }
 
@@ -193,32 +190,32 @@ internal sealed unsafe partial class EncoderState
         return wrappedInputPos < wrappedLastProcessedPos;
     }
 
-    private byte* Storage(nuint size) => _storage.Ensure(size);
+    private byte[] Storage(nuint size) => _storage.Ensure(size);
 
     /// <summary>
     /// brotli's <c>EncodeData</c>: processes the input copied so far, and writes a meta-block when it is
     /// the last, a flush is asked, or the meta-block is full; otherwise the input waits for the next block.
     /// </summary>
     /// <returns>The meta-block's bytes, in the state's storage, which hold until the next call; 0 when none.</returns>
-    public nuint EncodeData(bool isLast, bool forceFlush, out byte* output)
+    public nuint EncodeData(bool isLast, bool forceFlush, out byte[]? output)
     {
         ulong delta = _inputPos - _lastProcessedPos;
         uint bytes = (uint)delta;
         uint wrappedLastProcessedPos = WrapPosition(_lastProcessedPos);
-        byte* data = _ringBuffer.Buffer;
+        ReadOnlySpan<byte> data = _ringBuffer.Buffer;
         nuint mask = _ringBuffer.Mask;
         output = null;
 
         if (delta == 0)
         {
-            if (data == null)
+            if (!_ringBuffer.HasBuffer)
             {
                 if (isLast)
                 {
                     // The empty stream.
                     _lastBytes |= (ushort)(3u << _lastBytesBits);
                     _lastBytesBits += 2;
-                    byte* tiny = Storage(16);
+                    byte[] tiny = Storage(16);
                     tiny[0] = (byte)_lastBytes;
                     tiny[1] = (byte)(_lastBytes >> 8);
                     output = tiny;
@@ -251,13 +248,13 @@ internal sealed unsafe partial class EncoderState
             {
                 newSize += (bytes / 4) + 16;
                 _cmdAllocSize = newSize;
-                Command[] commands = GC.AllocateUninitializedArray<Command>(checked((int)newSize), pinned: true);
+                Command[] commands = new Command[checked((int)newSize)];
                 _commandsArray.AsSpan(0, (int)_numCommands).CopyTo(commands);
                 _commandsArray = commands;
             }
         }
 
-        Command* commandsBase = (Command*)Unsafe.AsPointer(ref _commandsArray[0]);
+        Command[] commandsBase = _commandsArray;
         switch (_hasherType = HasherSetupType(wrappedLastProcessedPos == 0 && isLast, bytes))
         {
             case 10: ProcessBlockZopfli(data, mask, ref bytes, ref wrappedLastProcessedPos, commandsBase); break;
@@ -298,7 +295,7 @@ internal sealed unsafe partial class EncoderState
         // The last insert, without a copy.
         if (_lastInsertLen > 0)
         {
-            Commands.InitInsert(commandsBase + _numCommands++, _lastInsertLen);
+            Commands.InitInsert(ref commandsBase[_numCommands++], _lastInsertLen);
             _numLiterals += _lastInsertLen;
             _lastInsertLen = 0;
         }
@@ -310,7 +307,7 @@ internal sealed unsafe partial class EncoderState
 
         {
             uint metablockSize = (uint)(_inputPos - _lastFlushPos);
-            byte* storage = Storage((2 * (nuint)metablockSize) + 503);
+            byte[] storage = Storage((2 * (nuint)metablockSize) + 503);
             int storageIx = _lastBytesBits;
             storage[0] = (byte)_lastBytes;
             storage[1] = (byte)(_lastBytes >> 8);
@@ -330,17 +327,17 @@ internal sealed unsafe partial class EncoderState
 
             if (_lastFlushPos > 0)
             {
-                _prevByte = data[((uint)_lastFlushPos - 1) & mask];
+                _prevByte = data[(int)(((uint)_lastFlushPos - 1) & mask)];
             }
 
             if (_lastFlushPos > 1)
             {
-                _prevByte2 = data[(uint)(_lastFlushPos - 2) & mask];
+                _prevByte2 = data[(int)((uint)(_lastFlushPos - 2) & mask)];
             }
 
             _numCommands = 0;
             _numLiterals = 0;
-            new Span<int>(_distCache, 4).CopyTo(new Span<int>(_savedDistCache, 4));
+            _distCache.AsSpan(0, 4).CopyTo(_savedDistCache);
             output = storage;
             return (nuint)(storageIx >> 3);
         }
@@ -410,7 +407,7 @@ internal sealed unsafe partial class EncoderState
     /// The hasher's part of <c>EncodeData</c>: <c>InitOrStitchToPreviousBlock</c>, <c>ExtendLastCommand</c>
     /// and <c>BrotliCreateBackwardReferences</c>.
     /// </summary>
-    private void ProcessBlock<THasher>(ref THasher hasher, byte* data, nuint mask, ref uint bytes, ref uint wrappedLastProcessedPos, bool isLast, Command* commands)
+    private void ProcessBlock<THasher>(ref THasher hasher, ReadOnlySpan<byte> data, nuint mask, ref uint bytes, ref uint wrappedLastProcessedPos, bool isLast, Command[] commands)
         where THasher : struct, IHasher
     {
         if (!_hasherPrepared)
@@ -426,11 +423,11 @@ internal sealed unsafe partial class EncoderState
             ExtendLastCommand(commands, ref bytes, ref wrappedLastProcessedPos);
         }
 
-        BackwardReferences.Create(ref hasher, bytes, wrappedLastProcessedPos, data, mask, _quality, _lgwin, _dist, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
+        BackwardReferences.Create(ref hasher, bytes, wrappedLastProcessedPos, data, mask, _quality, _lgwin, _dist, _distCache, ref _lastInsertLen, commands.AsSpan((int)_numCommands), ref _numCommands, ref _numLiterals);
     }
 
     /// <summary>The block of qualities 10 and 11: the binary tree hasher, and Zopfli's backward references.</summary>
-    private void ProcessBlockZopfli(byte* data, nuint mask, ref uint bytes, ref uint wrappedLastProcessedPos, Command* commands)
+    private void ProcessBlockZopfli(ReadOnlySpan<byte> data, nuint mask, ref uint bytes, ref uint wrappedLastProcessedPos, Command[] commands)
     {
         if (!_hasherPrepared)
         {
@@ -446,42 +443,42 @@ internal sealed unsafe partial class EncoderState
 
         if (_quality == 10)
         {
-            _zopfli!.CreateBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
+            _zopfli!.CreateBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands.AsSpan((int)_numCommands), ref _numCommands, ref _numLiterals);
         }
         else
         {
-            _zopfli!.CreateHqBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
+            _zopfli!.CreateHqBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands.AsSpan((int)_numCommands), ref _numCommands, ref _numLiterals);
         }
     }
 
     /// <summary>brotli's <c>ExtendLastCommand</c>: the last copy, longer into the new block when it can be.</summary>
-    private void ExtendLastCommand(Command* commands, ref uint bytes, ref uint wrappedLastProcessedPos)
+    private void ExtendLastCommand(Command[] commands, ref uint bytes, ref uint wrappedLastProcessedPos)
     {
-        Command* lastCommand = commands + _numCommands - 1;
-        byte* data = _ringBuffer.Buffer;
+        ref Command lastCommand = ref commands[_numCommands - 1];
+        ReadOnlySpan<byte> data = _ringBuffer.Buffer;
         uint mask = _ringBuffer.Mask;
         ulong maxBackwardDistance = (1ul << _lgwin) - Prefix.WindowGap;
-        ulong lastCopyLen = lastCommand->CopyLen & 0x1FFFFFF;
+        ulong lastCopyLen = lastCommand.CopyLen & 0x1FFFFFF;
         ulong lastProcessedPos = _lastProcessedPos - lastCopyLen;
         ulong maxDistance = lastProcessedPos < maxBackwardDistance ? lastProcessedPos : maxBackwardDistance;
         ulong cmdDist = (ulong)(long)_distCache[0];
-        uint distanceCode = Commands.RestoreDistanceCode(lastCommand, _dist);
+        uint distanceCode = Commands.RestoreDistanceCode(in lastCommand, _dist);
         if (distanceCode < Prefix.NumDistanceShortCodes || distanceCode - (Prefix.NumDistanceShortCodes - 1) == cmdDist)
         {
             if (cmdDist <= maxDistance)
             {
-                while (bytes != 0 && data[wrappedLastProcessedPos & mask] == data[(ulong)(wrappedLastProcessedPos - cmdDist) & mask])
+                while (bytes != 0 && data[(int)(wrappedLastProcessedPos & mask)] == data[(int)((ulong)(wrappedLastProcessedPos - cmdDist) & mask)])
                 {
-                    lastCommand->CopyLen++;
+                    lastCommand.CopyLen++;
                     bytes--;
                     wrappedLastProcessedPos++;
                 }
             }
 
-            lastCommand->CmdPrefix = Commands.GetLengthCode(
-                lastCommand->InsertLen,
-                (nuint)(nint)((int)(lastCommand->CopyLen & 0x1FFFFFF) + (int)(lastCommand->CopyLen >> 25)),
-                (lastCommand->DistPrefix & 0x3FF) == 0);
+            lastCommand.CmdPrefix = Commands.GetLengthCode(
+                lastCommand.InsertLen,
+                (nuint)(nint)((int)(lastCommand.CopyLen & 0x1FFFFFF) + (int)(lastCommand.CopyLen >> 25)),
+                (lastCommand.DistPrefix & 0x3FF) == 0);
         }
     }
 }
