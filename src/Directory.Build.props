@@ -1,0 +1,11 @@
+<Project>
+
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <!-- What the libraries share, compiled into each of them as internal types: the helpers of their
+       accesses without bounds checks (Shared/Unchecked.cs). -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -62,7 +63,13 @@ internal readonly struct SeqSymbol
 internal static class SeqEntry
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong Load(ref SeqSymbol table, nint state) => Unsafe.As<SeqSymbol, ulong>(ref Unsafe.Add(ref table, state));
+    public static ulong Load(ref SeqSymbol table, nint state)
+    {
+        // SAFETY: a state is a table's slot plus a state of it, which a table built from a validated
+        // distribution maps back into the table.
+        Bounds.Index(state, SequenceTableSet.Size);
+        return Unsafe.As<SeqSymbol, ulong>(ref Unsafe.Add(ref table, state));
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static nint NextState(ulong entry) => (nint)(entry >> 48);
@@ -621,9 +628,11 @@ internal static class SequenceCodes
             lowCount -= sign;
 
             // Eight copies of the symbol a write: nearly every count fits in one.
+            Bounds.Range(laid, sizeof(ulong), spread.Length);
             Unsafe.WriteUnaligned(ref Unsafe.Add(ref spreadStart, laid), copies);
             for (nint i = 8; i < count; i += 8)
             {
+                Bounds.Range(laid + i, sizeof(ulong), spread.Length);
                 Unsafe.WriteUnaligned(ref Unsafe.Add(ref spreadStart, laid + i), copies);
             }
 
@@ -646,6 +655,7 @@ internal static class SequenceCodes
         Scatter(ref cells, ref spreadStart, tableSize, step);
         for (nint i = 0; i < lowCount; i++)
         {
+            Bounds.Index(tableSize - 1 - i, tableSize);
             Unsafe.Add(ref cells, tableSize - 1 - i) = Unsafe.Add(ref low, i);
         }
 
@@ -665,6 +675,7 @@ internal static class SequenceCodes
         nint half = tableSize >> 1;
         Span<ushort> histograms = stackalloc ushort[4 * 64];
         histograms.Clear();
+        // SAFETY: a cell holds a symbol of the code's alphabet, below the 64 counters of a histogram.
         ref ushort h = ref MemoryMarshal.GetReference(histograms);
         for (nint u = 0; u < half; u += 4)
         {
@@ -682,6 +693,8 @@ internal static class SequenceCodes
                 + Unsafe.Add(ref h, 128 + s) + Unsafe.Add(ref h, 192 + s));
         }
 
+        // SAFETY: the table takes two entries a state, 4 x half of them, which the entries hold (asserted
+        // above); a cell holds a symbol of the alphabet, which indexes the counters and the templates.
         ref ulong output = ref Unsafe.As<SeqSymbol, ulong>(ref MemoryMarshal.GetReference(entries));
         if (code == SequenceCode.Offset)
         {
@@ -711,6 +724,9 @@ internal static class SequenceCodes
         ref byte end = ref Unsafe.Add(ref spread, tableSize);
         do
         {
+            // SAFETY: the table's size is a power of two from 32, so four bytes at a time end at its end;
+            // a position is masked to the table.
+            Bounds.Before(ref spread, sizeof(uint), ref end);
             uint four = Unsafe.ReadUnaligned<uint>(ref spread);
             nint p1 = (at + step) & mask;
             nint p2 = (p1 + step) & mask;
@@ -765,11 +781,16 @@ internal static class SequenceCodes
         for (nint j = 0; j < holeCount; j++)
         {
             nint run = holes[(int)j] - to;
+            // SAFETY: the holes are positions of the table, sorted, the runs between them within it.
+            Bounds.Within(ref Unsafe.Add(ref withHoles, to), run, ref withHoles, ref Unsafe.Add(ref withHoles, tableSize));
+            Bounds.Within(ref Unsafe.Add(ref spread, from), run, ref spread, ref Unsafe.Add(ref spread, tableSize));
             Unsafe.CopyBlockUnaligned(ref Unsafe.Add(ref withHoles, to), ref Unsafe.Add(ref spread, from), (uint)run);
             from += run;
             to += run + 1;
         }
 
+        Bounds.Within(ref Unsafe.Add(ref withHoles, to), tableSize - to, ref withHoles, ref Unsafe.Add(ref withHoles, tableSize));
+        Bounds.Within(ref Unsafe.Add(ref spread, from), tableSize - to, ref spread, ref Unsafe.Add(ref spread, tableSize));
         Unsafe.CopyBlockUnaligned(ref Unsafe.Add(ref withHoles, to), ref Unsafe.Add(ref spread, from), (uint)(tableSize - to));
     }
 

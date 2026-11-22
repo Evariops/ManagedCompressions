@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -213,6 +214,8 @@ internal ref struct BackwardBitReader
                 {
                     position -= consumed >> 3;
                     consumed &= 7;
+                    // SAFETY: eight bytes or more before the position, it steps back by at most eight.
+                    Bounds.Range(position, sizeof(ulong), _source.Length);
                     container = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref source, position));
                 }
                 else
@@ -230,6 +233,7 @@ internal ref struct BackwardBitReader
                 bits = consumed >= 64 ? 0 : bits;
             }
 
+            Bounds.Index((nint)(bits >> shift), (nint)1 << tableLog);
             uint entry = Unsafe.Add(ref table, (nint)(bits >> shift));
             Unsafe.Add(ref output, i) = (byte)(entry >> 8);
             bits <<= (int)entry;
