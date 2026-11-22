@@ -31,6 +31,8 @@ internal static class Targets
         new("lz4-compress", "[level][content]", Lz4Targets.Compress, Lz4Targets.CompressSeeds),
         new("brotli-decompress", "[flags][stream]", BrotliTargets.Decompress, BrotliTargets.DecompressSeeds),
         new("brotli-compress", "[quality][window and mode][flags][content]", BrotliTargets.Compress, BrotliTargets.CompressSeeds),
+        new("brotli-stream-compress", "[quality][window][seed][content]", BrotliTargets.StreamCompress, BrotliTargets.StreamCompressSeeds),
+        new("brotli-stream-decompress", "[seed][stream]", BrotliTargets.StreamDecompress, BrotliTargets.StreamDecompressSeeds),
     ];
 
     public static Target? Find(string name) => Array.Find(All, t => t.Name == name);
