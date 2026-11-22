@@ -187,8 +187,7 @@ internal unsafe struct BlockSplitter<THistogram>
             for (int j = 0; j < 2; ++j)
             {
                 nuint lastHistogramIx = j == 0 ? _lastHistogramIx0 : _lastHistogramIx1;
-                _combinedHisto[j] = histograms[_currHistogramIx];
-                Histogram.AddHistogram(_combinedHisto + j, histograms + lastHistogramIx);
+                Histogram.Sum(_combinedHisto + j, histograms + _currHistogramIx, histograms + lastHistogramIx);
                 combinedEntropy[j] = FastLog.BitsEntropy(Histogram.Data(_combinedHisto + j), (int)_alphabetSize);
                 diff[j] = combinedEntropy[j] - entropy - (j == 0 ? _lastEntropy0 : _lastEntropy1);
             }
@@ -376,8 +375,7 @@ internal unsafe struct ContextBlockSplitter
                 {
                     nuint jx = (j * numContexts) + i;
                     nuint lastHistogramIx = (j == 0 ? _lastHistogramIx0 : _lastHistogramIx1) + i;
-                    combinedHisto[jx] = histograms[currHistoIx];
-                    Histogram.AddHistogram(combinedHisto + jx, histograms + lastHistogramIx);
+                    Histogram.Sum(combinedHisto + jx, histograms + currHistoIx, histograms + lastHistogramIx);
                     combinedEntropy[jx] = FastLog.BitsEntropy(Histogram.Data(combinedHisto + jx), (int)_alphabetSize);
                     double d = combinedEntropy[jx] - entropy[i] - lastEntropy[jx];
                     if (j == 0)

@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -88,15 +89,49 @@ internal static unsafe class Histogram
         ++*TotalCount(h);
     }
 
+    /// <summary>brotli's <c>HistogramAddHistogram</c>, a vector at a time.</summary>
     public static void AddHistogram<T>(T* self, T* v)
         where T : unmanaged, IHistogram
     {
         *TotalCount(self) += *TotalCount(v);
-        uint* a = (uint*)self;
-        uint* b = (uint*)v;
-        for (int i = 0; i < T.DataSize; ++i)
+        AddCounts((uint*)self, (uint*)self, (uint*)v, T.DataSize);
+    }
+
+    /// <summary>
+    /// <c>*dst = *a</c> then <c>HistogramAddHistogram(dst, b)</c>, as brotli writes it, in one pass: the
+    /// counts and the totals added, and <paramref name="a"/>'s cost.
+    /// </summary>
+    public static void Sum<T>(T* dst, T* a, T* b)
+        where T : unmanaged, IHistogram
+    {
+        AddCounts((uint*)dst, (uint*)a, (uint*)b, T.DataSize);
+        *TotalCount(dst) = *TotalCount(a) + *TotalCount(b);
+        *BitCost(dst) = *BitCost(a);
+    }
+
+    /// <summary><c>dst[i] = a[i] + b[i]</c>, for <paramref name="n"/> counts, a multiple of 8.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddCounts(uint* dst, uint* a, uint* b, int n)
+    {
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
         {
-            a[i] += b[i];
+            for (; i < n; i += 8)
+            {
+                (Vector256.Load(a + i) + Vector256.Load(b + i)).Store(dst + i);
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            for (; i < n; i += 4)
+            {
+                (Vector128.Load(a + i) + Vector128.Load(b + i)).Store(dst + i);
+            }
+        }
+
+        for (; i < n; ++i)
+        {
+            dst[i] = a[i] + b[i];
         }
     }
 }

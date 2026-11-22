@@ -1,5 +1,7 @@
 using System;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -37,18 +39,7 @@ internal static unsafe class Cluster
             return oneSymbolHistogramCost;
         }
 
-        for (int i = 0; i < dataSize; ++i)
-        {
-            if (data[i] > 0)
-            {
-                s[count] = i;
-                ++count;
-                if (count > 4)
-                {
-                    break;
-                }
-            }
-        }
+        count = FirstNonZero(data, dataSize, s);
 
         if (count == 1)
         {
@@ -121,11 +112,7 @@ internal static unsafe class Cluster
                 }
                 else
                 {
-                    uint reps = 1;
-                    for (int k = i + 1; k < dataSize && data[k] == 0; ++k)
-                    {
-                        ++reps;
-                    }
+                    uint reps = (uint)ZeroRun(data, i + 1, dataSize) + 1;
 
                     i += (int)reps;
                     if (i == dataSize)
@@ -156,6 +143,94 @@ internal static unsafe class Cluster
         }
 
         return bits;
+    }
+
+    /// <summary>The indices of the first nonzero counts into <paramref name="s"/>, five at most: their number.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FirstNonZero(uint* data, int size, int* s)
+    {
+        int count = 0;
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            for (; i + 8 <= size; i += 8)
+            {
+                uint mask = ~Vector256.Equals(Vector256.Load(data + i), Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFF;
+                for (; mask != 0; mask &= mask - 1)
+                {
+                    s[count++] = i + BitOperations.TrailingZeroCount(mask);
+                    if (count > 4)
+                    {
+                        return count;
+                    }
+                }
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            for (; i + 4 <= size; i += 4)
+            {
+                uint mask = ~Vector128.Equals(Vector128.Load(data + i), Vector128<uint>.Zero).ExtractMostSignificantBits() & 0xF;
+                for (; mask != 0; mask &= mask - 1)
+                {
+                    s[count++] = i + BitOperations.TrailingZeroCount(mask);
+                    if (count > 4)
+                    {
+                        return count;
+                    }
+                }
+            }
+        }
+
+        for (; i < size; ++i)
+        {
+            if (data[i] > 0)
+            {
+                s[count++] = i;
+                if (count > 4)
+                {
+                    return count;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>The number of zero counts from <paramref name="from"/> on.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ZeroRun(uint* data, int from, int size)
+    {
+        int k = from;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            for (; k + 8 <= size; k += 8)
+            {
+                uint nonZero = ~Vector256.Equals(Vector256.Load(data + k), Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFF;
+                if (nonZero != 0)
+                {
+                    return k + BitOperations.TrailingZeroCount(nonZero) - from;
+                }
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            for (; k + 4 <= size; k += 4)
+            {
+                uint nonZero = ~Vector128.Equals(Vector128.Load(data + k), Vector128<uint>.Zero).ExtractMostSignificantBits() & 0xF;
+                if (nonZero != 0)
+                {
+                    return k + BitOperations.TrailingZeroCount(nonZero) - from;
+                }
+            }
+        }
+
+        while (k < size && data[k] == 0)
+        {
+            ++k;
+        }
+
+        return k - from;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -211,8 +286,7 @@ internal static unsafe class Cluster
         else
         {
             double threshold = numPairs == 0 ? 1e99 : Math.Max(0.0, pairs[0].CostDiff);
-            *tmp = output[idx1];
-            Histogram.AddHistogram(tmp, output + idx2);
+            Histogram.Sum(tmp, output + idx1, output + idx2);
             double costCombo = PopulationCost(tmp);
             if (costCombo < threshold - p.CostDiff)
             {
@@ -338,8 +412,7 @@ internal static unsafe class Cluster
             return 0.0;
         }
 
-        *tmp = *histogram;
-        Histogram.AddHistogram(tmp, candidate);
+        Histogram.Sum(tmp, histogram, candidate);
         return PopulationCost(tmp) - *Histogram.BitCost(candidate);
     }
 
