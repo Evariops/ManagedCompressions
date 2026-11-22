@@ -1,7 +1,11 @@
 # ManagedCompressions
 
-**Zstandard and LZ4 written entirely in C#.** No native library and no P/Invoke: the code runs wherever
-.NET runs on a little-endian processor, trims, and compiles with Native AOT.
+**Zstandard, LZ4 and Brotli written entirely in C#.** No native library and no P/Invoke: the code runs
+wherever .NET runs on a little-endian processor, trims, and compiles with Native AOT.
+
+- **Brotli decompression faster than the brotli .NET ships**, 1.07 to 1.37× on x64, with brotli 1.1.1's
+  verdict and error code for every stream ([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md)).
+  Its compressor is under way.
 
 - **Same bytes as the native libraries.** Every frame and block is byte-for-byte what libzstd 1.5.7 and
   lz4 1.10.0 write, at every level, so the compression ratios are theirs. The tests check this.
@@ -104,6 +108,7 @@ The packages target .NET 10 and .NET 11:
 ```sh
 dotnet add package ManagedCompressions.Zstd
 dotnet add package ManagedCompressions.Lz4
+dotnet add package ManagedCompressions.Brotli
 ```
 
 ### Zstandard
@@ -140,6 +145,19 @@ Lz4Block.Decompress(block.AsSpan(0, blockLength), content);
 
 `Lz4Block.TryDecompress` reads into a larger destination and returns false on a corrupt block.
 `Lz4Compressor.TryCompress` returns false when the destination is too small.
+
+### Brotli
+
+```csharp
+using ManagedCompressions.Brotli;
+
+var decompressor = new BrotliDecompressor();         // reuse it, it keeps its tables
+byte[] content = new byte[contentSize];              // a stream does not record its size: store it beside
+OperationStatus status = decompressor.Decompress(stream, content, out int consumed, out int written);
+```
+
+`decompressor.LastError` names the check that refused a stream, as brotli does. The names do not clash
+with `System.IO.Compression`'s `BrotliEncoder`, `BrotliDecoder` and `BrotliStream`.
 
 ## Performance, level by level
 
@@ -219,6 +237,19 @@ of the four that ran every level of silesia.tar whole first, as the table does, 
 and the table shows one of those
 ([`bench/results/x64/levels.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/levels.md)).
 
+### Brotli
+
+On x64 (AMD Ryzen 9 7950X), against the brotli 1.1.1 .NET ships, through `BrotliDecoder.TryDecompress`.
+The managed decoder writes straight into the destination where brotli goes through a ring buffer, decodes
+literals in runs between its checks, and looks literals up in tables of 10 bits where brotli's have 8
+([`src/ManagedCompressions.Brotli/README.md`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md#how-it-is-fast)).
+
+| Decompression | 1 | 4 | 5 | 9 | 11 |
+|:--|--:|--:|--:|--:|--:|
+| silesia.tar, one stream | **1.34×** | **1.37×** | **1.21×** | **1.25×** | 1.07× |
+| silesia.tar, 64 KiB pages | **1.34×** | **1.27×** | **1.25×** | **1.24×** | 1.08× |
+| JSON records | **1.10×** | 1.10× | 1.10× | 1.08× | 1.06× |
+
 ### Compression ratios
 
 The managed compressors write the native bytes, so the ratios below hold for both sides, on arm64 and
@@ -235,17 +266,17 @@ x64 alike.
 
 ## What it supports
 
-| | Zstandard (`ManagedCompressions.Zstd`) | LZ4 (`ManagedCompressions.Lz4`) |
-|:--|:--|:--|
-| Format | RFC 8878 frames, skippable frames | the LZ4 block format (Parquet's `LZ4_RAW`) |
-| Compression levels | -131072 to 22, libzstd's bytes at each | acceleration 65537 to level 12, lz4's bytes at each |
-| Dictionaries | yes, at compression and decompression | no |
-| Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level |
-| Checksums | XXH64, written on request, always verified | not in the block format |
-| Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no |
-| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames; `ZstdStream`, both ways | no |
-| Validation | accepts and refuses what libzstd does | refuses any literal or match past either end |
-| Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same |
+| | Zstandard (`ManagedCompressions.Zstd`) | LZ4 (`ManagedCompressions.Lz4`) | Brotli (`ManagedCompressions.Brotli`) |
+|:--|:--|:--|:--|
+| Format | RFC 8878 frames, skippable frames | the LZ4 block format (Parquet's `LZ4_RAW`) | RFC 7932 streams, metadata blocks |
+| Compression levels | -131072 to 22, libzstd's bytes at each | acceleration 65537 to level 12, lz4's bytes at each | not yet: decompression only |
+| Dictionaries | yes, at compression and decompression | no | the static dictionary; no shared dictionaries (RFC 9841) |
+| Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level | – |
+| Checksums | XXH64, written on request, always verified | not in the block format | not in the format |
+| Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no | – |
+| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames; `ZstdStream`, both ways | no | no: a stream is decoded in one call, from and into memory |
+| Validation | accepts and refuses what libzstd does | refuses any literal or match past either end | accepts and refuses what brotli 1.1.1 does, with its error codes; refuses the large window |
+| Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same | the same |
 
 Not supported: LZ4 streaming (a block is compressed in one call, from and into memory), one-shot
 inputs over 2 GiB (`ZstdEncoder` streams them), the LZ4 frame format, libzstd's finer parameters
@@ -292,12 +323,14 @@ To reproduce, start from the data and the native test tools:
 bench/zstd-corpus.sh                 # silesia.zip and zstd's JSON records, downloaded and checked
 tools/native-ref/testdata.sh         # zstd's golden files, for the tests
 tools/native-ref/build.sh mt         # libzstd with threads, the oracle of the parallel compression tests
+tools/native-ref/brotli-testdata.sh  # brotli's test streams, for the tests
+tools/native-ref/build-brotli.sh     # brotli 1.1.1 with its whole API, the oracle of the Brotli tests
 ```
 
 Then run the benchmarks:
 
 ```sh
-dotnet run -c Release -f net11.0 --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4 --seconds 3
+dotnet run -c Release -f net11.0 --project bench/ManagedCompressions.Bench -- --codecs zstd,lz4,brotli --seconds 3
 dotnet run -c Release --project bench/ManagedCompressions.Benchmarks -- --filter '*'
 ```
 
@@ -327,21 +360,24 @@ then pushes the packages to nuget.org.
 |:--|:--|
 | `src/ManagedCompressions.Zstd` | Zstandard: decompressor, compressor, dictionaries, parallel compression |
 | `src/ManagedCompressions.Lz4` | LZ4 block format: `Lz4Block` (decoder, default compressor), `Lz4Compressor` (every level) |
+| `src/ManagedCompressions.Brotli` | Brotli: `BrotliDecompressor` |
 | `tests/` | differential tests against the native libraries, golden files, fuzzing |
 | `bench/ManagedCompressions.Bench` | level-by-level comparison with NativeCompressions |
 | `bench/ManagedCompressions.Benchmarks` | BenchmarkDotNet on silesia.tar, JIT and Native AOT (`--check` verifies every case once) |
 | `bench/ManagedCompressions.Zstd.Perf` | Zstandard against libzstd built from source, and micro-benchmarks |
 | `bench/jit-profile.sh`, `bench/*-pcprofile.py` | instruction-level profilers, for the JIT and for Native AOT |
 | `bench/results/arm64`, `bench/results/x64` | the results above, for each machine |
-| `tools/native-ref` | libzstd 1.5.7 built from source, and the generator of the test data |
+| `tools/native-ref` | libzstd 1.5.7 and brotli 1.1.1 built from source, and the writers of the test data |
+| `tools/brotli` | the generator of Brotli's tables, from brotli's sources |
 
 ## License
 
 ManagedCompressions is licensed under the
 [MIT License](https://github.com/Evariops/ManagedCompressions/blob/main/LICENSE). The compressors are
-derived from libzstd (BSD-3-Clause) and lz4 (BSD-2-Clause), and those parts remain under their licenses:
-see [NOTICE](https://github.com/Evariops/ManagedCompressions/blob/main/NOTICE), which each package
-carries. This project is not affiliated with the zstd or lz4 projects, nor with Cysharp.
+derived from libzstd (BSD-3-Clause) and lz4 (BSD-2-Clause), and Brotli's tables from brotli (MIT), and
+those parts remain under their licenses: see
+[NOTICE](https://github.com/Evariops/ManagedCompressions/blob/main/NOTICE), which each package carries.
+This project is not affiliated with the zstd, lz4 or brotli projects, nor with Cysharp or Google.
 
 What the decoders guarantee on untrusted input, and how to report a vulnerability, is in
 [SECURITY.md](https://github.com/Evariops/ManagedCompressions/blob/main/SECURITY.md).

@@ -1,6 +1,6 @@
 name: Fuzz
 
-# Coverage-guided fuzzing of both libraries (fuzz/README.md): a short run on every pull request, from
+# Coverage-guided fuzzing of the libraries (fuzz/README.md): a short run on every pull request, from
 # the corpus the nightly runs grew, and a long one each night.
 on:
   pull_request:
@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [zstd-decompress, zstd-stream-decompress, zstd-compress, zstd-stream-compress, lz4-decompress, lz4-compress]
+        target: [zstd-decompress, zstd-stream-decompress, zstd-compress, zstd-stream-compress, lz4-decompress, lz4-compress, brotli-decompress]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +59,10 @@ jobs:
             sudo apt-get install -y -q libclang-rt-18-dev
             clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
           fi
+
+      # brotli 1.1.1 built as .NET builds it, with the error codes the brotli target compares.
+      - name: Build brotli
+        run: bash tools/native-ref/build-brotli.sh
 
       - name: Publish
         run: dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
@@ -93,6 +97,7 @@ jobs:
           dotnet tool restore
           dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Zstd.dll"
           dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Lz4.dll"
+          dotnet sharpfuzz "$RUNNER_TEMP/fuzz/ManagedCompressions.Brotli.dll"
 
       - name: Fuzz
         env:

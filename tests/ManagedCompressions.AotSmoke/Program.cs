@@ -1,17 +1,19 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using ManagedCompressions.Brotli;
 using ManagedCompressions.Lz4;
 using ManagedCompressions.Zstd;
 
 namespace ManagedCompressions.AotSmoke;
 
 /// <summary>
-/// Round trips through both libraries, as compiled: CI runs this under Native AOT, on x64 and arm64.
+/// Round trips through the libraries, as compiled: CI runs this under Native AOT, on x64 and arm64.
 /// Each frame or block must decode back, and must hash to the value below. The compressors write the
 /// bytes of libzstd 1.5.7 and lz4 1.10.0, which depend neither on the machine nor on the instruction
 /// sets the code uses, so one hash holds everywhere: a difference is a path that computes otherwise.
@@ -85,6 +87,22 @@ internal static class Program
             byte[] content = new byte[text.Length];
             Lz4Block.Decompress(block.AsSpan(0, size), content);
             Expect(failures, $"lz4 L{level}", text, content);
+        }
+
+        // Brotli streams that brotli writes, through .NET's System.IO.Compression, decoded back.
+        foreach (int quality in (int[])[0, 1, 5, 9, 11])
+        {
+            byte[] input = quality >= 10 ? text.AsSpan(0, 256 << 10).ToArray() : text;
+            byte[] stream = new byte[BrotliEncoder.GetMaxCompressedLength(input.Length)];
+            if (!BrotliEncoder.TryCompress(input, stream, out int size, quality, 22))
+            {
+                throw new InvalidOperationException("brotli compression failed");
+            }
+
+            byte[] content = new byte[input.Length];
+            OperationStatus status = new BrotliDecompressor().Decompress(stream.AsSpan(0, size), content, out int consumed, out int written);
+            bool decoded = status == OperationStatus.Done && consumed == size && written == input.Length;
+            Expect(failures, $"brotli q{quality}", input, decoded ? content : []);
         }
 
         string where = $"{RuntimeInformation.ProcessArchitecture}, {RuntimeInformation.FrameworkDescription}";

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using NativeCompressions.Interop;
+using ManagedCompressions.Brotli;
 using ManagedCompressions.Lz4;
 using ManagedCompressions.Zstd;
 
@@ -39,6 +40,7 @@ internal static unsafe class Candidates
     public static int Bound(string codec, int length) => codec switch
     {
         "zstd" => Math.Max(ZstdCompressor.GetMaxCompressedLength(length), (int)ZstandardNativeMethods.ZSTD_compressBound((nuint)length)),
+        "brotli" => System.IO.Compression.BrotliEncoder.GetMaxCompressedLength(length),
         _ => Math.Max(Lz4Block.MaxCompressedLength(length), LZ4NativeMethods.LZ4_compressBound(length)),
     };
 
@@ -52,12 +54,13 @@ internal static unsafe class Candidates
         {
             "zstd" => Zstd(set, level, release),
             "lz4" => Lz4(level, release),
-            _ => throw new ArgumentException("unknown codec " + codec + " (zstd, lz4)", nameof(codec)),
+            "brotli" => Brotli(level),
+            _ => throw new ArgumentException("unknown codec " + codec + " (zstd, lz4, brotli)", nameof(codec)),
         };
         if (aa)
         {
             // A fresh managed instance: its tables in other pages, as the A/B arms of another build are.
-            Candidate twin = (codec == "zstd" ? Zstd(set, level, release) : Lz4(level, release)).Single(c => !c.Native);
+            Candidate twin = (codec switch { "zstd" => Zstd(set, level, release), "brotli" => Brotli(level), _ => Lz4(level, release) }).Single(c => !c.Native);
             candidates.Add(twin with { Name = twin.Name + AaSuffix, Label = twin.Label + " (A/A)" });
         }
 
@@ -184,6 +187,27 @@ internal static unsafe class Candidates
                 }),
         ];
     }
+
+    /// <summary>
+    /// brotli 1.1.1 as .NET ships it in System.IO.Compression, through the calls applications make:
+    /// <c>BrotliEncoder.TryCompress</c> (<c>BrotliEncoderCompress</c>) at the quality and .NET's default
+    /// window, 22, and <c>BrotliDecoder.TryDecompress</c> (<c>BrotliDecoderDecompress</c>). Each creates
+    /// and frees brotli's state, as these calls always do.
+    /// </summary>
+    private static List<Candidate> Brotli(int quality)
+    {
+        var decompressor = new BrotliDecompressor();
+        return
+        [
+            new("native", "brotli 1.1.1 (System.IO.Compression)", true,
+                (s, d) => System.IO.Compression.BrotliEncoder.TryCompress(s, d, out int w, quality, 22) ? w : -1,
+                (s, d) => System.IO.Compression.BrotliDecoder.TryDecompress(s, d, out int w) ? w : -1),
+            new("managed", $"ManagedCompressions.Brotli ({Runtime})", false,
+                null,
+                (s, d) => decompressor.Decompress(s, d, out _, out int w) == System.Buffers.OperationStatus.Done ? w : -1),
+        ];
+    }
+
 
     private static string Ansi(byte* text) => Marshal.PtrToStringAnsi((nint)text) ?? "?";
 

@@ -1,10 +1,11 @@
 # Fuzzing
 
-Coverage-guided fuzzing of both libraries, with [libFuzzer](https://llvm.org/docs/LibFuzzer.html) through
+Coverage-guided fuzzing of the libraries, with [libFuzzer](https://llvm.org/docs/LibFuzzer.html) through
 [SharpFuzz](https://github.com/Metalnem/sharpfuzz). libFuzzer generates the inputs. SharpFuzz instruments
 the published libraries, so that each input reports the branches it took. A target checks what the
-libraries do with the input against the native libraries, zstd 1.5.7 and lz4 1.10.0, as NativeCompressions
-ships them.
+libraries do with the input against the native libraries: zstd 1.5.7 and lz4 1.10.0, as NativeCompressions
+ships them, and brotli 1.1.1, built from its sources by `tools/native-ref/build-brotli.sh` as .NET builds
+the one it ships, with the error codes .NET's own library does not export on Linux.
 
 The sources and destinations lie against inaccessible pages on Linux and macOS, so a single byte read or
 written past either end faults. A target fails an input by throwing, and libFuzzer keeps the input. A
@@ -18,6 +19,7 @@ fault or a hang (`-timeout`) fails it the same way.
 | `zstd-stream-compress` | `[level][flags][seed][content]` | `ZstdEncoder` and `ZSTD_compressStream2` given the same calls, which the seed draws (pieces, flushes, frames ended mid-way, destinations from nothing to a megabyte), in windows of 1 KiB to 128 KiB the input buffer wraps in, with or without a checksum, a dictionary or a pledged size: each call takes and writes libzstd's bytes, the encoders reused after `Reset`; the frames decode back |
 | `lz4-decompress` | `[capacity, 3 bytes][block]` | lz4's content for every block lz4 decodes, but those with a zero offset; `Decompress` agrees with `TryDecompress` |
 | `lz4-compress` | `[level][content]` | lz4's block byte for byte, levels -7 to 12, the compressors reused from input to input; it decodes back |
+| `brotli-decompress` | `[flags][stream]` | a status, nothing consumed or written unless decoded; brotli 1.1.1's verdict, content and error code given the whole stream, into 4 MiB, the content's size, one byte less or a few hundred bytes; into less room than the content, a refusal for want of room where brotli may find the stream invalid first |
 
 The flags and the exact rules are in [`Targets.cs`](ManagedCompressions.Fuzz/Targets.cs). The LZ4 decoder
 departs from lz4 on three kinds of blocks, all by design. It decodes blocks that break the format's

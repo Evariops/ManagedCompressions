@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ManagedCompressions.Brotli.Tests</RootNamespace>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <TestingPlatformCaptureOutput>false</TestingPlatformCaptureOutput>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The oracle is called through function pointers, and the guard-page buffers call mmap/mprotect. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- The oracle is brotli 1.1.1 as .NET 10 and .NET 11 ship it, in System.IO.Compression.Native:
+       nothing to restore or build, the same library on both targets (NativeBrotli.cs). -->
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ManagedCompressions.Brotli/ManagedCompressions.Brotli.csproj" />
+  </ItemGroup>
+
+  <!-- Every test runs beside the others, each row of a theory a test of its own: tests/xunit.runner.json. -->
+  <ItemGroup>
+    <None Include="../xunit.runner.json" Link="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

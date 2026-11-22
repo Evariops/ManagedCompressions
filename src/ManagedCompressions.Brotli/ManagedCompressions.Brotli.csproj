@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>ManagedCompressions.Brotli</RootNamespace>
+    <AssemblyName>ManagedCompressions.Brotli</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>A Brotli (RFC 7932) decompressor and compressor in fully managed C#: no native code, no P/Invoke.</Description>
+    <PackageTags>brotli;br;compression;rfc7932;aot</PackageTags>
+    <!-- The compressor and the tables are derived from brotli 1.1.1, MIT like this library: see NOTICE. -->
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <!-- Its own readme on the package page, which covers Brotli alone. -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)../../README.md" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ManagedCompressions.Brotli.Tests" />
+    <InternalsVisibleTo Include="ManagedCompressions.Fuzz" />
+  </ItemGroup>
+
+</Project>

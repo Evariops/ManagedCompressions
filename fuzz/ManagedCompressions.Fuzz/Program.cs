@@ -7,7 +7,7 @@ using SharpFuzz;
 namespace ManagedCompressions.Fuzz;
 
 /// <summary>
-/// Coverage-guided fuzzing of both libraries: libFuzzer generates the inputs, SharpFuzz reports which
+/// Coverage-guided fuzzing of the libraries: libFuzzer generates the inputs, SharpFuzz reports which
 /// branches each one took in the instrumented libraries, and a target checks what the libraries do
 /// with it against the native libraries. See README.md.
 /// </summary>
