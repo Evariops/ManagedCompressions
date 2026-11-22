@@ -334,6 +334,7 @@ public sealed class BrotliCompressionStream : Stream
             if (disposing && !_disposed)
             {
                 _disposed = true;
+                _decoder?.Dispose();
                 if (!_leaveOpen)
                 {
                     BaseStream.Dispose();
@@ -367,6 +368,7 @@ public sealed class BrotliCompressionStream : Stream
             if (!_disposed)
             {
                 _disposed = true;
+                _decoder?.Dispose();
                 if (!_leaveOpen)
                 {
                     await BaseStream.DisposeAsync().ConfigureAwait(false);

@@ -24,7 +24,7 @@ namespace ManagedCompressions.Brotli;
 /// thread-safe: use one per thread.
 /// </para>
 /// </remarks>
-public sealed unsafe class BrotliStreamDecoder
+public sealed unsafe class BrotliStreamDecoder : IDisposable
 {
     private const int CompactThreshold = 1 << 16;
 
@@ -46,6 +46,24 @@ public sealed unsafe class BrotliStreamDecoder
 
     /// <summary>Whether the stream is decoded and all of its content written.</summary>
     public bool IsFinished => _finished && _delivered == _decoder.StreamPosition;
+
+    /// <summary>Returns the buffers to <see cref="ArrayPool{T}.Shared"/>; the decoder takes new ones if it is used again.</summary>
+    public void Dispose()
+    {
+        Return(_input);
+        Return(_history);
+        _input = [];
+        _history = [];
+        Reset();
+    }
+
+    private static void Return(byte[] array)
+    {
+        if (array.Length != 0)
+        {
+            ArrayPool<byte>.Shared.Return(array);
+        }
+    }
 
     /// <summary>Starts a new stream, the buffers kept.</summary>
     public void Reset()
@@ -191,8 +209,9 @@ public sealed unsafe class BrotliStreamDecoder
         if (needed > _input.Length)
         {
             long size = Math.Max(needed, Math.Max(_input.Length * 2L, 4096));
-            byte[] input = GC.AllocateUninitializedArray<byte>(checked((int)Math.Min(size, Array.MaxLength)), pinned: true);
+            byte[] input = ArrayPool<byte>.Shared.Rent(checked((int)Math.Min(size, Array.MaxLength)));
             _input.AsSpan(0, (int)_inputLength).CopyTo(input);
+            Return(_input);
             _input = input;
         }
 
@@ -229,9 +248,11 @@ public sealed unsafe class BrotliStreamDecoder
         }
         else
         {
-            long size = Math.Max((long)keep + need, _history.Length * 2L);
-            byte[] history = GC.AllocateUninitializedArray<byte>(checked((int)Math.Min(size, Array.MaxLength)), pinned: true);
+            // At once a window more than the meta-block, so that the window moves once per window of content.
+            long size = Math.Max((long)keep + need, Math.Max(_history.Length * 2L, (long)_decoder.StreamWindow + need));
+            byte[] history = ArrayPool<byte>.Shared.Rent(checked((int)Math.Min(size, Array.MaxLength)));
             _history.AsSpan(drop, keep).CopyTo(history);
+            Return(_history);
             _history = history;
         }
 
