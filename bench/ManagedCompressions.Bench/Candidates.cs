@@ -188,15 +188,15 @@ internal static unsafe class Candidates
         ];
     }
 
+    /// <summary>The highest quality ManagedCompressions.Brotli compresses at, so far.</summary>
+    private const int BrotliCompressorQualities = 9;
+
     /// <summary>
     /// brotli 1.1.1 as .NET ships it in System.IO.Compression, through the calls applications make:
     /// <c>BrotliEncoder.TryCompress</c> (<c>BrotliEncoderCompress</c>) at the quality and .NET's default
     /// window, 22, and <c>BrotliDecoder.TryDecompress</c> (<c>BrotliDecoderDecompress</c>). Each creates
     /// and frees brotli's state, as these calls always do.
     /// </summary>
-    /// <summary>The highest quality ManagedCompressions.Brotli compresses at, so far.</summary>
-    private const int BrotliCompressorQualities = 1;
-
     private static List<Candidate> Brotli(int quality)
     {
         var decompressor = new BrotliDecompressor();

@@ -175,6 +175,24 @@ text.AppendLine("    ];");
 text.AppendLine("}");
 Write(Path.Combine("Encoder", "EncoderTables.Data.cs"), text);
 
+// The encoder's hash table of the static dictionary, which qualities 2 to 9 look words up in: two slots
+// a 14-bit hash of a word's first four bytes, the first for words of 8 bytes and more.
+string dictionaryHashC = File.ReadAllText(Path.Combine(source, "enc", "dictionary_hash.c"));
+long[] hashWords = Numbers(dictionaryHashC, "kStaticDictionaryHashWords[32768] =");
+long[] hashLengths = Numbers(dictionaryHashC, "kStaticDictionaryHashLengths[32768] =");
+Check(hashWords.Length == 32768 && hashLengths.Length == 32768, "32768 slots in the dictionary's hash table");
+text.Clear();
+Header(text, "c/enc/dictionary_hash.c");
+text.AppendLine("internal static partial class DictionaryHash");
+text.AppendLine("{");
+text.AppendLine("    /// <summary>brotli's <c>kStaticDictionaryHashWords</c>: the index of a slot's word among those of its length.</summary>");
+Array(text, "public static ReadOnlySpan<ushort> Words", hashWords, 16);
+text.AppendLine();
+text.AppendLine("    /// <summary>brotli's <c>kStaticDictionaryHashLengths</c>: the length of a slot's word, 0 for none.</summary>");
+Array(text, "public static ReadOnlySpan<byte> Lengths", hashLengths, 32);
+text.AppendLine("}");
+Write(Path.Combine("Encoder", "DictionaryHash.Data.cs"), text);
+
 Console.WriteLine("done");
 return 0;
 

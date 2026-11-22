@@ -13,7 +13,7 @@ namespace ManagedCompressions.Brotli.Tests;
 public sealed class CompressionTests
 {
     /// <summary>The qualities the compressor has so far.</summary>
-    internal static readonly int[] Qualities = [0, 1];
+    internal static readonly int[] Qualities = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     public static IEnumerable<TheoryDataRow<string, int, int, int, int>> Cases()
     {

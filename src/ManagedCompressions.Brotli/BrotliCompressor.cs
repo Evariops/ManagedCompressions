@@ -158,7 +158,9 @@ public sealed unsafe partial class BrotliCompressor
         long maxOut = BitStream.MaxCompressedSize(srcLength);
         int written = Quality <= 1
             ? CompressFast(src, srcLength, dst, dstLength)
-            : throw new NotImplementedException("qualities 2 to 11");
+            : Quality <= 9
+            ? CompressStream(src, srcLength, dst, dstLength)
+            : throw new NotImplementedException("qualities 10 and 11");
         if (written >= 0 && written <= maxOut)
         {
             return written;
