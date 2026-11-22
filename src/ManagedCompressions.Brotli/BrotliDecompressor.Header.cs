@@ -49,15 +49,22 @@ public sealed unsafe partial class BrotliDecompressor
     private int _numDirectDistanceCodes;
     private int _distanceAlphabetSize;
 
-    private readonly TreeGroup _literalGroup = new(LiteralRootBits);
+    private readonly TreeGroup _literalGroup = new(WideLiteralRootBits);
     private readonly TreeGroup _commandGroup = new(CommandRootBits);
     private readonly TreeGroup _distanceGroup = new(DistanceRootBits);
 
     /// <summary>
-    /// The width of the literal codes' root tables. Wider than brotli's 8 bits: a literal of 9 or 10
-    /// bits then takes one lookup instead of two.
+    /// The width of the literal codes' root tables in a meta-block with at least
+    /// <see cref="WideRootContentPerCode"/> bytes of content for each literal code. Wider than brotli's 8
+    /// bits: a literal of 9 or 10 bits then takes one lookup instead of two. A meta-block with less
+    /// content for its codes keeps 8 bits, as filling 1024 entries for each code would cost it more
+    /// than it saves: at quality 11, JSON records of 800 bytes decode 2 % faster so, while at quality 1,
+    /// where a single code decodes most of a record, they decode 4 % faster with 10 bits.
     /// </summary>
-    internal const int LiteralRootBits = 10;
+    internal const int WideLiteralRootBits = 10;
+
+    /// <summary>The content for each literal code from which their root tables are 10 bits wide.</summary>
+    internal const int WideRootContentPerCode = 1024;
 
     /// <summary>The width of the insert-and-copy codes' root tables.</summary>
     internal const int CommandRootBits = 8;
@@ -77,7 +84,7 @@ public sealed unsafe partial class BrotliDecompressor
         public TreeGroup(int rootBits) => RootBits = rootBits;
 
         /// <summary>The width of each code's root table.</summary>
-        public int RootBits { get; }
+        public int RootBits { get; set; }
 
         public uint* Codes;
 
@@ -201,6 +208,7 @@ public sealed unsafe partial class BrotliDecompressor
         }
 
         DetectTrivialLiteralBlockTypes();
+        _literalGroup.RootBits = _metaBlockRemaining / WideRootContentPerCode >= _numLiteralTrees ? WideLiteralRootBits : Huffman.RootBits;
 
         _distanceAlphabetSize = Prefix.DistanceAlphabetSize(_distancePostfixBits, _numDirectDistanceCodes, Prefix.MaxDistanceBits);
         result = DecodeContextMap(_s.NumBlockTypes[2] << Prefix.DistanceContextBits, out _numDistanceTrees, _distContextMap);

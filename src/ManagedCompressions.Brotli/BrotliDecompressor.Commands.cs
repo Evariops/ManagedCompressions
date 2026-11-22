@@ -42,7 +42,7 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The room a dictionary word's wide stores need past the output: <see cref="Transforms.ApplyFast"/>'s.</summary>
     private const int DictionarySlack = 64;
 
-    /// <summary>What <see cref="Commands{TMode}"/> returns when the fast loop hands over to the careful one.</summary>
+    /// <summary>What <see cref="Commands{TMode, TRoot}"/> returns when the fast loop hands over to the careful one.</summary>
     private const int SwitchToCareful = -1;
 
     private const int AtCommandBegin = 0;
@@ -60,6 +60,24 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The loop near the end of the input, which checks every read.</summary>
     private struct CarefulMode : IMode
     {
+    }
+
+    /// <summary>The width of the literal codes' root tables the command loop is compiled for.</summary>
+    private interface IRoot
+    {
+        static abstract int Bits { get; }
+    }
+
+    /// <summary>Root tables of <see cref="WideLiteralRootBits"/> bits.</summary>
+    private struct WideRoot : IRoot
+    {
+        public static int Bits => WideLiteralRootBits;
+    }
+
+    /// <summary>Root tables of brotli's 8 bits.</summary>
+    private struct NarrowRoot : IRoot
+    {
+        public static int Bits => Huffman.RootBits;
     }
 
     /// <summary>Where the careful loop resumes the fast one: <see cref="AtCommandBegin"/> or <see cref="AtLiterals"/>.</summary>
@@ -111,18 +129,20 @@ public sealed unsafe partial class BrotliDecompressor
         PrepareLiteralDecoding();
         _distContextMapSlice = _distContextMap;
         _commandTree = (uint*)_commandGroup.Trees[0];
-        int result = Commands<FastMode>(dst, dstLength, AtCommandBegin);
+        bool wide = _literalGroup.RootBits == WideLiteralRootBits;
+        int result = wide ? Commands<FastMode, WideRoot>(dst, dstLength, AtCommandBegin) : Commands<FastMode, NarrowRoot>(dst, dstLength, AtCommandBegin);
         if (result == SwitchToCareful)
         {
-            result = Commands<CarefulMode>(dst, dstLength, _resume);
+            result = wide ? Commands<CarefulMode, WideRoot>(dst, dstLength, _resume) : Commands<CarefulMode, NarrowRoot>(dst, dstLength, _resume);
         }
 
         return (BrotliError)result;
     }
 
     [SkipLocalsInit]
-    private int Commands<TMode>(byte* dst, int dstLength, int resume)
+    private int Commands<TMode, TRoot>(byte* dst, int dstLength, int resume)
         where TMode : struct, IMode
+        where TRoot : struct, IRoot
     {
         bool careful = typeof(TMode) == typeof(CarefulMode);
 
@@ -290,9 +310,9 @@ public sealed unsafe partial class BrotliDecompressor
                             Refill<TMode>(ref bits, ref count, ref next, end);
                         }
 
-                        op[0] = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
-                        op[1] = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
-                        op[2] = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
+                        op[0] = (byte)DecodeSymbol(tree, ref bits, ref count, TRoot.Bits);
+                        op[1] = (byte)DecodeSymbol(tree, ref bits, ref count, TRoot.Bits);
+                        op[2] = (byte)DecodeSymbol(tree, ref bits, ref count, TRoot.Bits);
                         op += 3;
                     }
                 }
@@ -304,7 +324,7 @@ public sealed unsafe partial class BrotliDecompressor
                         Refill<TMode>(ref bits, ref count, ref next, end);
                     }
 
-                    *op++ = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
+                    *op++ = (byte)DecodeSymbol(tree, ref bits, ref count, TRoot.Bits);
                     if (careful && Overrun(next, end, count))
                     {
                         goto Truncated;
@@ -325,11 +345,11 @@ public sealed unsafe partial class BrotliDecompressor
                             Refill<TMode>(ref bits, ref count, ref next, end);
                         }
 
-                        p2 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p1] | lookup[256 + p2]], ref bits, ref count, LiteralRootBits);
+                        p2 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p1] | lookup[256 + p2]], ref bits, ref count, TRoot.Bits);
                         op[0] = (byte)p2;
-                        p1 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p2] | lookup[256 + p1]], ref bits, ref count, LiteralRootBits);
+                        p1 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p2] | lookup[256 + p1]], ref bits, ref count, TRoot.Bits);
                         op[1] = (byte)p1;
-                        p2 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p1] | lookup[256 + p2]], ref bits, ref count, LiteralRootBits);
+                        p2 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p1] | lookup[256 + p2]], ref bits, ref count, TRoot.Bits);
                         op[2] = (byte)p2;
                         op += 3;
                         (p1, p2) = (p2, p1);
@@ -345,7 +365,7 @@ public sealed unsafe partial class BrotliDecompressor
 
                     uint* tree = (uint*)contextTrees[lookup[p1] | lookup[256 + p2]];
                     p2 = p1;
-                    p1 = (uint)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
+                    p1 = (uint)DecodeSymbol(tree, ref bits, ref count, TRoot.Bits);
                     *op++ = (byte)p1;
                     if (careful && Overrun(next, end, count))
                     {

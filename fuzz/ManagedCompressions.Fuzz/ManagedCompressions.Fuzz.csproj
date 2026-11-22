@@ -21,8 +21,10 @@
   <ItemGroup>
     <ProjectReference Include="../../src/ManagedCompressions.Zstd/ManagedCompressions.Zstd.csproj" />
     <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
+    <ProjectReference Include="../../src/ManagedCompressions.Brotli/ManagedCompressions.Brotli.csproj" />
     <Compile Include="../../tests/ManagedCompressions.Zstd.Tests/Support/GuardedBuffer.cs" LinkBase="Shared" />
     <Compile Include="../../tests/ManagedCompressions.Zstd.Tests/Support/DataKinds.cs" LinkBase="Shared" />
+    <Compile Include="../../tests/ManagedCompressions.Brotli.Tests/Support/NativeBrotli.cs" LinkBase="Shared" />
   </ItemGroup>
 
 </Project>

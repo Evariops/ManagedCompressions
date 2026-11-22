@@ -1,13 +1,17 @@
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Tests.Support;
 
 /// <summary>
-/// brotli 1.1.1, the oracle, as .NET ships it: <c>System.IO.Compression.Native</c> exports brotli's
-/// whole C API, which <c>BrotliEncoder</c>, <c>BrotliDecoder</c> and <c>BrotliStream</c> call. The
-/// tests call it directly, for the parameters and the error codes the managed API does not expose.
+/// brotli 1.1.1, the oracle: <c>tools/native-ref/out/libbrotli_ref</c>, built from brotli's sources by
+/// <c>tools/native-ref/build-brotli.sh</c>, and without it the brotli .NET ships in
+/// <c>System.IO.Compression.Native</c>, which <c>BrotliEncoder</c>, <c>BrotliDecoder</c> and
+/// <c>BrotliStream</c> call. On Windows the latter exports brotli's whole C API; on Linux and macOS
+/// only the functions .NET calls, without the decoder's error codes (<see cref="HasErrorCodes"/>) and
+/// the versions. CI builds the reference library, and the tests require it there.
 /// </summary>
 internal static unsafe class NativeBrotli
 {
@@ -31,14 +35,25 @@ internal static unsafe class NativeBrotli
     public const int OperationFlush = 1;
     public const int OperationFinish = 2;
 
-    private static readonly nint Library = NativeLibrary.Load(Path.Combine(
-        RuntimeEnvironment.GetRuntimeDirectory(),
-        OperatingSystem.IsWindows() ? "System.IO.Compression.Native.dll"
-        : OperatingSystem.IsMacOS() ? "libSystem.IO.Compression.Native.dylib"
-        : "libSystem.IO.Compression.Native.so"));
+    /// <summary>The library loaded: the reference build's path, or <see cref="DotNetLibrary"/>.</summary>
+    public static readonly string Name;
 
-    private static readonly delegate* unmanaged<uint> EncoderVersionFn = (delegate* unmanaged<uint>)Export("BrotliEncoderVersion");
-    private static readonly delegate* unmanaged<uint> DecoderVersionFn = (delegate* unmanaged<uint>)Export("BrotliDecoderVersion");
+    /// <summary>.NET's own native library, which the tests fall back to.</summary>
+    public const string DotNetLibrary = "System.IO.Compression.Native";
+
+    private static readonly nint Library = Load(out Name);
+
+    /// <summary>Whether the library is the reference build of <c>tools/native-ref/build-brotli.sh</c>.</summary>
+    public static bool IsReference => Name != DotNetLibrary;
+
+    /// <summary>Whether the library exports the decoder's error codes, which .NET's does on Windows only.</summary>
+    public static bool HasErrorCodes => DecoderGetErrorCodeFn != null;
+
+    /// <summary>Whether the library exports the versions, which .NET's does on Windows only.</summary>
+    public static bool HasVersions => EncoderVersionFn != null;
+
+    private static readonly delegate* unmanaged<uint> EncoderVersionFn = (delegate* unmanaged<uint>)OptionalExport("BrotliEncoderVersion");
+    private static readonly delegate* unmanaged<uint> DecoderVersionFn = (delegate* unmanaged<uint>)OptionalExport("BrotliDecoderVersion");
     private static readonly delegate* unmanaged<int, int, int, nuint, byte*, nuint*, byte*, int> EncoderCompressFn =
         (delegate* unmanaged<int, int, int, nuint, byte*, nuint*, byte*, int>)Export("BrotliEncoderCompress");
     private static readonly delegate* unmanaged<nuint, nuint> EncoderMaxCompressedSizeFn =
@@ -55,10 +70,10 @@ internal static unsafe class NativeBrotli
         (delegate* unmanaged<nint, nint, nint, nint>)Export("BrotliDecoderCreateInstance");
     private static readonly delegate* unmanaged<nint, void> DecoderDestroyFn = (delegate* unmanaged<nint, void>)Export("BrotliDecoderDestroyInstance");
     private static readonly delegate* unmanaged<nint, int, uint, int> DecoderSetParameterFn =
-        (delegate* unmanaged<nint, int, uint, int>)Export("BrotliDecoderSetParameter");
+        (delegate* unmanaged<nint, int, uint, int>)OptionalExport("BrotliDecoderSetParameter");
     private static readonly delegate* unmanaged<nint, nuint*, byte**, nuint*, byte**, nuint*, int> DecoderDecompressStreamFn =
         (delegate* unmanaged<nint, nuint*, byte**, nuint*, byte**, nuint*, int>)Export("BrotliDecoderDecompressStream");
-    private static readonly delegate* unmanaged<nint, int> DecoderGetErrorCodeFn = (delegate* unmanaged<nint, int>)Export("BrotliDecoderGetErrorCode");
+    private static readonly delegate* unmanaged<nint, int> DecoderGetErrorCodeFn = (delegate* unmanaged<nint, int>)OptionalExport("BrotliDecoderGetErrorCode");
 
     public static uint EncoderVersion => EncoderVersionFn();
 
@@ -141,7 +156,7 @@ internal static unsafe class NativeBrotli
         nint state = DecoderCreateFn(0, 0, 0);
         try
         {
-            if (largeWindow)
+            if (largeWindow && DecoderSetParameterFn != null)
             {
                 DecoderSetParameterFn(state, 1, 1);
             }
@@ -156,7 +171,7 @@ internal static unsafe class NativeBrotli
                 byte* nextOut = dst;
                 nuint total = 0;
                 int result = DecoderDecompressStreamFn(state, &availableIn, &nextIn, &availableOut, capacity == 0 ? null : &nextOut, &total);
-                return (result, DecoderGetErrorCodeFn(state), source.Length - (int)availableIn, output.AsSpan(0, (int)total).ToArray());
+                return (result, HasErrorCodes ? DecoderGetErrorCodeFn(state) : 0, source.Length - (int)availableIn, output.AsSpan(0, (int)total).ToArray());
             }
         }
         finally
@@ -165,5 +180,38 @@ internal static unsafe class NativeBrotli
         }
     }
 
+
+    private static nint Load(out string name)
+    {
+        string extension = OperatingSystem.IsWindows() ? "dll" : OperatingSystem.IsMacOS() ? "dylib" : "so";
+        string reference = Environment.GetEnvironmentVariable("BROTLI_REF")
+            ?? Path.Combine(RepositoryRoot(), "tools", "native-ref", "out", "libbrotli_ref." + extension);
+        if (File.Exists(reference))
+        {
+            name = reference;
+            return NativeLibrary.Load(reference);
+        }
+
+        name = DotNetLibrary;
+        return NativeLibrary.Load(Path.Combine(
+            RuntimeEnvironment.GetRuntimeDirectory(),
+            OperatingSystem.IsWindows() ? "System.IO.Compression.Native.dll"
+            : OperatingSystem.IsMacOS() ? "libSystem.IO.Compression.Native.dylib"
+            : "libSystem.IO.Compression.Native.so"));
+    }
+
     private static nint Export(string name) => NativeLibrary.GetExport(Library, name);
+
+    private static nint OptionalExport(string name) => NativeLibrary.TryGetExport(Library, name, out nint address) ? address : 0;
+
+    private static string RepositoryRoot([CallerFilePath] string here = "")
+    {
+        string? directory = Path.GetDirectoryName(here);
+        while (directory is not null && !File.Exists(Path.Combine(directory, "ManagedCompressions.slnx")))
+        {
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return directory ?? string.Empty;
+    }
 }

@@ -50,12 +50,14 @@ internal static class Program
     {
         ["zstd"] = [1, 3, 5, 7, 9, 13, 16, 19],
         ["lz4"] = [1, 2, 3, 6, 9, 12],
+        ["brotli"] = [1, 4, 5, 9, 11],
     };
 
     private static readonly Dictionary<string, string[]> DefaultSets = new()
     {
         ["zstd"] = ["silesia", "silesia-64k", "github", "github-dict"],
         ["lz4"] = ["silesia", "silesia-64k", "github"],
+        ["brotli"] = ["silesia", "silesia-64k", "github"],
     };
 
     public static int Main(string[] args)
@@ -120,7 +122,7 @@ internal static class Program
                 : DefaultLevels[codec];
             foreach (string name in sets)
             {
-                if (codec == "lz4" && name.EndsWith("-dict", StringComparison.Ordinal))
+                if (codec != "zstd" && name.EndsWith("-dict", StringComparison.Ordinal))
                 {
                     continue;
                 }

@@ -39,7 +39,7 @@ internal static class Verdict
 
             default:
                 Assert.True(result == NativeBrotli.ResultError, context);
-                Assert.True(Equivalent(error, code), context + ": another error");
+                Assert.True(!NativeBrotli.HasErrorCodes || Equivalent(error, code), context + ": another error");
                 break;
         }
 
