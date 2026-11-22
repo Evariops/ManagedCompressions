@@ -368,15 +368,32 @@ Finally, run the tests:
 
 ```sh
 dotnet test -c Release --solution ManagedCompressions.slnx
+dotnet test -c Checked --solution ManagedCompressions.slnx
 ```
 
 The tests check the compressors against the native libraries byte for byte, at every level. They also
 check the decoders against every frame and block the native libraries write, and against zstd's golden
-files and decodecorpus frames. Fuzzing runs with each buffer placed against an inaccessible memory page,
-so that a single byte read or written out of bounds faults.
+files and decodecorpus frames.
+
+The codecs read and write their buffers through pointers, without bounds checks, for speed. Three things
+check that they stay within them:
+
+- **The Checked build** (`-c Checked`) places every table, window and buffer the libraries address that
+  way against an inaccessible memory page, so that a single byte read or written past it faults at once,
+  where the build that ships would read or overwrite the heap silently. It runs the libraries' assertions,
+  which check the margins their fast loops rely on, and fills the buffers they do not clear with a
+  pattern, so that a byte read before it is written shows in the output. `MANAGEDCOMPRESSIONS_GUARD=start`
+  places the buffers against the page before them instead, for underruns. Only the tests and the fuzzing
+  use it: the packages are built in Release, unchanged.
+- **The tests' own buffers**, the sources and destinations, also lie against inaccessible pages in the
+  tests that mutate frames and streams and that compress into the bound and into less.
+- **Fuzzing** (`fuzz/`), coverage-guided, against the native libraries, on the Checked build with its
+  sources and destinations against inaccessible pages too.
 
 CI builds everything and runs the tests on every pull request, the benchmarks excepted: their figures
-mean something on a quiet machine only. It also runs the repository's [prek](https://github.com/j178/prek)
+mean something on a quiet machine only. It runs them in Release, in the Checked build with the guard
+pages after the buffers and then before them, and in Release again with the runtime verifying its heap at
+every collection. It also runs the repository's [prek](https://github.com/j178/prek)
 hooks, betterleaks for secrets and zizmor for the workflows; `prek install` runs them before each commit.
 Each merged pull request updates a draft GitHub release; publishing it runs the same checks on its tag,
 then pushes the packages to nuget.org.
