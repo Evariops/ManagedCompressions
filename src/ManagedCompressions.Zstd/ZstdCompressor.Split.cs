@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -264,6 +265,7 @@ public sealed unsafe partial class ZstdCompressor
                 return -1;
             }
 
+            Bounds.Within(destination, written, destination, destination + capacity);
             WriteBlockHeader(destination, lastBlock, (1 << 1) | (sourceSize << 3));
             destination[FrameFormat.BlockHeaderSize] = *source;
             decoderRep[0] = original0;
@@ -279,6 +281,7 @@ public sealed unsafe partial class ZstdCompressor
             }
 
             (_previous, _next) = (_next, _previous);
+            Bounds.Within(destination, written, destination, destination + capacity);
             WriteBlockHeader(destination, lastBlock, (2 << 1) | ((int)size << 3));
             CopyBlockOutput(compressed, destination, size);
         }
@@ -299,6 +302,7 @@ public sealed unsafe partial class ZstdCompressor
             return -1;
         }
 
+        Bounds.Within(destination, written, destination, destination + capacity);
         WriteBlockHeader(destination, lastBlock, size << 3);
         Buffer.MemoryCopy(source, destination + FrameFormat.BlockHeaderSize, size, size);
         return written;

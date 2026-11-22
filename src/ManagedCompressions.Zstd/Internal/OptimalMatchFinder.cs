@@ -1,8 +1,10 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
+using ManagedCompressions.Internal;
 using static ManagedCompressions.Zstd.Internal.MatchFinder;
 
 namespace ManagedCompressions.Zstd.Internal;
@@ -388,6 +390,8 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
                     matchCount = optimal.LongDistance.Process(matches, matchCount, (uint)(ip - istart), (uint)(iend - ip), minMatch);
                 }
 
+                Debug.Assert(matchCount <= OptimalState.OptSize, "the matches within their table");
+
                 if (matchCount == 0)
                 {
                     ip++;
@@ -435,6 +439,7 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
                     {
                         int matchPrice = (int)(offsetPrice + MatchLengthPrice(optimal, offCode, position));
                         int sequencePrice = opt[0].Price + matchPrice;
+                        Bounds.Index((nint)position, OptimalState.OptSize);
                         opt[position].MatchLength = position;
                         opt[position].OffBase = offBase;
                         opt[position].LiteralLength = 0;
@@ -443,6 +448,7 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
                 }
 
                 lastPosition = position - 1;
+                Bounds.Index((nint)position, OptimalState.OptSize);
                 opt[position].Price = MaxPrice;
             }
 
@@ -472,6 +478,7 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
                             if ((withOneLiteral < withMoreLiterals) && (withOneLiteral < opt[cur + 1].Price))
                             {
                                 uint previous = cur - previousMatch.MatchLength;
+                                Bounds.Index((nint)(cur + 1), OptimalState.OptSize);
                                 opt[cur + 1] = previousMatch;
                                 NewRep(&opt[cur + 1], &opt[previous], previousMatch.OffBase, opt[previous].LiteralLength == 0 ? 1u : 0u);
                                 opt[cur + 1].LiteralLength = 1;
@@ -520,6 +527,8 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
                         matchCount = optimal.LongDistance.Process(matches, matchCount, (uint)(inr - istart), (uint)(iend - inr), minMatch);
                     }
 
+                    Debug.Assert(matchCount <= OptimalState.OptSize, "the matches within their table");
+
                     if (matchCount == 0)
                     {
                         continue;
@@ -538,6 +547,9 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
                     lastPosition = PriceMatches(optimal, opt, matches, matchCount, cur, basePrice, lastPosition, minMatch);
                 }
 
+                // SAFETY: a match that would reach OptNum is taken at once, above: the positions stay below
+                // OptNum, and the table holds three more.
+                Bounds.Index((nint)(lastPosition + 1), OptimalState.OptSize);
                 opt[lastPosition + 1].Price = MaxPrice;
             }
 
@@ -911,6 +923,7 @@ internal static unsafe class OptimalParser<TLength, TLevel, TDictionary>
             for (uint length = lastLength; length >= startLength; length--)
             {
                 uint position = cur + length;
+                Bounds.Index((nint)position, OptimalState.OptSize);
                 int price = offsetPrice + (int)MatchLengthPrice(optimal, offCode, length);
                 OptimalNode* node = opt + position;
                 if ((position > lastPosition) || (price < node->Price))
