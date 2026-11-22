@@ -434,26 +434,56 @@ internal static unsafe class CompressFragmentTwoPass
         s.CmdHisto[84] += 1;
         BuildAndStoreCommandPrefixCode(s, ref storageIx, storage);
 
+        // The codes combined: a literal's bits with its depth from bit 16; a command's bits, its depth from
+        // bit 16 and its extra bits' count from bit 24. A symbol is then one load, a command one write with
+        // its extra bits, and four literals, of 14 bits at most each, one write.
         ReadOnlySpan<byte> numExtraBits = NumExtraBits;
         ReadOnlySpan<uint> insertOffset = InsertOffset;
-        byte* cmdDepth = s.CmdDepth;
-        ushort* cmdBits = s.CmdBits;
-        byte* litDepth = s.LitDepth;
-        ushort* litBits = s.LitBits;
+        uint* litCodes = stackalloc uint[256];
+        uint* cmdCodes = stackalloc uint[128];
+        for (int i = 0; i < 256; ++i)
+        {
+            litCodes[i] = s.LitBits[i] | ((uint)s.LitDepth[i] << 16);
+        }
+
+        for (int i = 0; i < 128; ++i)
+        {
+            cmdCodes[i] = s.CmdBits[i] | ((uint)s.CmdDepth[i] << 16) | ((uint)numExtraBits[i] << 24);
+        }
+
         var sink = new BitSink(storageIx, storage);
         for (int i = 0; i < numCommands; ++i)
         {
             uint cmd = commands[i];
             uint code = cmd & 0xFF;
             uint extra = cmd >> 8;
-            sink.Write(cmdDepth[code], cmdBits[code]);
-            sink.Write(numExtraBits[(int)code], extra);
+            uint combined = cmdCodes[code];
+            int depth = (int)((combined >> 16) & 0xFF);
+            sink.Write(depth + (int)(combined >> 24), (combined & 0xFFFF) | ((ulong)extra << depth));
             if (code < 24)
             {
-                uint insert = insertOffset[(int)code] + extra;
-                for (byte* end = literals + insert; literals < end; literals++)
+                byte* end = literals + insertOffset[(int)code] + extra;
+                for (; literals + 4 <= end; literals += 4)
                 {
-                    BitWriter.WriteLiteral(ref sink, *literals, litDepth, litBits);
+                    uint lit = litCodes[literals[0]];
+                    ulong bits = lit & 0xFFFF;
+                    int count = (int)(lit >> 16);
+                    lit = litCodes[literals[1]];
+                    bits |= (ulong)(lit & 0xFFFF) << count;
+                    count += (int)(lit >> 16);
+                    lit = litCodes[literals[2]];
+                    bits |= (ulong)(lit & 0xFFFF) << count;
+                    count += (int)(lit >> 16);
+                    lit = litCodes[literals[3]];
+                    bits |= (ulong)(lit & 0xFFFF) << count;
+                    count += (int)(lit >> 16);
+                    sink.Write(count, bits);
+                }
+
+                for (; literals < end; literals++)
+                {
+                    uint lit = litCodes[*literals];
+                    sink.Write((int)(lit >> 16), lit & 0xFFFF);
                 }
             }
         }
