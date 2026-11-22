@@ -4,7 +4,7 @@ using ManagedCompressions.Brotli.Internal;
 namespace ManagedCompressions.Brotli;
 
 /// <summary>
-/// Qualities 2 to 9, as <c>BrotliEncoderCompressStream</c> runs them when it is given the whole input and
+/// Qualities 2 to 11, as <c>BrotliEncoderCompressStream</c> runs them when it is given the whole input and
 /// asked to finish: the input copied into the ring buffer a block at a time, each block processed, and the
 /// meta-blocks copied into the destination as they are written.
 /// </summary>
@@ -12,7 +12,7 @@ public sealed unsafe partial class BrotliCompressor
 {
     private EncoderState? _state;
 
-    /// <summary>The stream of qualities 2 to 9 into <paramref name="dst"/>: its size, or -1 when it does not fit.</summary>
+    /// <summary>The stream of qualities 2 to 11 into <paramref name="dst"/>: its size, or -1 when it does not fit.</summary>
     private int CompressStream(byte* src, int srcLength, byte* dst, int dstLength)
     {
         EncoderState state = _state ??= new EncoderState();

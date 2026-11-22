@@ -8,6 +8,9 @@ internal sealed unsafe partial class EncoderState
     /// <summary>brotli's <c>CONTEXT_UTF8</c>.</summary>
     private const int ContextModeUtf8 = 2;
 
+    /// <summary>brotli's <c>CONTEXT_SIGNED</c>.</summary>
+    private const int ContextModeSigned = 3;
+
     private static ReadOnlySpan<uint> StaticContextMapContinuation =>
     [
         1, 1, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -216,7 +219,7 @@ internal sealed unsafe partial class EncoderState
     /// brotli's <c>WriteMetaBlockInternal</c>: the meta-block of <paramref name="bytes"/> bytes from
     /// <paramref name="lastFlushPos"/>, compressed, or stored when that is smaller or the data looks random.
     /// </summary>
-    private void WriteMetaBlockInternal(byte* data, nuint mask, ulong lastFlushPos, uint bytes, bool isLast, byte* literalContextLut, Command* commands, ref int storageIx, byte* storage)
+    private void WriteMetaBlockInternal(byte* data, nuint mask, ulong lastFlushPos, uint bytes, bool isLast, int literalContextMode, Command* commands, ref int storageIx, byte* storage)
     {
         uint wrappedLastFlushPos = WrapPosition(lastFlushPos);
         nuint numLiterals = _numLiterals;
@@ -251,16 +254,26 @@ internal sealed unsafe partial class EncoderState
         {
             MetaBlockSplit mb = _mb;
             mb.Init();
-            nuint numLiteralContexts = 1;
-            ReadOnlySpan<uint> literalContextMap = default;
-            DecideOverLiteralContextModeling(data, wrappedLastFlushPos, bytes, mask, ref numLiteralContexts, ref literalContextMap);
-            fixed (uint* map = literalContextMap)
+
+            // The meta-block's own distance parameters, which qualities 10 and 11 choose.
+            DistanceParams blockDist = _dist;
+            if (_quality < 10)
             {
-                _greedy.Build(data, wrappedLastFlushPos, mask, _prevByte, _prevByte2, literalContextLut, numLiteralContexts, map, commands, numCommands, mb);
+                nuint numLiteralContexts = 1;
+                ReadOnlySpan<uint> literalContextMap = default;
+                DecideOverLiteralContextModeling(data, wrappedLastFlushPos, bytes, mask, ref numLiteralContexts, ref literalContextMap);
+                fixed (uint* map = literalContextMap)
+                {
+                    _greedy.Build(data, wrappedLastFlushPos, mask, _prevByte, _prevByte2, BitStream.ContextLut(literalContextMode), numLiteralContexts, map, commands, numCommands, mb);
+                }
+            }
+            else
+            {
+                (_hqBuilder ??= new HqMetaBlockBuilder()).Build(data, wrappedLastFlushPos, mask, _quality, ref blockDist, _prevByte, _prevByte2, commands, numCommands, literalContextMode, mb);
             }
 
-            _greedy.OptimizeHistograms(_dist.AlphabetSizeLimit, mb);
-            BitStream.StoreMetaBlock(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, _prevByte, _prevByte2, isLast, _dist, ContextModeUtf8, commands, numCommands, mb, ref storageIx, storage);
+            _greedy.OptimizeHistograms(blockDist.AlphabetSizeLimit, mb);
+            BitStream.StoreMetaBlock(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, _prevByte, _prevByte2, isLast, blockDist, literalContextMode, commands, numCommands, mb, ref storageIx, storage);
         }
 
         if (bytes + 4 < (uint)(storageIx >> 3))

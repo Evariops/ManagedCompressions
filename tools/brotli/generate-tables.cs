@@ -193,6 +193,38 @@ Array(text, "public static ReadOnlySpan<byte> Lengths", hashLengths, 32);
 text.AppendLine("}");
 Write(Path.Combine("Encoder", "DictionaryHash.Data.cs"), text);
 
+// The lookup table of the static dictionary's words and their transforms, which qualities 10 and 11 find
+// every dictionary match with: buckets by a 15-bit hash of 4 bytes, into lists of words.
+string lutC = File.ReadAllText(Path.Combine(source, "enc", "static_dict_lut.h"));
+long[] buckets = Numbers(lutC, "kStaticDictionaryBuckets[32768] =");
+long[] dictWords = Numbers(lutC, "kStaticDictionaryWords[31705] =");
+Check(buckets.Length == 32768, "32768 buckets in the static dictionary's lookup table");
+Check(dictWords.Length == 3 * 31705, "31705 words in the static dictionary's lookup table");
+long[] packedWords = new long[31705];
+for (int i = 0; i < packedWords.Length; i++)
+{
+    long len = dictWords[3 * i];
+    long transform = dictWords[(3 * i) + 1];
+    long idx = dictWords[(3 * i) + 2];
+    Check(len < 256 && transform < 256 && idx < 65536, "a DictWord's fields fit their types");
+    packedWords[i] = len | (transform << 8) | (idx << 16);
+}
+
+text.Clear();
+Header(text, "c/enc/static_dict_lut.h");
+text.AppendLine("internal static partial class StaticDictionaryLut");
+text.AppendLine("{");
+text.AppendLine("    /// <summary>brotli's <c>kStaticDictionaryBuckets</c>: the first word of a hash's list, 0 for none.</summary>");
+Array(text, "public static ReadOnlySpan<ushort> Buckets", buckets, 16);
+text.AppendLine();
+text.AppendLine("    /// <summary>");
+text.AppendLine("    /// brotli's <c>kStaticDictionaryWords</c>, a <c>DictWord</c> an entry as it lies in memory: the length");
+text.AppendLine("    /// in the low byte, its bit 7 set on a list's last word, then the transform, then the index in 16 bits.");
+text.AppendLine("    /// </summary>");
+Array(text, "public static ReadOnlySpan<uint> Words", packedWords, 8, hex: true);
+text.AppendLine("}");
+Write(Path.Combine("Encoder", "StaticDictionaryLut.Data.cs"), text);
+
 Console.WriteLine("done");
 return 0;
 
@@ -288,7 +320,8 @@ static void Array(StringBuilder text, string declaration, long[] values, int per
         int end = Math.Min(values.Length, i + perLine);
         for (int j = i; j < end; j++)
         {
-            text.Append(hex ? "0x" + values[j].ToString("X16", CultureInfo.InvariantCulture) : values[j].ToString(CultureInfo.InvariantCulture)).Append(',');
+            string digits = declaration.Contains("<uint>", StringComparison.Ordinal) ? "X8" : "X16";
+            text.Append(hex ? "0x" + values[j].ToString(digits, CultureInfo.InvariantCulture) : values[j].ToString(CultureInfo.InvariantCulture)).Append(',');
             if (j + 1 < end)
             {
                 text.Append(' ');

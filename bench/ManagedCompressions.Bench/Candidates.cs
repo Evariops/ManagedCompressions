@@ -189,7 +189,7 @@ internal static unsafe class Candidates
     }
 
     /// <summary>The highest quality ManagedCompressions.Brotli compresses at, so far.</summary>
-    private const int BrotliCompressorQualities = 9;
+    private const int BrotliCompressorQualities = 11;
 
     /// <summary>
     /// brotli 1.1.1 as .NET ships it in System.IO.Compression, through the calls applications make:

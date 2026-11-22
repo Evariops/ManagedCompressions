@@ -60,13 +60,16 @@ internal sealed unsafe partial class EncoderState
     private HashForgetfulChain<H40> _h40;
     private HashForgetfulChain<H41> _h41;
     private HashForgetfulChain<H42> _h42;
+    private HashToBinaryTree _h10;
+    private Zopfli? _zopfli;
+    private HqMetaBlockBuilder? _hqBuilder;
 
     /// <summary>The window, from the parameters: brotli's <c>params.lgwin</c>.</summary>
     public int WindowLog => _lgwin;
 
     /// <summary>
     /// brotli's <c>BrotliEncoderInitState</c> and <c>EnsureInitialized</c>: a new stream, at
-    /// <paramref name="quality"/> 2 to 9.
+    /// <paramref name="quality"/> 2 to 11.
     /// </summary>
     public void Reset(int quality, int lgwin, BrotliMode mode, nuint sizeHint)
     {
@@ -255,9 +258,9 @@ internal sealed unsafe partial class EncoderState
         }
 
         Command* commandsBase = (Command*)Unsafe.AsPointer(ref _commandsArray[0]);
-        byte* literalContextLut = BitStream.ContextLut(ContextModeUtf8);
-        switch (_hasherType = HasherSetupType())
+        switch (_hasherType = HasherSetupType(wrappedLastProcessedPos == 0 && isLast, bytes))
         {
+            case 10: ProcessBlockZopfli(data, mask, ref bytes, ref wrappedLastProcessedPos, commandsBase); break;
             case 2: ProcessBlock(ref _h2, data, mask, ref bytes, ref wrappedLastProcessedPos, isLast, commandsBase); break;
             case 3: ProcessBlock(ref _h3, data, mask, ref bytes, ref wrappedLastProcessedPos, isLast, commandsBase); break;
             case 4: ProcessBlock(ref _h4, data, mask, ref bytes, ref wrappedLastProcessedPos, isLast, commandsBase); break;
@@ -311,7 +314,12 @@ internal sealed unsafe partial class EncoderState
             int storageIx = _lastBytesBits;
             storage[0] = (byte)_lastBytes;
             storage[1] = (byte)(_lastBytes >> 8);
-            WriteMetaBlockInternal(data, mask, _lastFlushPos, metablockSize, isLast, literalContextLut, commandsBase, ref storageIx, storage);
+            // brotli's ChooseContextMode, which reads the meta-block's bytes only: signed contexts for
+            // the data of qualities 10 and 11 that is not mostly UTF-8.
+            int literalContextMode = _quality >= 10 && !LiteralCost.IsMostlyUtf8(data, WrapPosition(_lastFlushPos), mask, (nuint)(_inputPos - _lastFlushPos), LiteralCost.MinUtf8Ratio)
+                ? ContextModeSigned
+                : ContextModeUtf8;
+            WriteMetaBlockInternal(data, mask, _lastFlushPos, metablockSize, isLast, literalContextMode, commandsBase, ref storageIx, storage);
             _lastBytes = storage[storageIx >> 3];
             _lastBytesBits = storageIx & 7;
             _lastFlushPos = _inputPos;
@@ -342,7 +350,7 @@ internal sealed unsafe partial class EncoderState
     private nuint MaxMetablockSize => (nuint)1 << Math.Min(1 + Math.Max(_lgwin, _lgblock), 24);
 
     /// <summary>brotli's <c>ChooseHasher</c>, run once a stream, at its first block, by <c>HasherSetup</c>.</summary>
-    private int HasherSetupType()
+    private int HasherSetupType(bool oneShot, nuint inputSize)
     {
         if (_hasherSetup)
         {
@@ -350,7 +358,11 @@ internal sealed unsafe partial class EncoderState
         }
 
         int type;
-        if (_quality == 4 && _sizeHint >= (1 << 20))
+        if (_quality > 9)
+        {
+            type = 10;
+        }
+        else if (_quality == 4 && _sizeHint >= (1 << 20))
         {
             type = 54;
         }
@@ -374,6 +386,10 @@ internal sealed unsafe partial class EncoderState
         int numLastDistancesToCheck = _quality < 7 ? 4 : _quality < 9 ? 10 : 16;
         switch (type)
         {
+            case 10:
+                _h10.Initialize(_hasherMemory, _lgwin, oneShot, inputSize);
+                (_zopfli ??= new Zopfli()).Setup(_quality, _lgwin);
+                break;
             case 2: _h2.Initialize(_hasherMemory); break;
             case 3: _h3.Initialize(_hasherMemory); break;
             case 4: _h4.Initialize(_hasherMemory); break;
@@ -411,6 +427,31 @@ internal sealed unsafe partial class EncoderState
         }
 
         BackwardReferences.Create(ref hasher, bytes, wrappedLastProcessedPos, data, mask, _quality, _lgwin, _dist, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
+    }
+
+    /// <summary>The block of qualities 10 and 11: the binary tree hasher, and Zopfli's backward references.</summary>
+    private void ProcessBlockZopfli(byte* data, nuint mask, ref uint bytes, ref uint wrappedLastProcessedPos, Command* commands)
+    {
+        if (!_hasherPrepared)
+        {
+            _h10.Prepare();
+            _hasherPrepared = true;
+        }
+
+        _h10.StitchToPreviousBlock(bytes, wrappedLastProcessedPos, data, mask);
+        if (_numCommands != 0 && _lastInsertLen == 0)
+        {
+            ExtendLastCommand(commands, ref bytes, ref wrappedLastProcessedPos);
+        }
+
+        if (_quality == 10)
+        {
+            _zopfli!.CreateBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
+        }
+        else
+        {
+            _zopfli!.CreateHqBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
+        }
     }
 
     /// <summary>brotli's <c>ExtendLastCommand</c>: the last copy, longer into the new block when it can be.</summary>
