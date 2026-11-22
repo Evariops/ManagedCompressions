@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -27,7 +28,7 @@ internal sealed class HuffmanTable
     public const int MaxSymbols = 256;
 
     /// <summary>The table, and four entries past the widest: the fill writes four entries at a time.</summary>
-    public readonly ushort[] Entries = new ushort[(1 << MaxTableLog) + 4];
+    public readonly PinnedBuffer<ushort> Entries = PinnedBuffer<ushort>.Allocate((1 << MaxTableLog) + 4);
 
     /// <summary>The number of bits an entry is looked up with.</summary>
     public int TableLog;
@@ -41,7 +42,7 @@ internal sealed class HuffmanTable
     /// with, as <c>nbBits | symbols &lt;&lt; 8 | count &lt;&lt; 30</c>: the bits to consume where a shift
     /// takes them, the symbols where one store writes both, the count where an add takes it shifted.
     /// </summary>
-    private uint[]? _double;
+    private PinnedBuffer<uint> _double;
 
     /// <summary>Whether <see cref="_double"/> was built from the current tree.</summary>
     private bool _hasDouble;
@@ -112,7 +113,7 @@ internal sealed class HuffmanTable
         }
 
         // ---- the entries, in table order
-        ref ushort table = ref MemoryMarshal.GetArrayDataReference(Entries);
+        ref ushort table = ref Entries.Reference;
         nint symbol = 0;
         nint position = 0;
         for (int w = 1; w <= tableLog; w++)
@@ -164,7 +165,7 @@ internal sealed class HuffmanTable
         weights.Slice((int)symbolCount).Clear();
         nint chunks = (symbolCount + 31) >> 5;
         ref byte weight = ref MemoryMarshal.GetReference(weights);
-        ref ushort table = ref MemoryMarshal.GetArrayDataReference(Entries);
+        ref ushort table = ref Entries.Reference;
         nint position = 0;
         for (int w = 1; w <= tableLog; w++)
         {
@@ -448,14 +449,14 @@ internal sealed class HuffmanTable
         if (useDouble)
         {
             RunFourStreamsDouble(
-                ref streams, ref MemoryMarshal.GetArrayDataReference(_double!), ref input,
+                ref streams, ref _double.Reference, ref input,
                 ref Unsafe.Add(ref first, segment), ref Unsafe.Add(ref first, 2 * segment),
                 ref Unsafe.Add(ref first, 3 * segment), ref Unsafe.Add(ref first, output.Length));
         }
         else
         {
             RunFourStreams(
-                ref streams, ref MemoryMarshal.GetArrayDataReference(Entries), 64 - TableLog, ref input,
+                ref streams, ref Entries.Reference, 64 - TableLog, ref input,
                 ref Unsafe.Add(ref first, output.Length));
         }
 
@@ -783,10 +784,14 @@ internal sealed class HuffmanTable
     private void BuildDouble()
     {
         // Four entries past the table: a fill writes four at a time.
-        uint[] table = _double ??= new uint[(1 << DoubleLog) + 4];
+        if (_double.IsEmpty)
+        {
+            _double = PinnedBuffer<uint>.Allocate((1 << DoubleLog) + 4);
+        }
+
         int scale = DoubleLog - TableLog;
-        ref ushort single = ref MemoryMarshal.GetArrayDataReference(Entries);
-        ref uint output = ref MemoryMarshal.GetArrayDataReference(table);
+        ref ushort single = ref Entries.Reference;
+        ref uint output = ref _double.Reference;
 
         // ---- the runs of the single-symbol table, in its order: symbol, code length, start in 11 bits
         Span<byte> runSymbol = stackalloc byte[MaxSymbols];
@@ -896,5 +901,5 @@ internal sealed class HuffmanTable
         // A reload leaves at least 57 bits while the stream has them; a code takes at most 12. An
         // entry index is below 2^TableLog: no bounds to check.
         bits.DecodeHuffmanSymbols(
-            ref MemoryMarshal.GetArrayDataReference(Entries), TableLog, ref MemoryMarshal.GetReference(output), output.Length);
+            ref Entries.Reference, TableLog, ref MemoryMarshal.GetReference(output), output.Length);
 }

@@ -779,14 +779,14 @@ internal static unsafe partial class BitStream
 /// <summary>The memory of the meta-block storage functions: brotli's arenas, pinned and kept.</summary>
 internal sealed unsafe class MetaBlockStorage
 {
-    private readonly PinnedBuffer<HuffmanTree> _tree = new();
-    private readonly PinnedBuffer<byte> _fixed = new();
-    private readonly PinnedBuffer<uint> _rleSymbols = new();
-    private readonly PinnedBuffer<byte>[] _depths = [new(), new(), new()];
-    private readonly PinnedBuffer<ushort>[] _bits = [new(), new(), new()];
-    private readonly PinnedBuffer<HistogramLiteral> _literalHistogram = new();
-    private readonly PinnedBuffer<HistogramCommand> _commandHistogram = new();
-    private readonly PinnedBuffer<HistogramDistance> _distanceHistogram = new();
+    private readonly GrowingBuffer<HuffmanTree> _tree = new();
+    private readonly GrowingBuffer<byte> _fixed = new();
+    private readonly GrowingBuffer<uint> _rleSymbols = new();
+    private readonly GrowingBuffer<byte>[] _depths = [new(), new(), new()];
+    private readonly GrowingBuffer<ushort>[] _bits = [new(), new(), new()];
+    private readonly GrowingBuffer<HistogramLiteral> _literalHistogram = new();
+    private readonly GrowingBuffer<HistogramCommand> _commandHistogram = new();
+    private readonly GrowingBuffer<HistogramDistance> _distanceHistogram = new();
     private readonly byte* _fixedBase;
 
     private const int ContextMapSymbols = Prefix.MaxBlockTypes + 16;

@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -10,10 +11,10 @@ namespace ManagedCompressions.Brotli.Internal;
 /// </summary>
 internal sealed unsafe class FastEncoder
 {
-    private readonly PinnedBuffer<byte> _storage = new();
+    private readonly GrowingBuffer<byte> _storage = new();
     private OnePassArena? _onePass;
     private TwoPassArena? _twoPass;
-    private int[] _hashTableArray = [];
+    private PinnedBuffer<int> _hashTableArray;
     private int _quality;
 
     /// <summary>A new stream at quality 0 or 1: brotli's <c>EnsureInitialized</c>, for the fast qualities.</summary>
@@ -68,12 +69,20 @@ internal sealed unsafe class FastEncoder
             size <<= 1;
         }
 
+#if CHECKED
+        // Exactly the table used, against its guard page: it is cleared below anyway.
+        if (_hashTableArray.Length != size)
+        {
+            _hashTableArray = PinnedBuffer<int>.Allocate(size, clear: false);
+        }
+#else
         if (_hashTableArray.Length < size)
         {
-            _hashTableArray = GC.AllocateUninitializedArray<int>(1 << 17, pinned: true);
+            _hashTableArray = PinnedBuffer<int>.Allocate(1 << 17, clear: false);
         }
+#endif
 
-        int* table = (int*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_hashTableArray));
+        int* table = _hashTableArray.Pointer;
         new Span<int>(table, size).Clear();
         tableSize = size;
         return table;

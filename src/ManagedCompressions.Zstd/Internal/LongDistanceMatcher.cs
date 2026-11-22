@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.IO.Hashing;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -234,11 +235,11 @@ internal sealed unsafe class LongDistanceMatcher
     private const int HashLogMax = 30;
     private const uint WindowStartIndex = 2;
 
-    private ulong[] _table = [];
-    private byte[] _bucketOffsets = [];
-    private readonly RawSequence[] _sequences = GC.AllocateArray<RawSequence>((FrameFormat.MaxBlockSize / 32) + 1, pinned: true);
-    private readonly nuint[] _splits = GC.AllocateArray<nuint>(BatchSize, pinned: true);
-    private readonly Candidate[] _candidates = GC.AllocateArray<Candidate>(BatchSize, pinned: true);
+    private PinnedBuffer<ulong> _table;
+    private PinnedBuffer<byte> _bucketOffsets;
+    private readonly PinnedBuffer<RawSequence> _sequences = PinnedBuffer<RawSequence>.Allocate((FrameFormat.MaxBlockSize / 32) + 1);
+    private readonly PinnedBuffer<nuint> _splits = PinnedBuffer<nuint>.Allocate(BatchSize);
+    private readonly PinnedBuffer<Candidate> _candidates = PinnedBuffer<Candidate>.Allocate(BatchSize);
     private int _windowLog;
     private int _hashLog;
     private int _bucketSizeLog;
@@ -284,7 +285,7 @@ internal sealed unsafe class LongDistanceMatcher
     public long RetainedBytes => (8L * _table.Length) + _bucketOffsets.Length;
 
     /// <summary>The sequences the last <see cref="GenerateSequences"/> found.</summary>
-    public RawSequence* Sequences => (RawSequence*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_sequences));
+    public RawSequence* Sequences => _sequences.Pointer;
 
     /// <summary>
     /// libzstd's <c>ZSTD_ldm_adjustParameters</c> with every parameter left to it, then its reset for
@@ -303,20 +304,20 @@ internal sealed unsafe class LongDistanceMatcher
         int bucketCount = 1 << (_hashLog - _bucketSizeLog);
         if (_table.Length < tableSize)
         {
-            _table = GC.AllocateArray<ulong>(tableSize, pinned: true);
+            _table = PinnedBuffer<ulong>.Allocate(tableSize);
         }
         else
         {
-            Array.Clear(_table, 0, tableSize);
+            _table.AsSpan(0, tableSize).Clear();
         }
 
         if (_bucketOffsets.Length < bucketCount)
         {
-            _bucketOffsets = GC.AllocateArray<byte>(bucketCount, pinned: true);
+            _bucketOffsets = PinnedBuffer<byte>.Allocate(bucketCount);
         }
         else
         {
-            Array.Clear(_bucketOffsets, 0, bucketCount);
+            _bucketOffsets.AsSpan(0, bucketCount).Clear();
         }
 
         // libzstd's ZSTD_ldm_gear_init: the stop mask, its bits as high as the window of a match allows.
@@ -363,7 +364,7 @@ internal sealed unsafe class LongDistanceMatcher
         _lowLimit = OverflowCorrection.Limit(_lowLimit, correction);
         _dictLimit = OverflowCorrection.Limit(_dictLimit, correction);
         _overflowCorrections++;
-        ulong* table = (ulong*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_table));
+        ulong* table = _table.Pointer;
         for (int i = 0; i < 1 << _hashLog; i++)
         {
             uint offset = (uint)table[i];
@@ -538,9 +539,9 @@ internal sealed unsafe class LongDistanceMatcher
         byte* ilimit = iend - HashReadSize;
         byte* anchor = istart;
         byte* ip = istart;
-        nuint* splits = (nuint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_splits));
-        Candidate* candidates = (Candidate*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_candidates));
-        ulong* table = (ulong*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_table));
+        nuint* splits = _splits.Pointer;
+        Candidate* candidates = _candidates.Pointer;
+        ulong* table = _table.Pointer;
         if (size < minMatchLength)
         {
             leftover = size;
@@ -762,7 +763,7 @@ internal sealed unsafe class LongDistanceMatcher
         uint minMatchLength = (uint)_minMatchLength;
         uint hashMask = (1u << (_hashLog - _bucketSizeLog)) - 1;
         byte* istart = ip;
-        nuint* splits = (nuint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_splits));
+        nuint* splits = _splits.Pointer;
         ulong rolling = uint.MaxValue;
         while (ip < iend)
         {

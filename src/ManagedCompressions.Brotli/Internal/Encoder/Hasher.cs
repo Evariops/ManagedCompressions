@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -205,16 +206,16 @@ internal static unsafe class HasherCommon
 /// <summary>A hasher's arrays: pinned, grown when needed, kept from one stream to the next.</summary>
 internal sealed unsafe class HasherMemory
 {
-    private readonly byte[][] _arrays = [[], [], [], []];
+    private readonly PinnedBuffer<byte>[] _arrays = new PinnedBuffer<byte>[4];
 
     /// <summary>The array <paramref name="index"/>, of at least <paramref name="size"/> bytes, aligned to 8.</summary>
     public byte* Get(int index, nuint size)
     {
         if ((nuint)_arrays[index].Length < size)
         {
-            _arrays[index] = GC.AllocateUninitializedArray<byte>(checked((int)size), pinned: true);
+            _arrays[index] = PinnedBuffer<byte>.Allocate(checked((int)size), clear: false);
         }
 
-        return (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_arrays[index]));
+        return _arrays[index].Pointer;
     }
 }

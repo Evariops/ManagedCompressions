@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Hashing;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -75,7 +76,7 @@ public sealed partial class ZstdDecompressor
     /// The dictionary given with the frame, copied with <see cref="DecoderDictionary.Margin"/> bytes of
     /// room after it when it is no larger than <see cref="CopiedDictionaryMax"/>: grown, never shrunk.
     /// </summary>
-    private byte[] _callHistory = [];
+    private PinnedBuffer<byte> _callHistory;
 
     /// <summary>
     /// Whether the call fills its destination with the start of the frame's content and stops there:
@@ -120,7 +121,7 @@ public sealed partial class ZstdDecompressor
     }
 
     /// <summary>The memory the decompressor holds on to beyond its tables, roughly: its literals and records, a copied small dictionary.</summary>
-    internal long RetainedBytes => (long)_literals.Length + (8L * (_records?.Length ?? 0)) + _callHistory.Length;
+    internal long RetainedBytes => (long)_literals.Length + (8L * _records.Length) + _callHistory.Length;
 
     /// <summary>
     /// Why the last call refused its frame: the check that failed, where the status it returned says
@@ -378,7 +379,7 @@ public sealed partial class ZstdDecompressor
         {
             if (_callHistory.Length < dictionary.Length + DecoderDictionary.Margin)
             {
-                _callHistory = new byte[dictionary.Length + DecoderDictionary.Margin];
+                _callHistory = PinnedBuffer<byte>.Allocate(dictionary.Length + DecoderDictionary.Margin);
             }
 
             dictionary.CopyTo(_callHistory);

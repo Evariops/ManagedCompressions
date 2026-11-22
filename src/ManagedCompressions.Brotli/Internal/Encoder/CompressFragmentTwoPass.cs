@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -21,24 +22,24 @@ internal sealed unsafe class TwoPassArena
     private const int TmpBitsOffset = TmpDepthOffset + Prefix.NumCommandSymbols;
     private const int Size = TmpBitsOffset + (64 * 2) + 16;
 
-    public readonly byte[] Buffer = GC.AllocateArray<byte>(Size, pinned: true);
-    public readonly uint[] CommandArray = GC.AllocateUninitializedArray<uint>(BlockSize, pinned: true);
-    public readonly byte[] LiteralArray = GC.AllocateUninitializedArray<byte>(BlockSize, pinned: true);
+    private readonly PinnedArena _arena = new(Size);
+    private readonly PinnedBuffer<uint> _commands = PinnedBuffer<uint>.Allocate(BlockSize, clear: false);
+    private readonly PinnedBuffer<byte> _literals = PinnedBuffer<byte>.Allocate(BlockSize, clear: false);
 
     public TwoPassArena()
     {
-        byte* b = (byte*)Unsafe.AsPointer(ref Buffer[0]);
-        LitHisto = (uint*)(b + LitHistoOffset);
-        LitDepth = b + LitDepthOffset;
-        LitBits = (ushort*)(b + LitBitsOffset);
-        CmdHisto = (uint*)(b + CmdHistoOffset);
-        CmdDepth = b + CmdDepthOffset;
-        CmdBits = (ushort*)(b + CmdBitsOffset);
-        TmpTree = (HuffmanTree*)(b + TmpTreeOffset);
-        TmpDepth = b + TmpDepthOffset;
-        TmpBits = (ushort*)(b + TmpBitsOffset);
-        Commands = (uint*)Unsafe.AsPointer(ref CommandArray[0]);
-        Literals = (byte*)Unsafe.AsPointer(ref LiteralArray[0]);
+        // In the offsets' order, each table the size up to the next offset.
+        LitHisto = _arena.Take<uint>(LitDepthOffset - LitHistoOffset);
+        LitDepth = _arena.Take<byte>(LitBitsOffset - LitDepthOffset);
+        LitBits = _arena.Take<ushort>(CmdHistoOffset - LitBitsOffset);
+        CmdHisto = _arena.Take<uint>(CmdDepthOffset - CmdHistoOffset);
+        CmdDepth = _arena.Take<byte>(CmdBitsOffset - CmdDepthOffset);
+        CmdBits = _arena.Take<ushort>(TmpTreeOffset - CmdBitsOffset);
+        TmpTree = _arena.Take<HuffmanTree>(TmpDepthOffset - TmpTreeOffset);
+        TmpDepth = _arena.Take<byte>(TmpBitsOffset - TmpDepthOffset);
+        TmpBits = _arena.Take<ushort>(Size - TmpBitsOffset);
+        Commands = _commands.Pointer;
+        Literals = _literals.Pointer;
     }
 
     public readonly uint* LitHisto;

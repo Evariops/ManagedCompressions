@@ -547,13 +547,13 @@ internal static unsafe class Cluster
 /// <summary>The memory of the clustering: brotli's allocations, pinned and kept.</summary>
 internal sealed unsafe class ClusterArena
 {
-    private readonly PinnedBuffer<uint> _clusterSize = new();
-    private readonly PinnedBuffer<uint> _clusters = new();
-    private readonly PinnedBuffer<uint> _newIndex = new();
-    private readonly PinnedBuffer<HistogramPair> _pairs = new();
-    private readonly PinnedBuffer<HistogramPair> _pairsGrown = new();
-    private readonly PinnedBuffer<byte> _histograms = new();
-    private readonly PinnedBuffer<byte> _tmp = new();
+    private readonly GrowingBuffer<uint> _clusterSize = new();
+    private readonly GrowingBuffer<uint> _clusters = new();
+    private readonly GrowingBuffer<uint> _newIndex = new();
+    private readonly GrowingBuffer<HistogramPair> _pairs = new();
+    private readonly GrowingBuffer<HistogramPair> _pairsGrown = new();
+    private readonly GrowingBuffer<byte> _histograms = new();
+    private readonly GrowingBuffer<byte> _tmp = new();
 
     public uint* ClusterSize(nuint count) => _clusterSize.Ensure(count);
 

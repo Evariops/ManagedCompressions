@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -75,7 +76,7 @@ internal sealed unsafe class HuffmanWorkspace
     /// <summary>The encoding table of the tree's weights.</summary>
     public readonly FseCTable Weights;
 
-    private byte[] _streams = [];
+    private PinnedBuffer<byte> _streams;
 
     /// <summary>
     /// Grows the streams' room to the blocks of <paramref name="blockSize"/> bytes, as the sequence store
@@ -89,8 +90,8 @@ internal sealed unsafe class HuffmanWorkspace
             return;
         }
 
-        _streams = GC.AllocateUninitializedArray<byte>(4 * capacity, pinned: true);
-        Streams = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_streams));
+        _streams = PinnedBuffer<byte>.Allocate(4 * capacity, clear: false);
+        Streams = _streams.Pointer;
         StreamCapacity = capacity;
     }
 

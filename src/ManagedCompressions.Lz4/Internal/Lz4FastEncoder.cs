@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 using static ManagedCompressions.Lz4.Internal.Lz4Common;
 
 namespace ManagedCompressions.Lz4.Internal;
@@ -45,16 +46,16 @@ internal sealed unsafe class Lz4FastEncoder
     private const int ClearAbove = 4096;
 
     /// <summary>The table blocks of every size share, its entries tagged by the numbering.</summary>
-    private readonly uint[] _table = GC.AllocateArray<uint>(TableSize, pinned: true);
+    private readonly PinnedBuffer<uint> _table = PinnedBuffer<uint>.Allocate(TableSize);
 
     /// <summary>lz4's own 16-bit table, cleared before each block between <see cref="ClearAbove"/> and 64 KiB.</summary>
-    private readonly ushort[] _table16 = GC.AllocateArray<ushort>(TableSize, pinned: true);
+    private readonly PinnedBuffer<ushort> _table16 = PinnedBuffer<ushort>.Allocate(TableSize);
 
     /// <summary>
     /// The search's cold values, behind a pointer the JIT cannot promote to registers: a stackalloc
     /// would do the same, but keeps the method from tiering, and from its profile.
     /// </summary>
-    private readonly Cold[] _cold = GC.AllocateArray<Cold>(1, pinned: true);
+    private readonly PinnedBuffer<Cold> _cold = PinnedBuffer<Cold>.Allocate(1);
 
     /// <summary>The number of the next block's first position.</summary>
     private uint _nextIndex;
@@ -87,48 +88,42 @@ internal sealed unsafe class Lz4FastEncoder
             // A cleared table numbered from the block's start, lz4's own: no entry to clamp.
             if (length < Limit64K)
             {
-                fixed (ushort* table = _table16)
-                {
-                    Unsafe.InitBlockUnaligned(table, 0, (1 << SmallHashLog) * sizeof(ushort));
-                    return limited
-                        ? Compress<Small16, Limited>(ColdPointer, (uint*)table, 0, source, length, destination, capacity, acceleration)
-                        : Compress<Small16, Unlimited>(ColdPointer, (uint*)table, 0, source, length, destination, capacity, acceleration);
-                }
-            }
-
-            fixed (uint* table = _table)
-            {
-                Unsafe.InitBlockUnaligned(table, 0, (1 << LargeHashLog) * sizeof(uint));
-
-                // Its entries lie below the block's length: a tagged block after it starts above.
-                _nextIndex = Math.Max(_nextIndex, (uint)length);
+                ushort* table16 = _table16.Pointer;
+                Unsafe.InitBlockUnaligned(table16, 0, (1 << SmallHashLog) * sizeof(ushort));
                 return limited
-                    ? Compress<Large32, Limited>(ColdPointer, table, 0, source, length, destination, capacity, acceleration)
-                    : Compress<Large32, Unlimited>(ColdPointer, table, 0, source, length, destination, capacity, acceleration);
+                    ? Compress<Small16, Limited>(ColdPointer, (uint*)table16, 0, source, length, destination, capacity, acceleration)
+                    : Compress<Small16, Unlimited>(ColdPointer, (uint*)table16, 0, source, length, destination, capacity, acceleration);
             }
+
+            uint* table32 = _table.Pointer;
+            Unsafe.InitBlockUnaligned(table32, 0, (1 << LargeHashLog) * sizeof(uint));
+
+            // Its entries lie below the block's length: a tagged block after it starts above.
+            _nextIndex = Math.Max(_nextIndex, (uint)length);
+            return limited
+                ? Compress<Large32, Limited>(ColdPointer, table32, 0, source, length, destination, capacity, acceleration)
+                : Compress<Large32, Unlimited>(ColdPointer, table32, 0, source, length, destination, capacity, acceleration);
         }
 
         if (_nextIndex > ResetAbove)
         {
-            Array.Clear(_table);
+            _table.Clear();
             _nextIndex = 0;
         }
 
         uint startIndex = _nextIndex;
         _nextIndex += (uint)length;
-        fixed (uint* table = _table)
-        {
-            return limited
-                ? Compress<SmallTagged, Limited>(ColdPointer, table, startIndex, source, length, destination, capacity, acceleration)
-                : Compress<SmallTagged, Unlimited>(ColdPointer, table, startIndex, source, length, destination, capacity, acceleration);
-        }
+        uint* table = _table.Pointer;
+        return limited
+            ? Compress<SmallTagged, Limited>(ColdPointer, table, startIndex, source, length, destination, capacity, acceleration)
+            : Compress<SmallTagged, Unlimited>(ColdPointer, table, startIndex, source, length, destination, capacity, acceleration);
     }
 
     /// <summary>
     /// What the search loop does not touch, in memory the JIT does not promote (stack allocated): in
     /// registers, these pushed the loop's own out.
     /// </summary>
-    private Cold* ColdPointer => (Cold*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_cold));
+    private Cold* ColdPointer => _cold.Pointer;
 
     private struct Cold
     {

@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -112,11 +113,11 @@ internal static unsafe partial class Transforms
     }
 
     /// <summary>The 121 transforms, unpacked.</summary>
-    internal static readonly Info[] Infos = BuildInfos();
+    internal static readonly PinnedBuffer<Info> Infos = BuildInfos();
 
-    private static Info[] BuildInfos()
+    private static PinnedBuffer<Info> BuildInfos()
     {
-        var infos = new Info[Count];
+        PinnedBuffer<Info> infos = PinnedBuffer<Info>.Allocate(Count);
         for (int t = 0; t < Count; t++)
         {
             int type = Triplets[(t * 3) + 1];

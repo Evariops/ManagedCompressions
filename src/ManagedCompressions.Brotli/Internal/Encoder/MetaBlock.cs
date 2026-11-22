@@ -1,37 +1,44 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
-/// <summary>An array on the pinned heap, grown when needed and kept.</summary>
-internal sealed unsafe class PinnedBuffer<T>
+/// <summary>
+/// A pinned buffer, grown when needed and kept: by doubling, or in the Checked build to the exact
+/// count asked, so that its guard page follows the last item asked for.
+/// </summary>
+internal sealed unsafe class GrowingBuffer<T>
     where T : unmanaged
 {
-    private T[] _array = [];
+    private PinnedBuffer<T> _buffer;
 
     /// <summary>The buffer, of at least <paramref name="count"/> items; its content is not kept when it grows.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T* Ensure(nuint count)
     {
-        if ((nuint)_array.Length < count)
+        if ((nuint)_buffer.Length < count)
         {
             Grow(count);
         }
 
-        return (T*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_array));
+        return _buffer.Pointer;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(nuint count) =>
-        _array = GC.AllocateUninitializedArray<T>(checked((int)Math.Max(count, (nuint)_array.Length * 2)), pinned: true);
+#if CHECKED
+        _buffer = PinnedBuffer<T>.Allocate(checked((int)count), clear: false);
+#else
+        _buffer = PinnedBuffer<T>.Allocate(checked((int)Math.Max(count, (nuint)_buffer.Length * 2)), clear: false);
+#endif
 }
 
 /// <summary>brotli's <c>BlockSplit</c>: the blocks of a category, their types and lengths.</summary>
 internal sealed unsafe class BlockSplit
 {
-    private readonly PinnedBuffer<byte> _types = new();
-    private readonly PinnedBuffer<uint> _lengths = new();
+    private readonly GrowingBuffer<byte> _types = new();
+    private readonly GrowingBuffer<uint> _lengths = new();
 
     public nuint NumTypes;
     public nuint NumBlocks;
@@ -56,11 +63,11 @@ internal sealed unsafe class BlockSplit
 /// <summary>brotli's <c>MetaBlockSplit</c>: the blocks, context maps and histograms of a meta-block.</summary>
 internal sealed unsafe class MetaBlockSplit
 {
-    private readonly PinnedBuffer<uint> _literalContextMap = new();
-    private readonly PinnedBuffer<uint> _distanceContextMap = new();
-    private readonly PinnedBuffer<HistogramLiteral> _literalHistograms = new();
-    private readonly PinnedBuffer<HistogramCommand> _commandHistograms = new();
-    private readonly PinnedBuffer<HistogramDistance> _distanceHistograms = new();
+    private readonly GrowingBuffer<uint> _literalContextMap = new();
+    private readonly GrowingBuffer<uint> _distanceContextMap = new();
+    private readonly GrowingBuffer<HistogramLiteral> _literalHistograms = new();
+    private readonly GrowingBuffer<HistogramCommand> _commandHistograms = new();
+    private readonly GrowingBuffer<HistogramDistance> _distanceHistograms = new();
 
     public readonly BlockSplit LiteralSplit = new();
     public readonly BlockSplit CommandSplit = new();
@@ -477,13 +484,13 @@ internal unsafe struct ContextBlockSplitter
 /// <summary>brotli's greedy meta-block builder and its histogram optimization (<c>c/enc/metablock.c</c>).</summary>
 internal sealed unsafe class GreedyMetaBlockBuilder
 {
-    private readonly PinnedBuffer<HistogramLiteral> _literalCombined = new();
-    private readonly PinnedBuffer<HistogramCommand> _commandCombined = new();
-    private readonly PinnedBuffer<HistogramDistance> _distanceCombined = new();
-    private readonly PinnedBuffer<double> _lastEntropy = new();
-    private readonly PinnedBuffer<byte> _goodForRle = new();
+    private readonly GrowingBuffer<HistogramLiteral> _literalCombined = new();
+    private readonly GrowingBuffer<HistogramCommand> _commandCombined = new();
+    private readonly GrowingBuffer<HistogramDistance> _distanceCombined = new();
+    private readonly GrowingBuffer<double> _lastEntropy = new();
+    private readonly GrowingBuffer<byte> _goodForRle = new();
     /// <summary>The numbers of histograms the splitters update: pinned, as the splitters hold pointers to them.</summary>
-    private readonly PinnedBuffer<nuint> _histogramsSizes = new();
+    private readonly GrowingBuffer<nuint> _histogramsSizes = new();
 
     /// <summary>brotli's <c>BrotliBuildMetaBlockGreedy</c>.</summary>
     public void Build(byte* ringBuffer, nuint pos, nuint mask, byte prevByte, byte prevByte2, byte* literalContextLut, nuint numContexts, uint* staticContextMap, Command* commands, nuint numCommands, MetaBlockSplit mb)

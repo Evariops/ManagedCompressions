@@ -3,6 +3,11 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ManagedCompressions.Brotli.Internal;
+#if CHECKED
+using StreamBuffer = ManagedCompressions.Internal.PinnedBuffer<byte>;
+#else
+using StreamBuffer = byte[];
+#endif
 
 namespace ManagedCompressions.Brotli;
 
@@ -29,9 +34,9 @@ public sealed unsafe class BrotliStreamDecoder : IDisposable
     private const int CompactThreshold = 1 << 16;
 
     private readonly BrotliDecompressor _decoder = new();
-    private byte[] _input = [];
+    private StreamBuffer _input = Empty;
     private long _inputLength;
-    private byte[] _history = [];
+    private StreamBuffer _history = Empty;
     private int _delivered;
     private bool _started;
     private bool _finished;
@@ -52,18 +57,34 @@ public sealed unsafe class BrotliStreamDecoder : IDisposable
     {
         Return(_input);
         Return(_history);
-        _input = [];
-        _history = [];
+        _input = Empty;
+        _history = Empty;
         Reset();
     }
 
-    private static void Return(byte[] array)
+#if CHECKED
+    // The Checked build hands the decoder guarded buffers of the size asked, the guard page right
+    // after the last byte, where a rented array may be longer: an access past them faults.
+    private static StreamBuffer Empty => default;
+
+    private static StreamBuffer Take(long size, long needed) => StreamBuffer.Allocate(checked((int)needed), clear: false);
+
+    private static void Return(StreamBuffer buffer)
+    {
+    }
+#else
+    private static StreamBuffer Empty => [];
+
+    private static StreamBuffer Take(long size, long needed) => ArrayPool<byte>.Shared.Rent(checked((int)Math.Min(size, Array.MaxLength)));
+
+    private static void Return(StreamBuffer array)
     {
         if (array.Length != 0)
         {
             ArrayPool<byte>.Shared.Return(array);
         }
     }
+#endif
 
     /// <summary>Starts a new stream, the buffers kept.</summary>
     public void Reset()
@@ -209,7 +230,7 @@ public sealed unsafe class BrotliStreamDecoder : IDisposable
         if (needed > _input.Length)
         {
             long size = Math.Max(needed, Math.Max(_input.Length * 2L, 4096));
-            byte[] input = ArrayPool<byte>.Shared.Rent(checked((int)Math.Min(size, Array.MaxLength)));
+            StreamBuffer input = Take(size, needed);
             _input.AsSpan(0, (int)_inputLength).CopyTo(input);
             Return(_input);
             _input = input;
@@ -250,7 +271,7 @@ public sealed unsafe class BrotliStreamDecoder : IDisposable
         {
             // At once a window more than the meta-block, so that the window moves once per window of content.
             long size = Math.Max((long)keep + need, Math.Max(_history.Length * 2L, (long)_decoder.StreamWindow + need));
-            byte[] history = ArrayPool<byte>.Shared.Rent(checked((int)Math.Min(size, Array.MaxLength)));
+            StreamBuffer history = Take(size, (long)keep + need);
             _history.AsSpan(drop, keep).CopyTo(history);
             Return(_history);
             _history = history;

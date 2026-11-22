@@ -1,10 +1,8 @@
-using System;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
-/// <summary>The match finders' tables: pinned arrays, their first entry on a cache line's boundary.</summary>
+/// <summary>The match finders' tables: pinned buffers, their first entry on a cache line's boundary.</summary>
 internal static unsafe class Tables
 {
     /// <summary>
@@ -16,20 +14,26 @@ internal static unsafe class Tables
 
     /// <summary>
     /// A table of at least <paramref name="size"/> entries from a <see cref="Alignment"/> boundary:
-    /// the array grown (and so cleared) when too small, else cleared when <paramref name="clear"/>.
+    /// the buffer grown (and so cleared) when too small, else cleared when <paramref name="clear"/>.
+    /// The Checked build sizes it exactly and leaves it unaligned, its end against the guard page:
+    /// the alignment is for speed alone.
     /// </summary>
     /// <returns>The table's first entry, or null when no table was ever needed.</returns>
-    public static T* Reserve<T>(ref T[] table, int size, bool clear)
+    public static T* Reserve<T>(ref PinnedBuffer<T> table, int size, bool clear)
         where T : unmanaged
     {
+#if CHECKED
+        int padded = size;
+#else
         int padded = size == 0 ? 0 : size + (Alignment / sizeof(T));
+#endif
         if (table.Length < padded)
         {
-            table = GC.AllocateArray<T>(padded, pinned: true);
+            table = PinnedBuffer<T>.Allocate(padded);
         }
         else if (clear)
         {
-            Array.Clear(table);
+            table.Clear();
         }
 
         if (table.Length == 0)
@@ -37,7 +41,11 @@ internal static unsafe class Tables
             return null;
         }
 
-        nuint start = (nuint)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(table));
+#if CHECKED
+        return table.Pointer;
+#else
+        nuint start = (nuint)table.Pointer;
         return (T*)((start + (Alignment - 1)) & ~(nuint)(Alignment - 1));
+#endif
     }
 }

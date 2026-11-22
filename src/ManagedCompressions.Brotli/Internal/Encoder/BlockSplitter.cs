@@ -29,22 +29,22 @@ internal sealed unsafe class BlockSplitter
     private const int HistogramsPerBatch = 64;
     private const int ClustersPerBatch = 16;
 
-    private readonly PinnedBuffer<byte> _literals = new();
-    private readonly PinnedBuffer<ushort> _codes = new();
-    private readonly PinnedBuffer<byte> _histograms = new();
-    private readonly PinnedBuffer<byte> _allHistograms = new();
-    private readonly PinnedBuffer<byte> _blockIds = new();
-    private readonly PinnedBuffer<double> _insertCost = new();
-    private readonly PinnedBuffer<double> _cost = new();
-    private readonly PinnedBuffer<byte> _switchSignal = new();
-    private readonly PinnedBuffer<ushort> _newId = new();
-    private readonly PinnedBuffer<uint> _histogramSymbols = new();
-    private readonly PinnedBuffer<uint> _u32 = new();
-    private readonly PinnedBuffer<uint> _clusterSize = new();
-    private readonly PinnedBuffer<uint> _clusters = new();
-    private readonly PinnedBuffer<uint> _newIndex = new();
-    private readonly PinnedBuffer<HistogramPair> _pairs = new();
-    private readonly PinnedBuffer<byte> _tmp = new();
+    private readonly GrowingBuffer<byte> _literals = new();
+    private readonly GrowingBuffer<ushort> _codes = new();
+    private readonly GrowingBuffer<byte> _histograms = new();
+    private readonly GrowingBuffer<byte> _allHistograms = new();
+    private readonly GrowingBuffer<byte> _blockIds = new();
+    private readonly GrowingBuffer<double> _insertCost = new();
+    private readonly GrowingBuffer<double> _cost = new();
+    private readonly GrowingBuffer<byte> _switchSignal = new();
+    private readonly GrowingBuffer<ushort> _newId = new();
+    private readonly GrowingBuffer<uint> _histogramSymbols = new();
+    private readonly GrowingBuffer<uint> _u32 = new();
+    private readonly GrowingBuffer<uint> _clusterSize = new();
+    private readonly GrowingBuffer<uint> _clusters = new();
+    private readonly GrowingBuffer<uint> _newIndex = new();
+    private readonly GrowingBuffer<HistogramPair> _pairs = new();
+    private readonly GrowingBuffer<byte> _tmp = new();
 
     /// <summary>brotli's <c>BrotliSplitBlock</c>: the splits of the literals, the commands and the distances.</summary>
     public void SplitBlock(Command* cmds, nuint numCommands, byte* data, nuint pos, nuint mask, int quality, BlockSplit literalSplit, BlockSplit insertAndCopySplit, BlockSplit distSplit)
@@ -613,7 +613,7 @@ internal sealed unsafe class BlockSplitter
     }
 
     /// <summary>A buffer grown to <paramref name="bytes"/>, which keeps its first <paramref name="keep"/> bytes.</summary>
-    private static byte* Grow<T>(PinnedBuffer<T> buffer, nuint keep, nuint bytes)
+    private static byte* Grow<T>(GrowingBuffer<T> buffer, nuint keep, nuint bytes)
         where T : unmanaged
     {
         byte[] copy = new byte[(int)keep];

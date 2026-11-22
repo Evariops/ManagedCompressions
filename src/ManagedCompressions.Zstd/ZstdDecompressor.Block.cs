@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Numerics;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -15,7 +16,7 @@ public sealed partial class ZstdDecompressor
     /// The literals of the block being decoded, when they are not read in place: sized for the largest
     /// block of the frames so far, as far as their destinations allow (see <see cref="EnsureLiterals"/>).
     /// </summary>
-    private byte[] _literals = [];
+    private PinnedBuffer<byte> _literals;
     private readonly HuffmanTable _huffman;
     private SequenceTableSet _sequenceTables;
     private HuffmanTable _currentHuffman;
@@ -30,12 +31,12 @@ public sealed partial class ZstdDecompressor
     /// bytes and the <see cref="LiteralsMargin"/> after them: a power of two from 1 KiB, never shrunk,
     /// so that a decoder of small frames keeps a buffer of their size.
     /// </summary>
-    private static void EnsureLiterals(ref byte[] buffer, int literals)
+    private static void EnsureLiterals(ref PinnedBuffer<byte> buffer, int literals)
     {
         if (buffer.Length - LiteralsMargin < literals)
         {
             int size = (int)Math.Min(FrameFormat.MaxBlockSize, BitOperations.RoundUpToPowerOf2((uint)Math.Max(literals, 1 << 10)));
-            buffer = new byte[size + LiteralsMargin];
+            buffer = PinnedBuffer<byte>.Allocate(size + LiteralsMargin);
         }
     }
 
@@ -86,7 +87,7 @@ public sealed partial class ZstdDecompressor
     /// <param name="literalCount">The number of literals.</param>
     /// <returns>The size of the literals section.</returns>
     private int DecodeLiterals(
-        ReadOnlySpan<byte> source, int blockStart, int blockSize, int blockSizeMax, int expectedWriteSize, byte[] buffer,
+        ReadOnlySpan<byte> source, int blockStart, int blockSize, int blockSizeMax, int expectedWriteSize, PinnedBuffer<byte> buffer,
         out ReadOnlySpan<byte> literals, out int literalCount)
     {
         ReadOnlySpan<byte> block = source.Slice(blockStart, blockSize);

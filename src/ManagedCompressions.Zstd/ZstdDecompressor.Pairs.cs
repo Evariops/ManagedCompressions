@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -75,10 +76,10 @@ public sealed partial class ZstdDecompressor
     // ---- the second block of a pair: its literals, its short bitstream, the set of its tables (which
     // becomes the current one once it is decoded); and the records, as many as the largest pair
     // needed. Allocated with the first pair.
-    private byte[]? _pairLiterals;
-    private byte[]? _pairShortBitstream;
+    private PinnedBuffer<byte> _pairLiterals;
+    private PinnedBuffer<byte> _pairShortBitstream;
     private SequenceTableSet? _pairTables;
-    private ulong[]? _records;
+    private PinnedBuffer<ulong> _records;
 
     /// <summary>
     /// Whether the block header at <paramref name="at"/> is a compressed block's, whole within
@@ -198,10 +199,14 @@ public sealed partial class ZstdDecompressor
         // ---- B, read before A executes: with the room A leaves at most, rechecked once A is done
         _sequenceEntropy = true;
         // B's literals fit what A's buffer was sized for: the frame's blocks and its destination.
-        byte[] pairLiterals = _pairLiterals ?? [];
+        PinnedBuffer<byte> pairLiterals = _pairLiterals;
         EnsureLiterals(ref pairLiterals, _literals.Length - LiteralsMargin);
         _pairLiterals = pairLiterals;
-        _pairShortBitstream ??= new byte[8];
+        if (_pairShortBitstream.IsEmpty)
+        {
+            _pairShortBitstream = PinnedBuffer<byte>.Allocate(8);
+        }
+
         _pairTables ??= new SequenceTableSet();
         SequenceTableSet tablesB = _pairTables;
         int literalCountB;
@@ -237,13 +242,13 @@ public sealed partial class ZstdDecompressor
         {
             // Every sequence but the last of each: the last reads no states, the careful path takes it.
             nint count = Math.Min(Math.Min(nbSeqA, nbSeqB) - 1, MaxPairSequences);
-            if (_records is null || _records.Length < RecordStride * count)
+            if (_records.Length < RecordStride * count)
             {
                 // Not cleared: a record is written before it is read, and only the decoded ones are.
-                _records = GC.AllocateUninitializedArray<ulong>(RecordStride * (int)BitOperations.RoundUpToPowerOf2((uint)count));
+                _records = PinnedBuffer<ulong>.Allocate(RecordStride * (int)BitOperations.RoundUpToPowerOf2((uint)count), clear: false);
             }
 
-            records = ref MemoryMarshal.GetArrayDataReference(_records);
+            records = ref _records.Reference;
             decoded = DecodeSequencePair(ref a, ref b, ref records, count);
             PairedSequences += 2 * decoded;
         }

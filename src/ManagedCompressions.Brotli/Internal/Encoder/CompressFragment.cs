@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -11,7 +12,7 @@ namespace ManagedCompressions.Brotli.Internal;
 /// </summary>
 internal sealed unsafe class OnePassArena
 {
-    public readonly byte[] Buffer = GC.AllocateArray<byte>(Size, pinned: true);
+    private readonly PinnedArena _arena = new(Size);
 
     private const int LitDepthOffset = 0;
     private const int LitBitsOffset = LitDepthOffset + 256;
@@ -29,19 +30,19 @@ internal sealed unsafe class OnePassArena
 
     public OnePassArena()
     {
-        byte* b = (byte*)Unsafe.AsPointer(ref Buffer[0]);
-        LitDepth = b + LitDepthOffset;
-        LitBits = (ushort*)(b + LitBitsOffset);
-        CmdDepth = b + CmdDepthOffset;
-        CmdBits = (ushort*)(b + CmdBitsOffset);
-        CmdHisto = (uint*)(b + CmdHistoOffset);
-        CmdCode = b + CmdCodeOffset;
-        Tree = (HuffmanTree*)(b + TreeOffset);
-        Histogram = (uint*)(b + HistogramOffset);
-        TmpDepth = b + TmpDepthOffset;
-        TmpBits = (ushort*)(b + TmpBitsOffset);
-        LitCodes = (uint*)(b + LitCodesOffset);
-        CmdCodes = (uint*)(b + CmdCodesOffset);
+        // In the offsets' order, each table the size up to the next offset.
+        LitDepth = _arena.Take<byte>(LitBitsOffset - LitDepthOffset);
+        LitBits = _arena.Take<ushort>(CmdDepthOffset - LitBitsOffset);
+        CmdDepth = _arena.Take<byte>(CmdBitsOffset - CmdDepthOffset);
+        CmdBits = _arena.Take<ushort>(CmdHistoOffset - CmdBitsOffset);
+        CmdHisto = _arena.Take<uint>(CmdCodeOffset - CmdHistoOffset);
+        CmdCode = _arena.Take<byte>(TreeOffset - CmdCodeOffset);
+        Tree = _arena.Take<HuffmanTree>(HistogramOffset - TreeOffset);
+        Histogram = _arena.Take<uint>(TmpDepthOffset - HistogramOffset);
+        TmpDepth = _arena.Take<byte>(TmpBitsOffset - TmpDepthOffset);
+        TmpBits = _arena.Take<ushort>(LitCodesOffset - TmpBitsOffset);
+        LitCodes = _arena.Take<uint>(CmdCodesOffset - LitCodesOffset);
+        CmdCodes = _arena.Take<uint>(Size - CmdCodesOffset);
     }
 
     public readonly byte* LitDepth;

@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -22,13 +23,13 @@ internal sealed class DecoderDictionary
 
     private DecoderDictionary(ReadOnlySpan<byte> content)
     {
-        Buffer = new byte[content.Length + Margin];
-        content.CopyTo(Buffer);
+        Buffer = PinnedBuffer<byte>.Allocate(content.Length + Margin);
+        content.CopyTo(Buffer.Span);
         Length = content.Length;
     }
 
     /// <summary>The content, then <see cref="Margin"/> bytes nothing reads as content.</summary>
-    public byte[] Buffer { get; }
+    public PinnedBuffer<byte> Buffer { get; }
 
     /// <summary>The length of the content.</summary>
     public int Length { get; }

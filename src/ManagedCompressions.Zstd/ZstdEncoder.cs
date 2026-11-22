@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -51,7 +52,7 @@ public sealed unsafe class ZstdEncoder
     /// comes, up to <see cref="_inputSize"/>, rather than allocated at that size before the first
     /// byte: a stream of a few kilobytes keeps a buffer of their size, not of the level's window.
     /// </summary>
-    private byte[] _input = [];
+    private PinnedBuffer<byte> _input;
     private byte* _inputStart;
 
     /// <summary>libzstd's <c>inBuffSize</c>: the frame's window and a block, where the input wraps.</summary>
@@ -70,7 +71,7 @@ public sealed unsafe class ZstdEncoder
     /// libzstd's <c>outBuff</c>: a compressed block that did not fit the destination. Allocated by the
     /// first such block: a caller that gives room for a block, as <see cref="ZstdStream"/> does, never needs it.
     /// </summary>
-    private byte[] _output = [];
+    private PinnedBuffer<byte> _output;
     private byte* _outputStart;
     private int _outputContent;
     private int _outputFlushed;
@@ -317,8 +318,8 @@ public sealed unsafe class ZstdEncoder
                     bool lastBlock = directive == Directive.End && ip == source.Length;
                     if (!direct && _output.Length == 0)
                     {
-                        _output = GC.AllocateUninitializedArray<byte>((int)Bound(_blockSizeMax) + 1, pinned: true);
-                        _outputStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_output));
+                        _output = PinnedBuffer<byte>.Allocate((int)Bound(_blockSizeMax) + 1, clear: false);
+                        _outputStart = _output.Pointer;
                     }
 
                     int compressed = _compressor.CompressStreamChunk(
@@ -412,7 +413,7 @@ public sealed unsafe class ZstdEncoder
         // A larger block than the output buffer was sized for: it is allocated again when needed.
         if (_output.Length < (int)Bound(_blockSizeMax) + 1)
         {
-            _output = [];
+            _output = default;
         }
 
         _inputToCompress = 0;
@@ -435,8 +436,8 @@ public sealed unsafe class ZstdEncoder
         int capacity = size > _blockSizeMax
             ? _inputSize
             : Math.Min(_blockSizeMax, Math.Max(size, Math.Max(2 * _input.Length, MinInputCapacity)));
-        byte[] grown = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
-        byte* start = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(grown));
+        PinnedBuffer<byte> grown = PinnedBuffer<byte>.Allocate(capacity, clear: false);
+        byte* start = grown.Pointer;
         if (_input.Length != 0)
         {
             Buffer.MemoryCopy(_inputStart, start, capacity, _input.Length);

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -14,7 +15,7 @@ public sealed partial class ZstdDecompressor
     private const int WildCopyOverlength = 32;
 
     /// <summary>A bitstream shorter than eight bytes, copied where eight can be read.</summary>
-    private readonly byte[] _shortBitstream = new byte[8];
+    private readonly PinnedBuffer<byte> _shortBitstream = PinnedBuffer<byte>.Allocate(8);
 
     /// <summary>
     /// The decoder's whole state between two sequences: what the fast loop starts from, and hands to
@@ -129,7 +130,7 @@ public sealed partial class ZstdDecompressor
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool TryBeginSequences(
-        ReadOnlySpan<byte> bitstream, int nbSeq, SequenceTableSet tables, byte[] shortBitstream, out SequenceState state)
+        ReadOnlySpan<byte> bitstream, int nbSeq, SequenceTableSet tables, PinnedBuffer<byte> shortBitstream, out SequenceState state)
     {
         state = default;
         if (bitstream.IsEmpty || bitstream[^1] == 0)
@@ -145,7 +146,7 @@ public sealed partial class ZstdDecompressor
         }
         else
         {
-            Array.Clear(shortBitstream);
+            shortBitstream.Clear();
             bitstream.CopyTo(shortBitstream);
             bc += (8 - bitstream.Length) * 8;
             bitstream = shortBitstream;
@@ -173,7 +174,7 @@ public sealed partial class ZstdDecompressor
         state.Ptr = ptr;
         state.Consumed = bc;
         state.Container = container;
-        state.Tables = ref MemoryMarshal.GetArrayDataReference(tables.Prepare());
+        state.Tables = ref tables.Prepare().Reference;
         state.LiteralLengthState = llState;
         state.MatchLengthState = mlState;
         state.OffsetState = ofState;

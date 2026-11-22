@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Hashing;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -57,11 +58,11 @@ public sealed class ZstdDecoder
     private bool _lastBlock;
 
     /// <summary>A block whose bytes arrive across calls, gathered; grown, never shrunk.</summary>
-    private byte[] _block = [];
+    private PinnedBuffer<byte> _block;
     private int _blockLength;
 
     /// <summary>The window: the frame's content, decoded, up to its window size behind the last block.</summary>
-    private byte[] _window = [];
+    private PinnedBuffer<byte> _window;
 
     /// <summary>The part of <see cref="_window"/> blocks are decoded into: libzstd's <c>outBuffSize</c>.</summary>
     private int _capacity;
@@ -314,7 +315,7 @@ public sealed class ZstdDecoder
                     {
                         if (_block.Length < size)
                         {
-                            _block = new byte[Math.Max(size, Math.Min(2 * _block.Length, FrameFormat.MaxBlockSize))];
+                            _block = PinnedBuffer<byte>.Allocate(Math.Max(size, Math.Min(2 * _block.Length, FrameFormat.MaxBlockSize)));
                         }
 
                         int count = Math.Min(size - _blockLength, source.Length - consumed);
@@ -519,7 +520,7 @@ public sealed class ZstdDecoder
         _restarts = !_frame.HasContentSize || capacity < _frame.ContentSize;
         if (_window.Length < _capacity + Margin)
         {
-            _window = new byte[_capacity + Margin];
+            _window = PinnedBuffer<byte>.Allocate(_capacity + Margin);
         }
 
         _out = 0;

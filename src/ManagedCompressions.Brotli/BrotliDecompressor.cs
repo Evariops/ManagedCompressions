@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -99,12 +100,12 @@ public sealed unsafe partial class BrotliDecompressor
     public void Reset() => LastError = BrotliError.None;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static T* Pointer<T>(T[] array)
+    private static T* Pointer<T>(PinnedBuffer<T> buffer)
         where T : unmanaged =>
-        (T*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(array));
+        buffer.Pointer;
 
-    /// <summary>An array on the pinned heap, so that the pointers taken to it hold for its life.</summary>
-    private static T[] Pinned<T>(int length)
+    /// <summary>A pinned buffer, so that the pointers taken to it hold for its life: guarded in the Checked build.</summary>
+    private static PinnedBuffer<T> Pinned<T>(int length)
         where T : unmanaged =>
-        GC.AllocateUninitializedArray<T>(length, pinned: true);
+        PinnedBuffer<T>.Allocate(length, clear: false);
 }

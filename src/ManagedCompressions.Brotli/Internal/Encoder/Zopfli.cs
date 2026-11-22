@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -63,18 +64,18 @@ internal sealed unsafe class Zopfli
     /// <summary>The lengths <see cref="CopyLengthCodes"/> holds: from 2118 on, the copy code is 23.</summary>
     private const int CopyLengthCodesSize = 2118;
 
-    private static readonly byte[] CopyLengthCodesArray = BuildCopyLengthCodes();
-    private static readonly ushort[] CommandCodesArray = BuildCommandCodes();
+    private static readonly PinnedBuffer<byte> CopyLengthCodesArray = BuildCopyLengthCodes();
+    private static readonly PinnedBuffer<ushort> CommandCodesArray = BuildCommandCodes();
 
     /// <summary><see cref="Commands.GetCopyLengthCode"/> of the lengths 2 to 2117.</summary>
-    private static readonly byte* CopyLengthCodes = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(CopyLengthCodesArray));
+    private static readonly byte* CopyLengthCodes = CopyLengthCodesArray.Pointer;
 
     /// <summary><see cref="Commands.CombineLengthCodes"/> of each insert code times 24 plus copy code, without the last distance.</summary>
-    private static readonly ushort* CommandCodes = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(CommandCodesArray));
+    private static readonly ushort* CommandCodes = CommandCodesArray.Pointer;
 
-    private static byte[] BuildCopyLengthCodes()
+    private static PinnedBuffer<byte> BuildCopyLengthCodes()
     {
-        byte[] codes = GC.AllocateArray<byte>(CopyLengthCodesSize, pinned: true);
+        PinnedBuffer<byte> codes = PinnedBuffer<byte>.Allocate(CopyLengthCodesSize);
         for (int len = 2; len < CopyLengthCodesSize; len++)
         {
             codes[len] = (byte)Commands.GetCopyLengthCode((nuint)len);
@@ -83,9 +84,9 @@ internal sealed unsafe class Zopfli
         return codes;
     }
 
-    private static ushort[] BuildCommandCodes()
+    private static PinnedBuffer<ushort> BuildCommandCodes()
     {
-        ushort[] codes = GC.AllocateArray<ushort>(24 * 24, pinned: true);
+        PinnedBuffer<ushort> codes = PinnedBuffer<ushort>.Allocate(24 * 24);
         for (uint insCode = 0; insCode < 24; insCode++)
         {
             for (uint copyCode = 0; copyCode < 24; copyCode++)
@@ -101,15 +102,15 @@ internal sealed unsafe class Zopfli
 
     private static ReadOnlySpan<sbyte> DistanceCacheOffset => [0, 0, 0, 0, -1, 1, -2, 2, -3, 3, -1, 1, -2, 2, -3, 3];
 
-    private readonly PinnedBuffer<ZopfliNode> _nodes = new();
-    private readonly PinnedBuffer<BackwardMatch> _matches = new();
-    private readonly PinnedBuffer<uint> _numMatches = new();
-    private readonly PinnedBuffer<float> _literalCosts = new();
-    private readonly PinnedBuffer<float> _costDist = new();
-    private readonly PinnedBuffer<float> _costCmd = new();
-    private readonly PinnedBuffer<nuint> _literalHistograms = new();
-    private readonly PinnedBuffer<uint> _arena = new();
-    private readonly PinnedBuffer<PosData> _queue = new();
+    private readonly GrowingBuffer<ZopfliNode> _nodes = new();
+    private readonly GrowingBuffer<BackwardMatch> _matches = new();
+    private readonly GrowingBuffer<uint> _numMatches = new();
+    private readonly GrowingBuffer<float> _literalCosts = new();
+    private readonly GrowingBuffer<float> _costDist = new();
+    private readonly GrowingBuffer<float> _costCmd = new();
+    private readonly GrowingBuffer<nuint> _literalHistograms = new();
+    private readonly GrowingBuffer<uint> _arena = new();
+    private readonly GrowingBuffer<PosData> _queue = new();
 
     private int _quality;
     private int _lgwin;

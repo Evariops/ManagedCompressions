@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 using static ManagedCompressions.Lz4.Internal.Lz4Common;
 
 namespace ManagedCompressions.Lz4.Internal;
@@ -40,9 +41,9 @@ internal sealed unsafe class Lz4HighEncoder
         Optimal,
     }
 
-    private readonly uint[] _hashArray = GC.AllocateArray<uint>(HashTableSize, pinned: true);
-    private readonly ushort[] _chainArray = GC.AllocateArray<ushort>(ChainTableSize, pinned: true);
-    private readonly OptimalEntry[]? _optArray;
+    private readonly PinnedBuffer<uint> _hashArray = PinnedBuffer<uint>.Allocate(HashTableSize);
+    private readonly PinnedBuffer<ushort> _chainArray = PinnedBuffer<ushort>.Allocate(ChainTableSize);
+    private readonly PinnedBuffer<OptimalEntry> _optArray;
     private readonly uint* _hashTable;
     private readonly ushort* _chainTable;
     private readonly OptimalEntry* _opt;
@@ -78,12 +79,12 @@ internal sealed unsafe class Lz4HighEncoder
             _ => (Strategy.Optimal, 16384, OptimalNum),
         };
         _fullUpdate = level >= 12;
-        _hashTable = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_hashArray));
-        _chainTable = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_chainArray));
+        _hashTable = _hashArray.Pointer;
+        _chainTable = _chainArray.Pointer;
         if (_strategy == Strategy.Optimal)
         {
-            _optArray = GC.AllocateArray<OptimalEntry>(OptimalNum + TrailingLiterals, pinned: true);
-            _opt = (OptimalEntry*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_optArray));
+            _optArray = PinnedBuffer<OptimalEntry>.Allocate(OptimalNum + TrailingLiterals);
+            _opt = _optArray.Pointer;
         }
     }
 
@@ -100,8 +101,8 @@ internal sealed unsafe class Lz4HighEncoder
 
         if (_nextBase > ResetAbove)
         {
-            Array.Clear(_hashArray);
-            Array.Clear(_chainArray);
+            _hashArray.Clear();
+            _chainArray.Clear();
             _nextBase = 0;
         }
 

@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -43,18 +44,18 @@ internal sealed unsafe class OptimalState
     /// <summary>libzstd's <c>ZSTD_OPT_SIZE</c>.</summary>
     public const int OptSize = OptNum + 3;
 
-    private readonly uint[] _frequencies = GC.AllocateArray<uint>(256 + 36 + 53 + 32, pinned: true);
-    private readonly OptimalMatch[] _matches = GC.AllocateArray<OptimalMatch>(OptSize, pinned: true);
-    private readonly OptimalNode[] _nodes = GC.AllocateArray<OptimalNode>(OptSize, pinned: true);
+    private readonly PinnedBuffer<uint> _frequencies = PinnedBuffer<uint>.Allocate(256 + 36 + 53 + 32);
+    private readonly PinnedBuffer<OptimalMatch> _matches = PinnedBuffer<OptimalMatch>.Allocate(OptSize);
+    private readonly PinnedBuffer<OptimalNode> _nodes = PinnedBuffer<OptimalNode>.Allocate(OptSize);
 
     public OptimalState()
     {
-        LiteralFrequencies = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_frequencies));
+        LiteralFrequencies = _frequencies.Pointer;
         LiteralLengthFrequencies = LiteralFrequencies + 256;
         MatchLengthFrequencies = LiteralLengthFrequencies + 36;
         OffCodeFrequencies = MatchLengthFrequencies + 53;
-        Matches = (OptimalMatch*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_matches));
-        Nodes = (OptimalNode*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_nodes));
+        Matches = _matches.Pointer;
+        Nodes = _nodes.Pointer;
     }
 
     public uint* LiteralFrequencies { get; }

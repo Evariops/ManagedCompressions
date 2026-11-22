@@ -14,6 +14,14 @@
     <NeutralLanguage>en</NeutralLanguage>
   </PropertyGroup>
 
+  <!-- The Checked configuration: Release's code generation, with the libraries' assertions on (DEBUG)
+       and the memory their unsafe code addresses guarded by inaccessible pages (CHECKED, see
+       src/Shared/GuardedMemory.cs). The tests and the fuzzing run it; nothing ships from it. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Checked'">
+    <Optimize>true</Optimize>
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE;CHECKED</DefineConstants>
+  </PropertyGroup>
+
   <!-- Package metadata, shared by the two libraries. Nothing here sets a version: the number belongs
        to a release, and CI passes the one a release names. A local `dotnet pack` therefore produces
        the SDK's default 1.0.0, which is a file name and not a claim. Not packable by default either,

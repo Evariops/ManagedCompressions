@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -17,7 +18,7 @@ internal sealed unsafe class RingBuffer
 {
     private const int SlackForEightByteHashingEverywhere = 7;
 
-    private byte[] _array = [];
+    private PinnedBuffer<byte> _array;
     private uint _size;
     private uint _tailSize;
     private uint _totalSize;
@@ -53,17 +54,17 @@ internal sealed unsafe class RingBuffer
         int needed = 2 + (int)length + SlackForEightByteHashingEverywhere;
         if (_array.Length < needed)
         {
-            byte[] array = GC.AllocateUninitializedArray<byte>(needed, pinned: true);
+            PinnedBuffer<byte> array = PinnedBuffer<byte>.Allocate(needed, clear: false);
             if (Buffer != null)
             {
-                new ReadOnlySpan<byte>(Buffer - 2, 2 + (int)_curSize + SlackForEightByteHashingEverywhere).CopyTo(array);
+                new ReadOnlySpan<byte>(Buffer - 2, 2 + (int)_curSize + SlackForEightByteHashingEverywhere).CopyTo(array.Span);
             }
 
             _array = array;
         }
 
         _curSize = length;
-        Buffer = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_array)) + 2;
+        Buffer = _array.Pointer + 2;
         Buffer[-2] = Buffer[-1] = 0;
         new Span<byte>(Buffer + _curSize, SlackForEightByteHashingEverywhere).Clear();
     }

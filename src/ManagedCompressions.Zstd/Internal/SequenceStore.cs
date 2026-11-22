@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -64,8 +65,8 @@ internal sealed unsafe class SequenceStore
     public const int AllCodes = MatchLengthCodes + SequenceCodes.MaxMatchLength + 1;
 
     // The buffers of a block, sized for the largest block so far (see <see cref="EnsureCapacity"/>).
-    private byte[] _literals = [];
-    private SequenceRecord[] _sequences = [];
+    private PinnedBuffer<byte> _literals;
+    private PinnedBuffer<SequenceRecord> _sequences;
 
     /// <summary>The slab the counts are in, kept alive with them.</summary>
     private readonly PinnedSlab _slab;
@@ -95,8 +96,8 @@ internal sealed unsafe class SequenceStore
     {
         if (blockSize > Capacity)
         {
-            _literals = GC.AllocateUninitializedArray<byte>(blockSize + WildCopyOverlength, pinned: true);
-            LiteralsStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_literals));
+            _literals = PinnedBuffer<byte>.Allocate(blockSize + WildCopyOverlength, clear: false);
+            LiteralsStart = _literals.Pointer;
             Capacity = blockSize;
             Reset();
         }
@@ -104,8 +105,8 @@ internal sealed unsafe class SequenceStore
         int sequences = (Capacity / (minMatch == 3 ? 3 : 4)) + 1;
         if (sequences > _sequences.Length)
         {
-            _sequences = GC.AllocateUninitializedArray<SequenceRecord>(sequences, pinned: true);
-            SequencesStart = (SequenceRecord*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_sequences));
+            _sequences = PinnedBuffer<SequenceRecord>.Allocate(sequences, clear: false);
+            SequencesStart = _sequences.Pointer;
             Reset();
         }
     }

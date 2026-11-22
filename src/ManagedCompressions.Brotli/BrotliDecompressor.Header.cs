@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -37,10 +38,10 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The scratch of a code's reading: the lists of symbols by length, heads 16 entries before.</summary>
     private ushort* _symbolLists;
 
-    private byte[] _headerBytes = [];
-    private uint[] _headerTables = [];
-    private int[] _distOffsetArray = [];
-    private ushort[] _symbolListsArray = [];
+    private PinnedBuffer<byte> _headerBytes;
+    private PinnedBuffer<uint> _headerTables;
+    private PinnedBuffer<int> _distOffsetArray;
+    private PinnedBuffer<ushort> _symbolListsArray;
 
 
     private int _numLiteralTrees;
@@ -78,8 +79,8 @@ public sealed unsafe partial class BrotliDecompressor
     /// </summary>
     private sealed class TreeGroup
     {
-        private uint[] _codes = [];
-        private nint[] _trees = [];
+        private PinnedBuffer<uint> _codes;
+        private PinnedBuffer<nint> _trees;
 
         public TreeGroup(int rootBits) => RootBits = rootBits;
 
@@ -124,7 +125,7 @@ public sealed unsafe partial class BrotliDecompressor
             }
 
             int capacity = Math.Max(used + size, Capacity * 2);
-            uint[] codes = Pinned<uint>(capacity);
+            PinnedBuffer<uint> codes = Pinned<uint>(capacity);
             uint* moved = Pointer(codes);
             Buffer.MemoryCopy(Codes, moved, (long)used * sizeof(uint), (long)used * sizeof(uint));
             for (int i = 0; i < built; i++)

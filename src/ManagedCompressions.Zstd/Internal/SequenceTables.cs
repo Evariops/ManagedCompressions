@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -122,7 +123,7 @@ internal enum SequenceCode
 /// </remarks>
 internal sealed class SeqTable
 {
-    public readonly SeqSymbol[] Entries;
+    public readonly PinnedBuffer<SeqSymbol> Entries;
     public readonly SequenceCode Code;
 
     /// <summary>
@@ -136,7 +137,7 @@ internal sealed class SeqTable
     public SeqTable(SequenceCode code, ReadOnlySpan<short> norm, int tableLog)
     {
         Code = code;
-        Entries = new SeqSymbol[2 << tableLog];
+        Entries = PinnedBuffer<SeqSymbol>.Allocate(2 << tableLog);
         Build(norm, tableLog);
     }
 
@@ -144,11 +145,11 @@ internal sealed class SeqTable
     public SeqTable(SequenceCode code)
     {
         Code = code;
-        Entries = new SeqSymbol[2 << SequenceCodes.MaxLog(code)];
+        Entries = PinnedBuffer<SeqSymbol>.Allocate(2 << SequenceCodes.MaxLog(code));
     }
 
     /// <summary>The three tables of the family this one belongs to, each in its slot; null for none.</summary>
-    public SeqSymbol[]? Family { get; private set; }
+    public PinnedBuffer<SeqSymbol> Family { get; private set; }
 
     /// <summary>
     /// libzstd's <c>ZSTD_buildFSETable</c>, into <see cref="Entries"/>: for a table no set refers to,
@@ -167,13 +168,13 @@ internal sealed class SeqTable
     /// </summary>
     public static void Join(SeqTable literalLengths, SeqTable offsets, SeqTable matchLengths)
     {
-        SeqSymbol[] family = literalLengths.Family ?? new SeqSymbol[SequenceTableSet.Size];
+        PinnedBuffer<SeqSymbol> family = literalLengths.Family.IsEmpty ? PinnedBuffer<SeqSymbol>.Allocate(SequenceTableSet.Size) : literalLengths.Family;
         literalLengths.JoinTo(family);
         offsets.JoinTo(family);
         matchLengths.JoinTo(family);
     }
 
-    private void JoinTo(SeqSymbol[] family)
+    private void JoinTo(PinnedBuffer<SeqSymbol> family)
     {
         Entries.AsSpan(0, 2 << TableLog).CopyTo(family.AsSpan(SequenceTableSet.Slot(Code)));
         Family = family;
@@ -199,14 +200,14 @@ internal sealed class SeqTable
 /// slot does not hold it already.
 /// </para>
 /// </remarks>
-internal sealed class SequenceTableSet
+internal sealed unsafe class SequenceTableSet
 {
     public const int LiteralLengthSlot = 0;
     public const int OffsetSlot = LiteralLengthSlot + (2 << SequenceCodes.LiteralLengthMaxLog);
     public const int MatchLengthSlot = OffsetSlot + (2 << SequenceCodes.OffsetMaxLog);
     public const int Size = MatchLengthSlot + (2 << SequenceCodes.MatchLengthMaxLog);
 
-    public readonly SeqSymbol[] Entries = new SeqSymbol[Size];
+    public readonly PinnedBuffer<SeqSymbol> Entries = PinnedBuffer<SeqSymbol>.Allocate(Size);
 
     // The per-code values are inline in the set: four arrays of three fewer, and their indirections.
 
@@ -303,12 +304,13 @@ internal sealed class SequenceTableSet
     /// among them copied into their slots unless there already.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public SeqSymbol[] Prepare()
+    public PinnedBuffer<SeqSymbol> Prepare()
     {
-        SeqSymbol[]? family = _current[0]?.Family;
-        if (family is not null && ReferenceEquals(_current[1]?.Family, family) && ReferenceEquals(_current[2]?.Family, family))
+        SeqTable? first = _current[0];
+        SeqSymbol* family = first is null ? null : first.Family.Pointer;
+        if (family != null && _current[1] is { } second && second.Family.Pointer == family && _current[2] is { } third && third.Family.Pointer == family)
         {
-            return family;
+            return first!.Family;
         }
 
         return PrepareOwn();
@@ -316,7 +318,7 @@ internal sealed class SequenceTableSet
 
     /// <summary><see cref="Prepare"/> for a block that mixes its tables: the set's own array.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private SeqSymbol[] PrepareOwn()
+    private PinnedBuffer<SeqSymbol> PrepareOwn()
     {
         Materialize(SequenceCode.LiteralLength);
         Materialize(SequenceCode.Offset);

@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -15,14 +16,14 @@ internal sealed unsafe partial class EncoderState
 
     private readonly RingBuffer _ringBuffer = new();
     private readonly HasherMemory _hasherMemory = new();
-    private readonly PinnedBuffer<byte> _storage = new();
-    private readonly PinnedBuffer<int> _caches = new();
-    private readonly PinnedBuffer<uint> _contextArena = new();
+    private readonly GrowingBuffer<byte> _storage = new();
+    private readonly GrowingBuffer<int> _caches = new();
+    private readonly GrowingBuffer<uint> _contextArena = new();
     private readonly MetaBlockSplit _mb = new();
     private readonly GreedyMetaBlockBuilder _greedy = new();
     private readonly MetaBlockStorage _metaBlockStorage = new();
 
-    private Command[] _commandsArray = [];
+    private PinnedBuffer<Command> _commandsArray;
     private nuint _cmdAllocSize;
 
     private int _quality;
@@ -251,13 +252,13 @@ internal sealed unsafe partial class EncoderState
             {
                 newSize += (bytes / 4) + 16;
                 _cmdAllocSize = newSize;
-                Command[] commands = GC.AllocateUninitializedArray<Command>(checked((int)newSize), pinned: true);
-                _commandsArray.AsSpan(0, (int)_numCommands).CopyTo(commands);
+                PinnedBuffer<Command> commands = PinnedBuffer<Command>.Allocate(checked((int)newSize), clear: false);
+                _commandsArray.AsSpan(0, (int)_numCommands).CopyTo(commands.Span);
                 _commandsArray = commands;
             }
         }
 
-        Command* commandsBase = (Command*)Unsafe.AsPointer(ref _commandsArray[0]);
+        Command* commandsBase = _commandsArray.Pointer;
         switch (_hasherType = HasherSetupType(wrappedLastProcessedPos == 0 && isLast, bytes))
         {
             case 10: ProcessBlockZopfli(data, mask, ref bytes, ref wrappedLastProcessedPos, commandsBase); break;

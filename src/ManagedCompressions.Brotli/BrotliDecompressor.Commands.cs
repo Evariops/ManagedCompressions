@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -101,7 +102,7 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The code of each of the 64 literal contexts of the current block type.</summary>
     private nint* _contextTrees;
 
-    private nint[] _contextTreesArray = [];
+    private PinnedBuffer<nint> _contextTreesArray;
 
     private static byte* ContextLookup => (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(Context.Lookup));
 
@@ -182,7 +183,7 @@ public sealed unsafe partial class BrotliDecompressor
         ref ulong commandCodes = ref MemoryMarshal.GetReference(Prefix.CommandCodes);
         ref byte sizeBits = ref MemoryMarshal.GetReference(StaticDictionary.SizeBitsByLength);
         ref int offsets = ref MemoryMarshal.GetReference(StaticDictionary.OffsetsByLength);
-        ref Transforms.Info transforms = ref MemoryMarshal.GetArrayDataReference(Transforms.Infos);
+        ref Transforms.Info transforms = ref Transforms.Infos.Reference;
         byte* dictionary = DictionaryData;
         int result;
 

@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Buffers.Binary;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -30,17 +31,17 @@ internal sealed unsafe class CompressionDictionary
     /// <summary>libzstd's <c>ZSTD_CURRENT_MAX</c> less the start index: the most content loaded.</summary>
     private const ulong MaxContent = (3500UL << 20) - WindowStartIndex;
 
-    private readonly byte[] _buffer;
-    private readonly MatchState[] _state = GC.AllocateArray<MatchState>(1, pinned: true);
-    private uint[] _hashTable = [];
-    private uint[] _chainTable = [];
-    private byte[] _tagTable = [];
+    private readonly PinnedBuffer<byte> _buffer;
+    private readonly PinnedBuffer<MatchState> _state = PinnedBuffer<MatchState>.Allocate(1);
+    private PinnedBuffer<uint> _hashTable;
+    private PinnedBuffer<uint> _chainTable;
+    private PinnedBuffer<byte> _tagTable;
 
     private CompressionDictionary(ReadOnlySpan<byte> dictionary, int level)
     {
         // A little past the content, for the reads of four bytes at its last indices.
-        _buffer = GC.AllocateArray<byte>(dictionary.Length + 8, pinned: true);
-        dictionary.CopyTo(_buffer);
+        _buffer = PinnedBuffer<byte>.Allocate(dictionary.Length + 8);
+        dictionary.CopyTo(_buffer.Span);
         Size = dictionary.Length;
         Level = level == 0 ? CompressionParameters.DefaultLevel : level;
         Parameters = CompressionParameters.ForDictionary(level, dictionary.Length);
@@ -65,7 +66,7 @@ internal sealed unsafe class CompressionDictionary
     /// The window over the content, from index 2 to <see cref="MatchState.End"/> (2 when nothing was
     /// loaded), and the tables filled with it.
     /// </summary>
-    public MatchState* State => (MatchState*)Unsafe.AsPointer(ref _state[0]);
+    public MatchState* State => _state.Pointer;
 
     /// <summary>The bytes of content in the window.</summary>
     public uint ContentLength => State->End - State->DictLimit;
@@ -102,7 +103,7 @@ internal sealed unsafe class CompressionDictionary
     private void Load()
     {
         MatchState* state = State;
-        byte* buffer = (byte*)Unsafe.AsPointer(ref _buffer[0]);
+        byte* buffer = _buffer.Pointer;
         CompressionParameters parameters = Parameters;
         bool rows = parameters.UsesRowMatchFinder;
         int hashSize = 1 << parameters.HashLog;

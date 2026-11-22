@@ -13,9 +13,9 @@ internal sealed unsafe class HqMetaBlockBuilder
 
     private readonly BlockSplitter _splitter = new();
     private readonly ClusterArena _clusterArena = new();
-    private readonly PinnedBuffer<HistogramDistance> _tmp = new();
-    private readonly PinnedBuffer<HistogramLiteral> _literalHistograms = new();
-    private readonly PinnedBuffer<HistogramDistance> _distanceHistograms = new();
+    private readonly GrowingBuffer<HistogramDistance> _tmp = new();
+    private readonly GrowingBuffer<HistogramLiteral> _literalHistograms = new();
+    private readonly GrowingBuffer<HistogramDistance> _distanceHistograms = new();
 
     /// <summary>
     /// The meta-block's split into <paramref name="mb"/>; <paramref name="dist"/> becomes the distance

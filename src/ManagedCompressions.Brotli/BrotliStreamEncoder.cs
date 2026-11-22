@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ManagedCompressions.Brotli.Internal;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli;
 
@@ -30,7 +31,7 @@ public sealed unsafe class BrotliStreamEncoder
     private const int OperationFlush = 1;
     private const int OperationFinish = 2;
 
-    private readonly byte[] _tinyArray = GC.AllocateArray<byte>(16, pinned: true);
+    private readonly PinnedBuffer<byte> _tinyArray = PinnedBuffer<byte>.Allocate(16);
     private EncoderState? _state;
     private FastEncoder? _fast;
     private bool _initialized;
@@ -384,7 +385,7 @@ public sealed unsafe class BrotliStreamEncoder
         }
         else
         {
-            destination = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_tinyArray));
+            destination = _tinyArray.Pointer;
             _nextOut = destination;
         }
 

@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -29,7 +30,7 @@ public sealed unsafe partial class ZstdCompressor
 
     // The block buffer, sized as the sequence store for the largest block so far (see
     // EnsureBlockCapacity), and the room a block's compressed form is given: its size and the margin.
-    private byte[] _blockBuffer = [];
+    private PinnedBuffer<byte> _blockBuffer;
     private byte* _blockStart;
     private int _blockBufferSize;
     /// <summary>
@@ -42,10 +43,10 @@ public sealed unsafe partial class ZstdCompressor
     private readonly HuffmanWorkspace _huffmanWorkspace;
     private BlockState _previous;
     private BlockState _next;
-    private uint[] _hashTable = [];
-    private uint[] _chainTable = [];
-    private byte[] _tagTable = [];
-    private uint[] _hashTable3 = [];
+    private PinnedBuffer<uint> _hashTable;
+    private PinnedBuffer<uint> _chainTable;
+    private PinnedBuffer<byte> _tagTable;
+    private PinnedBuffer<uint> _hashTable3;
 
     /// <summary>
     /// libzstd's <c>tableValidEnd</c>, for each table of indices: how many entries, from the first, hold
@@ -306,8 +307,8 @@ public sealed unsafe partial class ZstdCompressor
         {
             int capacity = (int)Math.Min(FrameFormat.MaxBlockSize, BitOperations.RoundUpToPowerOf2((uint)Math.Max(blockSize, MinBlockCapacity)));
             _blockBufferSize = capacity + BlockBufferMargin;
-            _blockBuffer = GC.AllocateUninitializedArray<byte>(_blockBufferSize, pinned: true);
-            _blockStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_blockBuffer));
+            _blockBuffer = PinnedBuffer<byte>.Allocate(_blockBufferSize, clear: false);
+            _blockStart = _blockBuffer.Pointer;
             _store.EnsureCapacity(capacity, _parameters.MinMatch);
             _huffmanWorkspace.EnsureCapacity(capacity);
             return;
@@ -407,11 +408,11 @@ public sealed unsafe partial class ZstdCompressor
     /// <see cref="Tables.Reserve"/> for a table of indices, whose entries past <paramref name="valid"/>
     /// are cleared first (libzstd's <c>ZSTD_cwksp_clean_tables</c>): all of them are then valid.
     /// </summary>
-    private static uint* Reserve(ref uint[] table, ref int valid, int size, bool restart)
+    private static uint* Reserve(ref PinnedBuffer<uint> table, ref int valid, int size, bool restart)
     {
-        uint[] before = table;
+        uint* before = table.Pointer;
         uint* entries = Tables.Reserve(ref table, size, restart);
-        if (restart || table != before)
+        if (restart || table.Pointer != before)
         {
             valid = int.MaxValue;
         }
