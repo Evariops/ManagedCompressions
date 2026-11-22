@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -22,7 +23,9 @@ internal sealed unsafe class OnePassArena
     private const int HistogramOffset = TreeOffset + (((2 * 256) + 1) * 8);
     private const int TmpDepthOffset = HistogramOffset + (256 * 4);
     private const int TmpBitsOffset = TmpDepthOffset + Prefix.NumCommandSymbols;
-    private const int Size = TmpBitsOffset + (64 * 2) + 16;
+    private const int LitCodesOffset = TmpBitsOffset + (64 * 2) + 16;
+    private const int CmdCodesOffset = LitCodesOffset + (256 * 4);
+    private const int Size = CmdCodesOffset + (128 * 4);
 
     public OnePassArena()
     {
@@ -37,6 +40,8 @@ internal sealed unsafe class OnePassArena
         Histogram = (uint*)(b + HistogramOffset);
         TmpDepth = b + TmpDepthOffset;
         TmpBits = (ushort*)(b + TmpBitsOffset);
+        LitCodes = (uint*)(b + LitCodesOffset);
+        CmdCodes = (uint*)(b + CmdCodesOffset);
     }
 
     public readonly byte* LitDepth;
@@ -59,6 +64,13 @@ internal sealed unsafe class OnePassArena
     public readonly uint* Histogram;
     public readonly byte* TmpDepth;
     public readonly ushort* TmpBits;
+
+    /// <summary>
+    /// The literal and the command codes, each its bits with its depth from bit 16: one load a symbol, and one
+    /// pointer a table in the commands' loop. Combined from the depths and bits whenever these change.
+    /// </summary>
+    public readonly uint* LitCodes;
+    public readonly uint* CmdCodes;
 
     private static ReadOnlySpan<byte> DefaultCommandDepths =>
     [
@@ -102,6 +114,7 @@ internal sealed unsafe class OnePassArena
     {
         DefaultCommandDepths.CopyTo(new Span<byte>(CmdDepth, 128));
         DefaultCommandBits.CopyTo(new Span<ushort>(CmdBits, 128));
+        BitWriter.CombineCodes(CmdDepth, CmdBits, CmdCodes, 128);
         DefaultCommandCode.CopyTo(new Span<byte>(CmdCode, 512));
         CmdCodeNumBits = 448;
     }
@@ -150,53 +163,112 @@ internal static unsafe class CompressFragment
     private static nuint BuildAndStoreLiteralPrefixCode(OnePassArena s, byte* input, int inputSize, byte* depths, ushort* bits, ref int storageIx, byte* storage)
     {
         uint* histogram = s.Histogram;
-        new Span<uint>(histogram, 256).Clear();
         nuint histogramTotal;
         if (inputSize < (1 << 15))
         {
-            for (int i = 0; i < inputSize; ++i)
+            // Every byte, in four histograms interleaved: one would make each repeated byte wait for the
+            // increment before. The first 11 samples weigh three times, for the balance LZ77 brings.
+            uint* parts = stackalloc uint[4 * 256];
+            new Span<uint>(parts, 4 * 256).Clear();
+            int i = 0;
+            for (; i + 4 <= inputSize; i += 4)
             {
-                ++histogram[input[i]];
+                ++parts[input[i]];
+                ++parts[256 + input[i + 1]];
+                ++parts[512 + input[i + 2]];
+                ++parts[768 + input[i + 3]];
             }
 
-            histogramTotal = (nuint)inputSize;
-            for (int i = 0; i < 256; ++i)
+            for (; i < inputSize; ++i)
             {
-                // The first 11 samples weigh three times, for the balance LZ77 brings.
-                uint adjust = 2 * Math.Min(histogram[i], 11u);
-                histogram[i] += adjust;
-                histogramTotal += adjust;
+                ++parts[input[i]];
             }
+
+            histogramTotal = (nuint)inputSize + MergeAndAdjust(parts, 4, histogram, 0);
         }
         else
         {
+            // A sample every 29 bytes, one more for each byte, as a sample says nothing of the bytes it misses.
             const int SampleRate = 29;
+            new Span<uint>(histogram, 256).Clear();
             for (int i = 0; i < inputSize; i += SampleRate)
             {
                 ++histogram[input[i]];
             }
 
-            histogramTotal = (nuint)((inputSize + SampleRate - 1) / SampleRate);
-            for (int i = 0; i < 256; ++i)
-            {
-                // One more for each byte, as a sample says nothing of the bytes it misses.
-                uint adjust = 1 + (2 * Math.Min(histogram[i], 11u));
-                histogram[i] += adjust;
-                histogramTotal += adjust;
-            }
+            histogramTotal = (nuint)((inputSize + SampleRate - 1) / SampleRate) + MergeAndAdjust(histogram, 1, histogram, 1);
         }
 
         BitStream.BuildAndStoreHuffmanTreeFast(s.Tree, histogram, histogramTotal, 8, depths, bits, ref storageIx, storage);
+        BitWriter.CombineCodes(depths, bits, s.LitCodes, 256);
+        // The bits the histogram takes: brotli skips the empty counts, which add nothing. Each product takes
+        // 19 bits at most, so 64 of them sum in 32.
         nuint literalRatio = 0;
-        for (int i = 0; i < 256; ++i)
+        int at = 0;
+        if (Vector128.IsHardwareAccelerated)
         {
-            if (histogram[i] != 0)
+            Vector128<uint> sum = Vector128<uint>.Zero;
+            for (; at < 256; at += 16)
             {
-                literalRatio += histogram[i] * (nuint)depths[i];
+                (Vector128<ushort> low, Vector128<ushort> high) = Vector128.Widen(Vector128.Load(depths + at));
+                (Vector128<uint> d0, Vector128<uint> d1) = Vector128.Widen(low);
+                (Vector128<uint> d2, Vector128<uint> d3) = Vector128.Widen(high);
+                sum += (Vector128.Load(histogram + at) * d0) + (Vector128.Load(histogram + at + 4) * d1) + (Vector128.Load(histogram + at + 8) * d2) + (Vector128.Load(histogram + at + 12) * d3);
             }
+
+            literalRatio = Vector128.Sum(sum);
+        }
+
+        for (; at < 256; ++at)
+        {
+            literalRatio += histogram[at] * (nuint)depths[at];
         }
 
         return literalRatio * 125 / histogramTotal;
+    }
+
+    /// <summary>
+    /// The <paramref name="numParts"/> histograms of <paramref name="parts"/> summed into
+    /// <paramref name="histogram"/> (which may be the first), each count raised by <paramref name="extra"/>
+    /// and by twice its first 11: returns what that adds to the total, as brotli's loop does.
+    /// </summary>
+    private static nuint MergeAndAdjust(uint* parts, int numParts, uint* histogram, uint extra)
+    {
+        nuint added = 0;
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated)
+        {
+            Vector128<uint> sum = Vector128<uint>.Zero;
+            for (; i < 256; i += 4)
+            {
+                Vector128<uint> count = Vector128.Load(parts + i);
+                for (int p = 1; p < numParts; ++p)
+                {
+                    count += Vector128.Load(parts + (p * 256) + i);
+                }
+
+                Vector128<uint> adjust = Vector128.Create(extra) + (Vector128.Min(count, Vector128.Create(11u)) << 1);
+                (count + adjust).Store(histogram + i);
+                sum += adjust;
+            }
+
+            added = Vector128.Sum(sum);
+        }
+
+        for (; i < 256; ++i)
+        {
+            uint count = parts[i];
+            for (int p = 1; p < numParts; ++p)
+            {
+                count += parts[(p * 256) + i];
+            }
+
+            uint adjust = extra + (2 * Math.Min(count, 11u));
+            histogram[i] = count + adjust;
+            added += adjust;
+        }
+
+        return added;
     }
 
     /// <summary>
@@ -246,15 +318,40 @@ internal static unsafe class CompressFragment
 
         BitStream.StoreHuffmanTree(tmpDepth, Prefix.NumCommandSymbols, s.Tree, ref storageIx, storage);
         BitStream.StoreHuffmanTree(depth + 64, 64, s.Tree, ref storageIx, storage);
+        BitWriter.CombineCodes(depth, bits, s.CmdCodes, 128);
+    }
+
+    /// <summary>A combined code.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteCode(ref BitSink sink, uint code) => sink.Write((int)(code >> 16), code & 0xFFFF);
+
+    /// <summary>
+    /// A combined code and its <paramref name="nbits"/> extra bits, in one write: the bits brotli writes in
+    /// two. A code takes 15 bits at most, its extra bits 24.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteCode(ref BitSink sink, uint code, int nbits, nuint extra)
+    {
+        int depth = (int)(code >> 16);
+        sink.Write(depth + nbits, (code & 0xFFFF) | ((ulong)extra << depth));
+    }
+
+    /// <summary>A combined code, its extra bits, then the code of the last distance, in one write.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteCode(ref BitSink sink, uint code, int nbits, nuint extra, uint lastDistanceCode)
+    {
+        int depth = (int)(code >> 16);
+        int length = depth + nbits;
+        sink.Write(length + (int)(lastDistanceCode >> 16), (code & 0xFFFF) | ((ulong)extra << depth) | ((ulong)(lastDistanceCode & 0xFFFF) << length));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitInsertLen(nuint insertLen, byte* depth, ushort* bits, uint* histo, ref BitSink sink)
+    private static void EmitInsertLen(nuint insertLen, uint* codes, uint* histo, ref BitSink sink)
     {
         if (insertLen < 6)
         {
             nuint code = insertLen + 40;
-            sink.Write(depth[code], bits[code]);
+            WriteCode(ref sink, codes[code]);
             ++histo[code];
         }
         else if (insertLen < 130)
@@ -263,8 +360,7 @@ internal static unsafe class CompressFragment
             int nbits = FastLog.Log2FloorNonZero(tail) - 1;
             nuint prefix = tail >> nbits;
             nuint code = ((nuint)nbits << 1) + prefix + 42;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(nbits, tail - (prefix << nbits));
+            WriteCode(ref sink, codes[code], nbits, tail - (prefix << nbits));
             ++histo[code];
         }
         else if (insertLen < 2114)
@@ -272,41 +368,37 @@ internal static unsafe class CompressFragment
             nuint tail = insertLen - 66;
             int nbits = FastLog.Log2FloorNonZero(tail);
             nuint code = (nuint)nbits + 50;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(nbits, tail - ((nuint)1 << nbits));
+            WriteCode(ref sink, codes[code], nbits, tail - ((nuint)1 << nbits));
             ++histo[code];
         }
         else
         {
-            sink.Write(depth[61], bits[61]);
-            sink.Write(12, insertLen - 2114);
+            WriteCode(ref sink, codes[61], 12, insertLen - 2114);
             ++histo[61];
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitLongInsertLen(nuint insertLen, byte* depth, ushort* bits, uint* histo, ref BitSink sink)
+    private static void EmitLongInsertLen(nuint insertLen, uint* codes, uint* histo, ref BitSink sink)
     {
         if (insertLen < 22594)
         {
-            sink.Write(depth[62], bits[62]);
-            sink.Write(14, insertLen - 6210);
+            WriteCode(ref sink, codes[62], 14, insertLen - 6210);
             ++histo[62];
         }
         else
         {
-            sink.Write(depth[63], bits[63]);
-            sink.Write(24, insertLen - 22594);
+            WriteCode(ref sink, codes[63], 24, insertLen - 22594);
             ++histo[63];
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitCopyLen(nuint copyLen, byte* depth, ushort* bits, uint* histo, ref BitSink sink)
+    private static void EmitCopyLen(nuint copyLen, uint* codes, uint* histo, ref BitSink sink)
     {
         if (copyLen < 10)
         {
-            sink.Write(depth[copyLen + 14], bits[copyLen + 14]);
+            WriteCode(ref sink, codes[copyLen + 14]);
             ++histo[copyLen + 14];
         }
         else if (copyLen < 134)
@@ -315,8 +407,7 @@ internal static unsafe class CompressFragment
             int nbits = FastLog.Log2FloorNonZero(tail) - 1;
             nuint prefix = tail >> nbits;
             nuint code = ((nuint)nbits << 1) + prefix + 20;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(nbits, tail - (prefix << nbits));
+            WriteCode(ref sink, codes[code], nbits, tail - (prefix << nbits));
             ++histo[code];
         }
         else if (copyLen < 2118)
@@ -324,24 +415,22 @@ internal static unsafe class CompressFragment
             nuint tail = copyLen - 70;
             int nbits = FastLog.Log2FloorNonZero(tail);
             nuint code = (nuint)nbits + 28;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(nbits, tail - ((nuint)1 << nbits));
+            WriteCode(ref sink, codes[code], nbits, tail - ((nuint)1 << nbits));
             ++histo[code];
         }
         else
         {
-            sink.Write(depth[39], bits[39]);
-            sink.Write(24, copyLen - 2118);
+            WriteCode(ref sink, codes[39], 24, copyLen - 2118);
             ++histo[39];
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitCopyLenLastDistance(nuint copyLen, byte* depth, ushort* bits, uint* histo, ref BitSink sink)
+    private static void EmitCopyLenLastDistance(nuint copyLen, uint* codes, uint* histo, ref BitSink sink)
     {
         if (copyLen < 12)
         {
-            sink.Write(depth[copyLen - 4], bits[copyLen - 4]);
+            WriteCode(ref sink, codes[copyLen - 4]);
             ++histo[copyLen - 4];
         }
         else if (copyLen < 72)
@@ -350,17 +439,14 @@ internal static unsafe class CompressFragment
             int nbits = FastLog.Log2FloorNonZero(tail) - 1;
             nuint prefix = tail >> nbits;
             nuint code = ((nuint)nbits << 1) + prefix + 4;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(nbits, tail - (prefix << nbits));
+            WriteCode(ref sink, codes[code], nbits, tail - (prefix << nbits));
             ++histo[code];
         }
         else if (copyLen < 136)
         {
             nuint tail = copyLen - 8;
             nuint code = (tail >> 5) + 30;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(5, tail & 31);
-            sink.Write(depth[64], bits[64]);
+            WriteCode(ref sink, codes[code], 5, tail & 31, codes[64]);
             ++histo[code];
             ++histo[64];
         }
@@ -369,41 +455,59 @@ internal static unsafe class CompressFragment
             nuint tail = copyLen - 72;
             int nbits = FastLog.Log2FloorNonZero(tail);
             nuint code = (nuint)nbits + 28;
-            sink.Write(depth[code], bits[code]);
-            sink.Write(nbits, tail - ((nuint)1 << nbits));
-            sink.Write(depth[64], bits[64]);
+            WriteCode(ref sink, codes[code], nbits, tail - ((nuint)1 << nbits), codes[64]);
             ++histo[code];
             ++histo[64];
         }
         else
         {
-            sink.Write(depth[39], bits[39]);
-            sink.Write(24, copyLen - 2120);
-            sink.Write(depth[64], bits[64]);
+            WriteCode(ref sink, codes[39], 24, copyLen - 2120, codes[64]);
             ++histo[39];
             ++histo[64];
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitDistance(nuint distance, byte* depth, ushort* bits, uint* histo, ref BitSink sink)
+    private static void EmitDistance(nuint distance, uint* codes, uint* histo, ref BitSink sink)
     {
         nuint d = distance + 3;
         int nbits = FastLog.Log2FloorNonZero(d) - 1;
         nuint prefix = (d >> nbits) & 1;
         nuint offset = (2 + prefix) << nbits;
         nuint distCode = (2 * ((nuint)nbits - 1)) + prefix + 80;
-        sink.Write(depth[distCode], bits[distCode]);
-        sink.Write(nbits, d - offset);
+        WriteCode(ref sink, codes[distCode], nbits, d - offset);
         ++histo[distCode];
     }
 
+    /// <summary>
+    /// The literals, four codes a write: their codes take 14 bits at most, so four fit in the 56 bits a
+    /// write takes.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitLiterals(byte* input, nuint length, byte* depth, ushort* bits, ref BitSink sink)
+    private static void EmitLiterals(byte* input, nuint length, uint* codes, ref BitSink sink)
     {
-        for (byte* end = input + length; input < end; input++)
+        byte* end = input + length;
+        for (; input + 4 <= end; input += 4)
         {
-            BitWriter.WriteLiteral(ref sink, *input, depth, bits);
+            // One code after the other, so that few values are live at once.
+            uint code = codes[input[0]];
+            ulong bits = code & 0xFFFF;
+            int count = (int)(code >> 16);
+            code = codes[input[1]];
+            bits |= (ulong)(code & 0xFFFF) << count;
+            count += (int)(code >> 16);
+            code = codes[input[2]];
+            bits |= (ulong)(code & 0xFFFF) << count;
+            count += (int)(code >> 16);
+            code = codes[input[3]];
+            bits |= (ulong)(code & 0xFFFF) << count;
+            count += (int)(code >> 16);
+            sink.Write(count, bits);
+        }
+
+        for (; input < end; input++)
+        {
+            WriteCode(ref sink, codes[*input]);
         }
     }
 
@@ -529,8 +633,6 @@ internal static unsafe class CompressFragment
     {
         // The bit position in a local, which the JIT keeps in a register.
         int storageIx = storageIxRef;
-        byte* cmdDepth = s.CmdDepth;
-        ushort* cmdBits = s.CmdBits;
         uint* cmdHisto = s.CmdHisto;
         byte* litDepth = s.LitDepth;
         ushort* litBits = s.LitBits;
@@ -605,9 +707,9 @@ internal static unsafe class CompressFragment
             if (insert < 6210)
             {
                 var sink = new BitSink(storageIx, storage);
-                EmitInsertLen(insert, cmdDepth, cmdBits, cmdHisto, ref sink);
-                EmitLiterals(nextEmit, insert, litDepth, litBits, ref sink);
-                storageIx = sink.Finish();
+                EmitInsertLen(insert, s.CmdCodes, cmdHisto, ref sink);
+                EmitLiterals(nextEmit, insert, s.LitCodes, ref sink);
+                storageIx = sink.Finish(storage);
             }
             else if (ShouldUseUncompressedMode(metaBlockStart, nextEmit, insert, literalRatio))
             {
@@ -616,9 +718,9 @@ internal static unsafe class CompressFragment
             else
             {
                 var sink = new BitSink(storageIx, storage);
-                EmitLongInsertLen(insert, cmdDepth, cmdBits, cmdHisto, ref sink);
-                EmitLiterals(nextEmit, insert, litDepth, litBits, ref sink);
-                storageIx = sink.Finish();
+                EmitLongInsertLen(insert, s.CmdCodes, cmdHisto, ref sink);
+                EmitLiterals(nextEmit, insert, s.LitCodes, ref sink);
+                storageIx = sink.Finish(storage);
             }
         }
 
@@ -662,22 +764,23 @@ internal static unsafe class CompressFragment
     {
         var sink = new BitSink(storageIxRef, storage);
         byte* nextEmit = nextEmitRef;
-        byte* cmdDepth = s.CmdDepth;
-        ushort* cmdBits = s.CmdBits;
+        uint* cmdCodes = s.CmdCodes;
         uint* cmdHisto = s.CmdHisto;
-        byte* litDepth = s.LitDepth;
-        ushort* litBits = s.LitBits;
+        uint* litCodes = s.LitCodes;
         int lastDistance = -1;
         byte* result = null;
         uint nextHash = Hash(++ip, shift);
         while (true)
         {
             // Step 1: the next match of 5 bytes.
-            ip = FindMatch(ip, ipLimit, ref nextHash, table, baseIp, shift, lastDistance, out byte* candidate);
-            if (ip == null)
+            ulong found = FindMatch(ip, ipLimit, nextHash, table, baseIp, shift, lastDistance);
+            if (found == NoMatch)
             {
                 goto Done;
             }
+
+            ip = baseIp + (uint)found;
+            byte* candidate = baseIp + (uint)(found >> 32);
 
             // Step 2: the match and the literals before it, then the matches right after it.
             {
@@ -688,32 +791,32 @@ internal static unsafe class CompressFragment
                 ip += matched;
                 if (insert < 6210)
                 {
-                    EmitInsertLen(insert, cmdDepth, cmdBits, cmdHisto, ref sink);
+                    EmitInsertLen(insert, cmdCodes, cmdHisto, ref sink);
                 }
                 else if (ShouldUseUncompressedMode(metaBlockStart, nextEmit, insert, literalRatio))
                 {
-                    sink = new BitSink(EmitUncompressedMetaBlock(metaBlockStart, baseMatch, mlenStorageIx - 3, sink.Finish(), storage), storage);
+                    sink = new BitSink(EmitUncompressedMetaBlock(metaBlockStart, baseMatch, mlenStorageIx - 3, sink.Finish(storage), storage), storage);
                     result = baseMatch;
                     goto Done;
                 }
                 else
                 {
-                    EmitLongInsertLen(insert, cmdDepth, cmdBits, cmdHisto, ref sink);
+                    EmitLongInsertLen(insert, cmdCodes, cmdHisto, ref sink);
                 }
 
-                EmitLiterals(nextEmit, insert, litDepth, litBits, ref sink);
+                EmitLiterals(nextEmit, insert, litCodes, ref sink);
                 if (distance == lastDistance)
                 {
-                    sink.Write(cmdDepth[64], cmdBits[64]);
+                    WriteCode(ref sink, cmdCodes[64]);
                     ++cmdHisto[64];
                 }
                 else
                 {
-                    EmitDistance((nuint)distance, cmdDepth, cmdBits, cmdHisto, ref sink);
+                    EmitDistance((nuint)distance, cmdCodes, cmdHisto, ref sink);
                     lastDistance = distance;
                 }
 
-                EmitCopyLenLastDistance(matched, cmdDepth, cmdBits, cmdHisto, ref sink);
+                EmitCopyLenLastDistance(matched, cmdCodes, cmdHisto, ref sink);
                 nextEmit = ip;
                 if (ip >= ipLimit)
                 {
@@ -745,8 +848,8 @@ internal static unsafe class CompressFragment
 
                 ip += matched;
                 lastDistance = (int)(baseMatch - candidate);
-                EmitCopyLen(matched, cmdDepth, cmdBits, cmdHisto, ref sink);
-                EmitDistance((nuint)lastDistance, cmdDepth, cmdBits, cmdHisto, ref sink);
+                EmitCopyLen(matched, cmdCodes, cmdHisto, ref sink);
+                EmitDistance((nuint)lastDistance, cmdCodes, cmdHisto, ref sink);
                 nextEmit = ip;
                 if (ip >= ipLimit)
                 {
@@ -769,21 +872,25 @@ internal static unsafe class CompressFragment
         }
 
     Done:
-        storageIxRef = sink.Finish();
+        storageIxRef = sink.Finish(storage);
         nextEmitRef = nextEmit;
         return result;
     }
 
+    /// <summary>FindMatch's answer when it reaches <c>ipLimit</c>.</summary>
+    private const ulong NoMatch = ulong.MaxValue;
+
     /// <summary>
     /// The trawl of brotli's <c>BrotliCompressFragmentFastImpl</c>: the next position from <paramref name="ip"/>
     /// on whose 5 bytes match those at the last distance or at the table's position, looking further
-    /// apart after every 32 bytes without one; null past <paramref name="ipLimit"/>. A method of its own,
-    /// so that its few variables stay in registers.
+    /// apart after every 32 bytes without one; <see cref="NoMatch"/> past <paramref name="ipLimit"/>. A method
+    /// of its own, so that its few variables stay in registers; it returns the position and the candidate
+    /// as offsets from <paramref name="baseIp"/>, the candidate's in the high half, so that the caller's
+    /// stay in registers too. The next hash it computes is not returned: the caller computes it again.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static byte* FindMatch(byte* ip, byte* ipLimit, ref uint nextHashRef, int* table, byte* baseIp, int shift, int lastDistance, out byte* candidateOut)
+    private static ulong FindMatch(byte* ip, byte* ipLimit, uint nextHash, int* table, byte* baseIp, int shift, int lastDistance)
     {
-        uint nextHash = nextHashRef;
         uint skip = 32;
         byte* nextIp = ip;
         byte* candidate;
@@ -797,9 +904,7 @@ internal static unsafe class CompressFragment
                 nextIp = ip + bytesBetweenHashLookups;
                 if (nextIp > ipLimit)
                 {
-                    nextHashRef = nextHash;
-                    candidateOut = null;
-                    return null;
+                    return NoMatch;
                 }
 
                 nextHash = Hash(nextIp, shift);
@@ -819,8 +924,6 @@ internal static unsafe class CompressFragment
         // A candidate too far is no match: search on.
         while (ip - candidate > MaxDistance);
 
-        nextHashRef = nextHash;
-        candidateOut = candidate;
-        return ip;
+        return (ulong)(uint)(ip - baseIp) | ((ulong)(uint)(candidate - baseIp) << 32);
     }
 }

@@ -98,7 +98,7 @@ internal static unsafe class BackwardReferences
             sr.LenCodeDelta = 0;
             sr.Distance = 0;
             sr.Score = minScore;
-            hasher.FindLongestMatch(ringBuffer, ringBufferMask, distCache, position, maxLength, maxDistance, dictionaryStart, maxDistanceParam, &sr);
+            hasher.FindLongestMatch(ringBuffer, ringBufferMask, distCache, position, maxLength, maxDistance, dictionaryStart, maxDistanceParam, ref sr);
             if (sr.Score > minScore)
             {
                 // A match: look for a better one a byte ahead.
@@ -113,7 +113,7 @@ internal static unsafe class BackwardReferences
                     sr2.Score = minScore;
                     maxDistance = Math.Min(position + 1, maxBackwardLimit);
                     dictionaryStart = Math.Min(position + 1, maxBackwardLimit);
-                    hasher.FindLongestMatch(ringBuffer, ringBufferMask, distCache, position + 1, maxLength, maxDistance, dictionaryStart, maxDistanceParam, &sr2);
+                    hasher.FindLongestMatch(ringBuffer, ringBufferMask, distCache, position + 1, maxLength, maxDistance, dictionaryStart, maxDistanceParam, ref sr2);
                     if (sr2.Score >= sr.Score + costDiffLazy)
                     {
                         // A literal now, and the match from the next byte.
@@ -129,6 +129,8 @@ internal static unsafe class BackwardReferences
                     break;
                 }
 
+                // The next search is past the copy, after the copy's positions are stored.
+                hasher.Prefetch(ringBuffer, ringBufferMask, position + sr.Len);
                 applyRandomHeuristics = position + (2 * sr.Len) + randomHeuristicsWindowSize;
                 dictionaryStart = Math.Min(position, maxBackwardLimit);
                 {

@@ -32,12 +32,18 @@ internal unsafe interface IHasher
 
     void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd);
 
+    /// <summary>
+    /// Fetches into the cache what the search at <paramref name="ix"/> reads first, ahead of it: no effect on
+    /// the output, and nothing for the hashers whose tables stay in the cache.
+    /// </summary>
+    void Prefetch(byte* data, nuint mask, nuint ix);
+
     /// <summary>Stores the last three positions of the previous block, which needed the bytes of this one.</summary>
     void StitchToPreviousBlock(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask);
 
     void PrepareDistanceCache(int* distanceCache);
 
-    void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, HasherSearchResult* result);
+    void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result);
 }
 
 /// <summary>The common part of brotli's hashers: scores, hashes, and the static dictionary's lookup.</summary>
@@ -101,9 +107,14 @@ internal static unsafe class HasherCommon
 
     private static byte* DictionaryData => (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(StaticDictionary.Data));
 
-    /// <summary>brotli's <c>TestStaticDictionaryItem</c>.</summary>
-    private static bool TestStaticDictionaryItem(nuint len, nuint wordIdx, byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, HasherSearchResult* result)
+    /// <summary>
+    /// brotli's <c>TestStaticDictionaryItem</c>: the word's match, when it scores at least
+    /// <paramref name="bestScore"/>. It is out of line, so it takes and returns values: a reference to the
+    /// caller's result would keep that result in memory.
+    /// </summary>
+    private static bool TestStaticDictionaryItem(nuint len, nuint wordIdx, byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, nuint bestScore, out HasherSearchResult match)
     {
+        match = default;
         nuint offset = (nuint)StaticDictionary.OffsetsByLength[(int)len] + (len * wordIdx);
         if (len > maxLength)
         {
@@ -125,15 +136,15 @@ internal static unsafe class HasherCommon
         }
 
         nuint score = BackwardReferenceScore(matchLen, backward);
-        if (score < result->Score)
+        if (score < bestScore)
         {
             return false;
         }
 
-        result->Len = matchLen;
-        result->LenCodeDelta = (int)len - (int)matchLen;
-        result->Distance = backward;
-        result->Score = score;
+        match.Len = matchLen;
+        match.LenCodeDelta = (int)len - (int)matchLen;
+        match.Distance = backward;
+        match.Score = score;
         return true;
     }
 
@@ -141,7 +152,7 @@ internal static unsafe class HasherCommon
     /// brotli's <c>SearchInStaticDictionary</c>: the words of the slots of the position's hash, while
     /// the lookups match often enough.
     /// </summary>
-    public static void SearchInStaticDictionary(ref nuint numLookups, ref nuint numMatches, byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, HasherSearchResult* result, bool shallow)
+    public static void SearchInStaticDictionary(ref nuint numLookups, ref nuint numMatches, byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, ref HasherSearchResult result, bool shallow)
     {
         if (numMatches < (numLookups >> 7))
         {
@@ -155,11 +166,39 @@ internal static unsafe class HasherCommon
         {
             numLookups++;
             byte length = lengths[(int)key];
-            if (length != 0 && TestStaticDictionaryItem(length, words[(int)key], data, maxLength, maxBackward, maxDistance, result))
+            if (length != 0 && TestStaticDictionaryItem(length, words[(int)key], data, maxLength, maxBackward, maxDistance, result.Score, out HasherSearchResult match))
             {
+                result = match;
                 numMatches++;
             }
         }
+    }
+
+    /// <summary>
+    /// <see cref="SearchInStaticDictionary"/>'s two lookups, once the caller has checked that they match often
+    /// enough and counted them: the matches found. Out of line: inlined into the match search, itself inlined
+    /// twice into <see cref="BackwardReferences"/>' loop, it left the JIT too many locals to keep the
+    /// candidates' loop in registers. The counters stay with the caller, as values, so that its hasher is not
+    /// exposed by a reference to them.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static nuint SearchInStaticDictionaryDeep(byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, HasherSearchResult* result)
+    {
+        nuint key = (nuint)Hash14(data) << 1;
+        ReadOnlySpan<byte> lengths = DictionaryHash.Lengths;
+        ReadOnlySpan<ushort> words = DictionaryHash.Words;
+        nuint matches = 0;
+        for (int i = 0; i < 2; ++i, ++key)
+        {
+            byte length = lengths[(int)key];
+            if (length != 0 && TestStaticDictionaryItem(length, words[(int)key], data, maxLength, maxBackward, maxDistance, result->Score, out HasherSearchResult match))
+            {
+                *result = match;
+                matches++;
+            }
+        }
+
+        return matches;
     }
 }
 

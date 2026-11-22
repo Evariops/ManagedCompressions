@@ -437,7 +437,7 @@ internal static unsafe partial class BitStream
             BuildAndStoreHuffmanTree(lengthHisto, Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, tree, self.LengthDepths, self.LengthBits, ref storageIx, storage);
             var sink = new BitSink(storageIx, storage);
             StoreBlockSwitch(ref self, self.BlockLengths[0], self.BlockTypes[0], true, ref sink);
-            storageIx = sink.Finish();
+            storageIx = sink.Finish(storage);
         }
     }
 
@@ -595,7 +595,7 @@ internal static unsafe partial class BitStream
             }
         }
 
-        storageIx = sink.Finish();
+        storageIx = sink.Finish(storage);
         if (isLast)
         {
             BitWriter.JumpToByteBoundary(ref storageIx, storage);
@@ -630,6 +630,12 @@ internal static unsafe partial class BitStream
     private static void StoreDataWithHuffmanCodes(byte* input, nuint startPos, nuint mask, Command* commands, nuint numCommands, byte* litDepth, ushort* litBits, byte* cmdDepth, ushort* cmdBits, byte* distDepth, ushort* distBits, ref int storageIx, byte* storage)
     {
         nuint pos = startPos;
+
+        // The literal codes combined, bits and depth from bit 16: one load a literal, and three literals, of 15
+        // bits at most each, one write.
+        uint* litCodes = stackalloc uint[256];
+        BitWriter.CombineCodes(litDepth, litBits, litCodes, 256);
+
         var sink = new BitSink(storageIx, storage);
         for (nuint i = 0; i < numCommands; ++i)
         {
@@ -637,9 +643,26 @@ internal static unsafe partial class BitStream
             nuint cmdCode = cmd->CmdPrefix;
             sink.Write(cmdDepth[cmdCode], cmdBits[cmdCode]);
             StoreCommandExtra(cmd, ref sink);
-            for (nuint j = cmd->InsertLen; j != 0; --j)
+            nuint j = cmd->InsertLen;
+            for (; j >= 3; j -= 3)
             {
-                BitWriter.WriteLiteral(ref sink, input[pos & mask], litDepth, litBits);
+                uint code = litCodes[input[pos & mask]];
+                ulong bits = code & 0xFFFF;
+                int count = (int)(code >> 16);
+                code = litCodes[input[(pos + 1) & mask]];
+                bits |= (ulong)(code & 0xFFFF) << count;
+                count += (int)(code >> 16);
+                code = litCodes[input[(pos + 2) & mask]];
+                bits |= (ulong)(code & 0xFFFF) << count;
+                count += (int)(code >> 16);
+                sink.Write(count, bits);
+                pos += 3;
+            }
+
+            for (; j != 0; --j)
+            {
+                uint code = litCodes[input[pos & mask]];
+                sink.Write((int)(code >> 16), code & 0xFFFF);
                 ++pos;
             }
 
@@ -650,12 +673,12 @@ internal static unsafe partial class BitStream
                 nuint distCode = (nuint)(cmd->DistPrefix & 0x3FF);
                 int distNumExtra = cmd->DistPrefix >> 10;
                 uint distExtra = cmd->DistExtra;
-                sink.Write(distDepth[distCode], distBits[distCode]);
-                sink.Write(distNumExtra, distExtra);
+                int depth = distDepth[distCode];
+                sink.Write(depth + distNumExtra, distBits[distCode] | ((ulong)distExtra << depth));
             }
         }
 
-        storageIx = sink.Finish();
+        storageIx = sink.Finish(storage);
     }
 
     /// <summary>brotli's <c>BrotliStoreMetaBlockTrivial</c>: quality 3, a code a category.</summary>

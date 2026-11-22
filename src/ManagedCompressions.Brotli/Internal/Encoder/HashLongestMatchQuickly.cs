@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.X86;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -147,6 +148,22 @@ internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
         }
     }
 
+    // The lines of the position's slots, the first ones a search reads, for the large tables: 512 KiB for H4,
+    // which shares the L2 cache with the window and the commands, 4 MiB for H54.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Prefetch(byte* data, nuint mask, nuint ix)
+    {
+        if (Sse.IsSupported && TParams.BucketBits >= 17)
+        {
+            uint key = HashBytes(data + (ix & mask));
+            Sse.Prefetch0(_buckets + key);
+            if (BucketSweep > 1)
+            {
+                Sse.Prefetch0(_buckets + ((key + ((uint)(BucketSweep - 1) << 3)) & BucketMask));
+            }
+        }
+    }
+
     public void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd)
     {
         for (nuint i = ixStart; i < ixEnd; ++i)
@@ -170,20 +187,21 @@ internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, HasherSearchResult* result)
+    public void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
         uint* buckets = _buckets;
-        nuint bestLenIn = result->Len;
+        nuint bestLenIn = result.Len;
         nuint curIxMasked = curIx & ringBufferMask;
+        Prefetch(data, ringBufferMask, curIx + 1);
         int compareChar = data[curIxMasked + bestLenIn];
         nuint key = HashBytes(data + curIxMasked);
         nuint keyOut = 0;
-        nuint minScore = result->Score;
-        nuint bestScore = result->Score;
+        nuint minScore = result.Score;
+        nuint bestScore = result.Score;
         nuint bestLen = bestLenIn;
         nuint cachedBackward = (nuint)(nint)distanceCache[0];
         nuint prevIx = curIx - cachedBackward;
-        result->LenCodeDelta = 0;
+        result.LenCodeDelta = 0;
         if (prevIx < curIx)
         {
             prevIx &= (uint)ringBufferMask;
@@ -195,9 +213,9 @@ internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
                     nuint score = HasherCommon.BackwardReferenceScoreUsingLastDistance(len);
                     if (bestScore < score)
                     {
-                        result->Len = len;
-                        result->Distance = cachedBackward;
-                        result->Score = score;
+                        result.Len = len;
+                        result.Distance = cachedBackward;
+                        result.Score = score;
                         if (BucketSweep == 1)
                         {
                             buckets[key] = (uint)curIx;
@@ -234,9 +252,9 @@ internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
                 nuint score = HasherCommon.BackwardReferenceScore(len, backward);
                 if (bestScore < score)
                 {
-                    result->Len = len;
-                    result->Distance = backward;
-                    result->Score = score;
+                    result.Len = len;
+                    result.Distance = backward;
+                    result.Score = score;
                     return;
                 }
             }
@@ -266,19 +284,19 @@ internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
                     if (bestScore < score)
                     {
                         bestLen = len;
-                        result->Len = len;
+                        result.Len = len;
                         compareChar = data[curIxMasked + len];
                         bestScore = score;
-                        result->Score = score;
-                        result->Distance = backward;
+                        result.Score = score;
+                        result.Distance = backward;
                     }
                 }
             }
         }
 
-        if (TParams.UseDictionary && minScore == result->Score)
+        if (TParams.UseDictionary && minScore == result.Score)
         {
-            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data + curIxMasked, maxLength, dictionaryDistance, maxDistance, result, shallow: true);
+            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data + curIxMasked, maxLength, dictionaryDistance, maxDistance, ref result, shallow: true);
         }
 
         if (BucketSweep != 1)

@@ -272,24 +272,19 @@ internal static unsafe partial class BitStream
     /// </summary>
     public static void BuildAndStoreHuffmanTreeFast(HuffmanTree* tree, uint* histogram, nuint histogramTotal, int maxBits, byte* depth, ushort* bits, ref int storageIx, byte* storage)
     {
+        // The symbols, the first four kept. Without a branch on the counts, which the processor mispredicts:
+        // every symbol is written to the slot of the next one present, which keeps it only if it is present.
         int count = 0;
-        nuint* symbols = stackalloc nuint[4];
+        nuint* symbols = stackalloc nuint[5];
         symbols[0] = symbols[1] = symbols[2] = symbols[3] = 0;
         int length = 0;
         nuint total = histogramTotal;
         while (total != 0)
         {
-            if (histogram[length] != 0)
-            {
-                if (count < 4)
-                {
-                    symbols[count] = (nuint)length;
-                }
-
-                ++count;
-                total -= histogram[length];
-            }
-
+            uint value = histogram[length];
+            symbols[Math.Min(count, 4)] = (nuint)length;
+            count += value != 0 ? 1 : 0;
+            total -= value;
             ++length;
         }
 
@@ -305,15 +300,14 @@ internal static unsafe partial class BitStream
         new Span<byte>(depth, length).Clear();
         for (uint countLimit = 1; ; countLimit *= 2)
         {
+            // A leaf for each symbol present, without a branch: each written, kept if present.
             HuffmanTree* node = tree;
             for (int l = length; l != 0;)
             {
                 --l;
-                if (histogram[l] != 0)
-                {
-                    *node = new HuffmanTree(histogram[l] >= countLimit ? histogram[l] : countLimit, -1, (short)l);
-                    ++node;
-                }
+                uint value = histogram[l];
+                *node = new HuffmanTree(Math.Max(value, countLimit), -1, (short)l);
+                node += value != 0 ? 1 : 0;
             }
 
             int n = (int)(node - tree);
@@ -393,6 +387,7 @@ internal static unsafe partial class BitStream
         // A complex code, its depths RLE-coded with the static code length code.
         byte previousValue = 8;
         StoreStaticCodeLengthCode(ref storageIx, storage);
+        var sink = new BitSink(storageIx, storage);
         ref byte codeLengthDepth = ref MemoryMarshal.GetReference(EncoderTables.CodeLengthDepth);
         ref uint codeLengthBits = ref MemoryMarshal.GetReference(EncoderTables.CodeLengthBits);
         ref uint zeroRepsDepth = ref MemoryMarshal.GetReference(EncoderTables.ZeroRepsDepth);
@@ -411,13 +406,13 @@ internal static unsafe partial class BitStream
             i += reps;
             if (value == 0)
             {
-                BitWriter.Write((int)Unsafe.Add(ref zeroRepsDepth, reps), Unsafe.Add(ref zeroRepsBits, reps), ref storageIx, storage);
+                sink.Write((int)Unsafe.Add(ref zeroRepsDepth, reps), Unsafe.Add(ref zeroRepsBits, reps));
                 continue;
             }
 
             if (previousValue != value)
             {
-                BitWriter.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value), ref storageIx, storage);
+                sink.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value));
                 --reps;
             }
 
@@ -426,17 +421,19 @@ internal static unsafe partial class BitStream
                 while (reps != 0)
                 {
                     reps--;
-                    BitWriter.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value), ref storageIx, storage);
+                    sink.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value));
                 }
             }
             else
             {
                 reps -= 3;
-                BitWriter.Write((int)Unsafe.Add(ref nonZeroRepsDepth, reps), Unsafe.Add(ref nonZeroRepsBits, reps), ref storageIx, storage);
+                sink.Write((int)Unsafe.Add(ref nonZeroRepsDepth, reps), Unsafe.Add(ref nonZeroRepsBits, reps));
             }
 
             previousValue = value;
         }
+
+        storageIx = sink.Finish(storage);
     }
 
     /// <summary>brotli's <c>StoreStaticCodeLengthCode</c>.</summary>

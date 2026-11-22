@@ -10,10 +10,9 @@ fully managed C#.
   are brotli's.
 - Its decompressor accepts and refuses the streams brotli 1.1.1 does, and reports why it refuses one
   with brotli's own error codes.
-- Both are faster than the brotli .NET ships (see [Performance](#performance)): the compressor 1.00 to
-  1.60× on a sample of the Silesia corpus at qualities 1 to 11, and up to 21× on small inputs, quality 0
-  aside; the decompressor 1.07 to 1.37× on the Silesia corpus and 1.06 to 1.10× on JSON records of 800
-  bytes.
+- Both are at least as fast as the brotli .NET ships at every quality (see [Performance](#performance)):
+  the compressor 1.00 to 1.29× on a sample of the Silesia corpus and 1.03 to 21× on JSON records of 800
+  bytes; the decompressor 1.07 to 1.37× on the Silesia corpus and 1.06 to 1.10× on the JSON records.
 - A warm compressor or decompressor allocates nothing.
 
 ManagedCompressions.Brotli is an independent implementation of the format. It is not affiliated with the
@@ -159,6 +158,16 @@ has floats: its bytes are brotli's. The speed comes from how the work is laid ou
 - **Bits through an accumulator.** brotli writes each code by loading the byte at the bit position, OR-ing
   the code in and storing 8 bytes. The hot loops here keep the pending bits in a 64-bit register and store
   it once per code, without a branch: the same bytes, with no load on the way.
+- **Several codes per write.** At qualities 0 to 3, a literal's code takes 14 or 15 bits at most, so three
+  or four literals go out in one write, and a command's or a distance's code goes out with its extra bits.
+  Each code is one word, its bits and its length, read with one load.
+- **Tables fetched ahead.** From quality 4, the hash tables outgrow the caches (4 MiB at quality 4 on a
+  large input, 32 MiB at quality 9) and the search waits on them. The lines the next search reads first
+  are fetched while the current one runs: the next position's, which is nearly always the next searched,
+  and, after a copy, the position past it, before the copy's positions are stored.
+- **Small inputs.** On an 800-byte input, quality 0 spends most of its time building the literal code. The
+  bytes are counted in four histograms, so that a repeated byte does not wait for the increment before,
+  the code length counts likewise, and the loops over the 256 symbols run on vectors or without branches.
 - **The block splitter and the clustering a vector at a time.** At qualities 10 and 11, the splitter
   weighs every symbol against up to 100 entropy codes, and the clustering weighs pairs of histograms;
   both run on vectors of doubles and counts, with the same additions in the same order, and the same
@@ -202,22 +211,22 @@ same bytes. The Silesia sample is 1 MiB every 16 MiB of silesia.tar, 13.6 MB, in
 
 | Quality | Ratio | Silesia sample, native MB/s | managed MB/s | × | 800-byte JSON records, native MB/s | managed MB/s | × |
 |--:|--:|--:|--:|--:|--:|--:|--:|
-| 0 | 2.25 | 565 | 535 | 0.95× | 313 | 282 | 0.90× |
-| 1 | 2.44 | 408 | 432 | **1.06×** | 190 | 206 | **1.07×** |
-| 2 | 2.60 | 212 | 217 | 1.03× | 208 | 238 | **1.14×** |
-| 3 | 2.62 | 182 | 183 | 1.00× | 91.8 | 104 | **1.13×** |
-| 4 | 2.66 | 77.8 | 124 | **1.60×** | 59.9 | 65.9 | **1.10×** |
-| 5 | 2.88 | 48.6 | 56.5 | **1.16×** | 5.29 | 60.8 | **11.9×** |
-| 6 | 2.91 | 31.2 | 39.9 | **1.28×** | 3.99 | 61.5 | **15.1×** |
-| 7 | 2.93 | 23.2 | 23.6 | 1.01× | 3.04 | 54.0 | **17.9×** |
-| 8 | 2.94 | 15.2 | 17.7 | **1.16×** | 2.76 | 52.6 | **19.7×** |
-| 9 | 2.95 | 12.4 | 13.1 | 1.05× | 2.26 | 47.3 | **21.0×** |
-| 10 | 3.21 | 2.12 | 2.54 | **1.20×** | 1.82 | 2.04 | **1.13×** |
-| 11 | 3.31 | 1.03 | 1.17 | **1.14×** | 1.07 | 1.10 | 1.03× |
+| 0 | 2.25 | 550 | 550 | 1.00× | 312 | 341 | **1.09×** |
+| 1 | 2.44 | 411 | 460 | **1.12×** | 189 | 204 | **1.06×** |
+| 2 | 2.60 | 216 | 220 | 1.02× | 211 | 250 | **1.19×** |
+| 3 | 2.62 | 186 | 186 | 1.00× | 91.3 | 112 | **1.23×** |
+| 4 | 2.66 | 124 | 134 | **1.08×** | 59.7 | 69.6 | **1.16×** |
+| 5 | 2.88 | 50.4 | 65.6 | **1.29×** | 5.30 | 63.7 | **12.4×** |
+| 6 | 2.91 | 36.4 | 43.8 | **1.20×** | 4.11 | 62.1 | **15.6×** |
+| 7 | 2.93 | 24.8 | 28.8 | **1.16×** | 3.08 | 54.5 | **17.4×** |
+| 8 | 2.94 | 19.1 | 22.4 | **1.18×** | 2.72 | 52.4 | **20.1×** |
+| 9 | 2.95 | 14.6 | 17.2 | **1.18×** | 2.38 | 47.6 | **21.0×** |
+| 10 | 3.21 | 2.18 | 2.56 | **1.18×** | 1.81 | 2.05 | **1.13×** |
+| 11 | 3.31 | 1.05 | 1.20 | **1.15×** | 1.07 | 1.09 | 1.03× |
 
 The ratio is the Silesia sample's. Qualities 4 to 9 move by up to 20 % from one process to the next, on
-both sides. On small inputs, brotli spends qualities 5 to 9 allocating and clearing tables a
-`BrotliCompressor` keeps. Quality 0 is the one quality still behind.
+both sides: brotli took 124 MB/s at quality 4 here, and 77.8 MB/s in an earlier process. On small inputs,
+brotli spends qualities 5 to 9 allocating and clearing tables a `BrotliCompressor` keeps.
 [`bench/results/x64/brotli-compression.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/brotli-compression.md)
 has the intervals.
 
@@ -255,15 +264,15 @@ two processes.
 
 | Quality | Writing, native MB/s | managed MB/s | × | Reading, native MB/s | managed MB/s | × |
 |--:|--:|--:|--:|--:|--:|--:|
-| 1 | 455 | 468 | 1.03× | 561 | 740 | **1.32×** |
-| 4 | 113 | 118 | 1.05× | 666 | 887 | **1.33×** |
-| 5 | 60.3 | 62.2 | 1.03× | 703 | 858 | **1.22×** |
-| 9 | 17.3 | 16.3 | 0.94× | 720 | 890 | **1.24×** |
-| 11 | 1.10 | 1.30 | **1.19×** | 583 | 625 | 1.07× |
+| 1 | 453 | 486 | **1.07×** | 561 | 740 | **1.32×** |
+| 4 | 114 | 119 | 1.05× | 666 | 887 | **1.33×** |
+| 5 | 60.4 | 65.7 | **1.09×** | 703 | 858 | **1.22×** |
+| 9 | 17.9 | 18.6 | 1.04× | 720 | 890 | **1.24×** |
+| 11 | 1.10 | 1.30 | **1.18×** | 583 | 625 | 1.07× |
 
 A stream written piece by piece does not announce its size, so brotli picks the hashers of an input of
-unknown size, the same on both sides: at quality 4, not the one that makes one-shot compression 1.60×
-faster.
+unknown size, the same on both sides: H4 at quality 4 and H5 at 5 to 9, where one call over a large input
+takes H54 and H6.
 
 ## Tests
 
