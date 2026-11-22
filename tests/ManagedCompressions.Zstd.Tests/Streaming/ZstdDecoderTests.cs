@@ -288,6 +288,35 @@ public sealed class ZstdDecoderTests
     }
 
     /// <summary>
+    /// A frame of a 1 KiB window, cut short, with a sequence that reaches past the window into content
+    /// libzstd's streaming decoder still holds: its buffer keeps the window and two blocks
+    /// (<c>ZSTD_decodingBufferSize_internal</c>), and it refuses an offset only past what the buffer
+    /// holds. The decoder keeps as much, and decodes what libzstd decodes. libFuzzer found it
+    /// (fuzz/regressions/zstd-stream-decompress/offset-past-the-window).
+    /// </summary>
+    [Fact]
+    public void An_offset_past_the_window_reaches_what_libzstd_keeps()
+    {
+        byte[] stream = Convert.FromHexString(
+            "28B52FFD0400540700140E602C155687925BC5D622730F072754669C41C0D85880A8BFF18C7472901C50551A8552A145" +
+            "2081023FF775E0EFB4A91B7735984897DBB5DF845564FA1EE934B9D21EF581D4B3217BBFBD99600BC7CF3DE258FB5B84" +
+            "08BD3ED0731CEFBB86E456C3BB0ED0BE2847C3131C88D94254D4BC862617C5EDD935C960B7B1609631BF39D9429D4FB8" +
+            "FE7FBA1137476780E4FB7B9F6068956E1E68EA86456F0676E62DE15C4EFFFFB7840488A75CB4B691CD497CBB35C136C9" +
+            "2ACABBDAB2C9738E78442A09660A31E5FBC41A5BE0EE116AB159B8FBF34B4124F6183283442504BB90FA2E180100618E" +
+            "AE8A143C0000000100FD5D15205C000008FA0200C35BA062BB024064000000034000969A564EA89B5410440000000100" +
+            "FD47550208640000000340004BA0B2E159AA4D4154000000035400012C766C2C096C00000825031001A094D85001840A" +
+            "08650000000340001304004C0000020D39");
+        Assert.False(NativeZstd.DecompressStream(stream, 1 << 16, null, 27, out byte[] expected), "libzstd finds it cut short");
+        Assert.Equal(8224, expected.Length);
+        foreach ((string name, Func<int> source) in new (string, Func<int>)[] { ("whole", Pieces.Whole), ("a byte at a time", Pieces.One) })
+        {
+            (OperationStatus status, byte[] content, _) = Pieces.Decode(new ZstdDecoder(), stream, source, Pieces.Whole);
+            Assert.True(status == OperationStatus.NeedMoreData, $"{name}: {status}");
+            Assert.Equal(expected, content);
+        }
+    }
+
+    /// <summary>
     /// A frame that declares no content allows blocks of 0 bytes, which an RLE block exceeds by its one
     /// byte in the stream: libzstd's streaming decoder refuses it, where it does not decode the frame in
     /// one pass (in one pass, and one-shot, it decodes it). The decoder does likewise. libFuzzer found
