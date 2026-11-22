@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -110,6 +111,8 @@ internal static unsafe class Lz4Decoder
         byte* op = opRef;
         while (ip <= ipLimit && op <= opStop)
         {
+            // The margins every unchecked access below relies on (asserted in the Debug and Checked builds).
+            Debug.Assert(ip + InputMargin <= iend && op + OutputMargin <= oend, "a sequence starts within both margins");
             // The next token's address is the one chain from sequence to sequence: the token's load,
             // a shift, one add to ip + 3, which does not wait on the load. afterToken is used twice,
             // so the JIT keeps it rather than folding the 3 into an add after the shift.
@@ -126,6 +129,7 @@ internal static unsafe class Lz4Decoder
                 goto LongLiterals;
             }
 
+            Debug.Assert(afterToken - 2 + 16 <= iend && op + 16 <= oend, "the literals' wide copy stays in both buffers");
             Copy16(op, afterToken - 2);
             ip = afterToken + literals;
             op += literals;
@@ -141,6 +145,7 @@ internal static unsafe class Lz4Decoder
             length += MinMatch;
             if (offset >= 8 && (!TCheck.NearStart || match >= destination))
             {
+                Debug.Assert(match >= destination && op + 18 <= oend, "the short match lies in the output, its copy within it");
                 // Three words, each read after the one before it is written.
                 Unsafe.WriteUnaligned(op, Unsafe.ReadUnaligned<ulong>(match));
                 Unsafe.WriteUnaligned(op + 8, Unsafe.ReadUnaligned<ulong>(match + 8));
@@ -172,6 +177,7 @@ internal static unsafe class Lz4Decoder
                 break;
             }
 
+            Debug.Assert(ip + literals + 32 <= iend && op + literals + 32 <= oend, "the long literals' wide copy stays in both buffers");
             WildCopy32(op, ip, op + literals);
             ip += literals + 2;
             op += literals;
@@ -197,6 +203,7 @@ internal static unsafe class Lz4Decoder
                 return false;
             }
 
+            Debug.Assert(match >= destination && op + length + 32 <= oend, "the long match lies in the output, its wide copy within it");
             if (offset >= 16)
             {
                 WildCopy32(op, match, op + length);
