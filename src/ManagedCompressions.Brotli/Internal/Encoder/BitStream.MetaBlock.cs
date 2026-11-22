@@ -634,10 +634,7 @@ internal static unsafe partial class BitStream
         // The literal codes combined, bits and depth from bit 16: one load a literal, and three literals, of 15
         // bits at most each, one write.
         uint* litCodes = stackalloc uint[256];
-        for (int i = 0; i < 256; ++i)
-        {
-            litCodes[i] = litBits[i] | ((uint)litDepth[i] << 16);
-        }
+        BitWriter.CombineCodes(litDepth, litBits, litCodes, 256);
 
         var sink = new BitSink(storageIx, storage);
         for (nuint i = 0; i < numCommands; ++i)

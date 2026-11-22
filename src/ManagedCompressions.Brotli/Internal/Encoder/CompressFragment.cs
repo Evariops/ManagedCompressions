@@ -66,7 +66,7 @@ internal sealed unsafe class OnePassArena
 
     /// <summary>
     /// The literal and the command codes, each its bits with its depth from bit 16: one load a symbol, and one
-    /// pointer a table in the commands' loop. Built from the depths and bits by <c>CombineCodes</c>.
+    /// pointer a table in the commands' loop. Combined from the depths and bits whenever these change.
     /// </summary>
     public readonly uint* LitCodes;
     public readonly uint* CmdCodes;
@@ -113,6 +113,7 @@ internal sealed unsafe class OnePassArena
     {
         DefaultCommandDepths.CopyTo(new Span<byte>(CmdDepth, 128));
         DefaultCommandBits.CopyTo(new Span<ushort>(CmdBits, 128));
+        BitWriter.CombineCodes(CmdDepth, CmdBits, CmdCodes, 128);
         DefaultCommandCode.CopyTo(new Span<byte>(CmdCode, 512));
         CmdCodeNumBits = 448;
     }
@@ -198,6 +199,7 @@ internal static unsafe class CompressFragment
         }
 
         BitStream.BuildAndStoreHuffmanTreeFast(s.Tree, histogram, histogramTotal, 8, depths, bits, ref storageIx, storage);
+        BitWriter.CombineCodes(depths, bits, s.LitCodes, 256);
         nuint literalRatio = 0;
         for (int i = 0; i < 256; ++i)
         {
@@ -257,29 +259,7 @@ internal static unsafe class CompressFragment
 
         BitStream.StoreHuffmanTree(tmpDepth, Prefix.NumCommandSymbols, s.Tree, ref storageIx, storage);
         BitStream.StoreHuffmanTree(depth + 64, 64, s.Tree, ref storageIx, storage);
-    }
-
-    /// <summary>
-    /// The literal and command codes combined, each code's bits with its depth from bit 16, from the
-    /// depths and bits brotli builds: for the commands' loop, where a symbol is then one load.
-    /// </summary>
-    private static void CombineCodes(OnePassArena s)
-    {
-        uint* litCodes = s.LitCodes;
-        byte* litDepth = s.LitDepth;
-        ushort* litBits = s.LitBits;
-        for (int i = 0; i < 256; ++i)
-        {
-            litCodes[i] = litBits[i] | ((uint)litDepth[i] << 16);
-        }
-
-        uint* cmdCodes = s.CmdCodes;
-        byte* cmdDepth = s.CmdDepth;
-        ushort* cmdBits = s.CmdBits;
-        for (int i = 0; i < 128; ++i)
-        {
-            cmdCodes[i] = cmdBits[i] | ((uint)cmdDepth[i] << 16);
-        }
+        BitWriter.CombineCodes(depth, bits, s.CmdCodes, 128);
     }
 
     /// <summary>A combined code.</summary>
@@ -665,7 +645,6 @@ internal static unsafe class CompressFragment
         if (nextEmit < ipEnd)
         {
             nuint insert = (nuint)(ipEnd - nextEmit);
-            CombineCodes(s);
             if (insert < 6210)
             {
                 var sink = new BitSink(storageIx, storage);
@@ -726,7 +705,6 @@ internal static unsafe class CompressFragment
     {
         var sink = new BitSink(storageIxRef, storage);
         byte* nextEmit = nextEmitRef;
-        CombineCodes(s);
         uint* cmdCodes = s.CmdCodes;
         uint* cmdHisto = s.CmdHisto;
         uint* litCodes = s.LitCodes;

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -62,6 +63,35 @@ internal static unsafe class BitWriter
     /// <summary>Writes a literal's code into a <see cref="BitSink"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WriteLiteral(ref BitSink sink, nuint literal, byte* depth, ushort* bits) => sink.Write(depth[literal], bits[literal]);
+
+    /// <summary>
+    /// Codes combined for the loops that write them: each code's bits, with its depth from bit 16, so that a
+    /// symbol is one load. Sixteen at a time.
+    /// </summary>
+    public static void CombineCodes(byte* depth, ushort* bits, uint* codes, int count)
+    {
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated)
+        {
+            for (; i + 16 <= count; i += 16)
+            {
+                (Vector128<ushort> depthLow, Vector128<ushort> depthHigh) = Vector128.Widen(Vector128.Load(depth + i));
+                (Vector128<uint> d0, Vector128<uint> d1) = Vector128.Widen(depthLow);
+                (Vector128<uint> d2, Vector128<uint> d3) = Vector128.Widen(depthHigh);
+                (Vector128<uint> b0, Vector128<uint> b1) = Vector128.Widen(Vector128.Load(bits + i));
+                (Vector128<uint> b2, Vector128<uint> b3) = Vector128.Widen(Vector128.Load(bits + i + 8));
+                (b0 | (d0 << 16)).Store(codes + i);
+                (b1 | (d1 << 16)).Store(codes + i + 4);
+                (b2 | (d2 << 16)).Store(codes + i + 8);
+                (b3 | (d3 << 16)).Store(codes + i + 12);
+            }
+        }
+
+        for (; i < count; ++i)
+        {
+            codes[i] = bits[i] | ((uint)depth[i] << 16);
+        }
+    }
 
     /// <summary>Clears the byte at a byte-aligned position, brotli's <c>BrotliWriteBitsPrepareStorage</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

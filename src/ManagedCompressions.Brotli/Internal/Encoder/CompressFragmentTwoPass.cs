@@ -441,14 +441,11 @@ internal static unsafe class CompressFragmentTwoPass
         ReadOnlySpan<uint> insertOffset = InsertOffset;
         uint* litCodes = stackalloc uint[256];
         uint* cmdCodes = stackalloc uint[128];
-        for (int i = 0; i < 256; ++i)
-        {
-            litCodes[i] = s.LitBits[i] | ((uint)s.LitDepth[i] << 16);
-        }
-
+        BitWriter.CombineCodes(s.LitDepth, s.LitBits, litCodes, 256);
+        BitWriter.CombineCodes(s.CmdDepth, s.CmdBits, cmdCodes, 128);
         for (int i = 0; i < 128; ++i)
         {
-            cmdCodes[i] = s.CmdBits[i] | ((uint)s.CmdDepth[i] << 16) | ((uint)numExtraBits[i] << 24);
+            cmdCodes[i] |= (uint)numExtraBits[i] << 24;
         }
 
         var sink = new BitSink(storageIx, storage);
