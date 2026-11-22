@@ -161,6 +161,57 @@ jobs:
           path: ${{ runner.temp }}/packages
           if-no-files-found: error
 
+  # The memory the libraries' unsafe code reads and writes without bounds checks. In the Checked
+  # configuration (Directory.Build.props) their assertions are on and that memory lies against
+  # inaccessible pages (src/Shared/GuardedMemory.cs), so that a byte out of bounds faults at once: the
+  # whole suite with the blocks against the page after them, then against the page before them. Then
+  # the build that ships with the runtime verifying its heap at every collection, where a write out of
+  # bounds that no guard covers breaks the heap's structure.
+  memory:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'Checked', configuration: Checked, guard: end, heap: '0' }
+          - { name: 'Checked, guard before', configuration: Checked, guard: start, heap: '0' }
+          - { name: 'Release, heap verified', configuration: Release, guard: end, heap: '1' }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+          dotnet-version: 10.0.x
+
+      - name: Build
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: dotnet build ManagedCompressions.slnx -c "$CONFIGURATION"
+
+      - name: Write the Zstandard test data
+        run: bash tools/native-ref/testdata.sh
+
+      - name: Write the Brotli test data
+        run: bash tools/native-ref/brotli-testdata.sh
+
+      - name: Build brotli
+        run: bash tools/native-ref/build-brotli.sh
+
+      - name: Build libzstd with threads
+        run: bash tools/native-ref/build.sh mt
+
+      - name: Test
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+          MANAGEDCOMPRESSIONS_GUARD: ${{ matrix.guard }}
+          DOTNET_HeapVerify: ${{ matrix.heap }}
+        run: dotnet test --solution ManagedCompressions.slnx --no-build -c "$CONFIGURATION"
+
   # The same tests where the codecs take other paths: on arm64 (AdvSimd), and on x64 with instruction
   # sets turned off, down to the scalar code that runs where no vector instruction does. Each path the
   # library has runs on some machine; the test job above covers whatever its runner has. The knobs are

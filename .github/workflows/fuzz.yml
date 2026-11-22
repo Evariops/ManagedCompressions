@@ -64,8 +64,11 @@ jobs:
       - name: Build brotli
         run: bash tools/native-ref/build-brotli.sh
 
+      # The Checked build (Directory.Build.props): the libraries' assertions on, and the memory their
+      # unsafe code reads and writes without bounds checks against inaccessible pages, so that an input
+      # that takes them a byte out of bounds faults, and libFuzzer keeps it.
       - name: Publish
-        run: dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
+        run: dotnet publish fuzz/ManagedCompressions.Fuzz -c Checked -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

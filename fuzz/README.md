@@ -8,8 +8,10 @@ ships them, and brotli 1.1.1, built from its sources by `tools/native-ref/build-
 the one it ships, with the error codes .NET's own library does not export on Linux.
 
 The sources and destinations lie against inaccessible pages on Linux and macOS, so a single byte read or
-written past either end faults. A target fails an input by throwing, and libFuzzer keeps the input. A
-fault or a hang (`-timeout`) fails it the same way.
+written past either end faults. The libraries are their Checked build, whose own tables, windows and
+buffers lie against such pages too (`src/Shared/GuardedMemory.cs`), with their assertions on. A target
+fails an input by throwing, and libFuzzer keeps the input. A fault or a hang (`-timeout`) fails it the
+same way.
 
 | Target | Input | Guarantee |
 |:--|:--|:--|
@@ -57,7 +59,7 @@ On Linux (or WSL), with the .NET SDK and clang:
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/Metalnem/libfuzzer-dotnet/bd39d4e88d715ab460a929943645be2a186cde52/libfuzzer-dotnet.cc
 clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
-dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o out
+dotnet publish fuzz/ManagedCompressions.Fuzz -c Checked -f net11.0 -r linux-x64 --self-contained false -o out
 out/ManagedCompressions.Fuzz seed zstd-decompress corpus/zstd-decompress
 dotnet tool restore
 dotnet sharpfuzz out/ManagedCompressions.Zstd.dll
