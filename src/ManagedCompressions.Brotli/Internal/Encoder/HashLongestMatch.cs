@@ -61,14 +61,8 @@ internal struct HashLongestMatch : IHasher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix)
-    {
-        uint key = HashBytes(data, ix & mask, _hashShift);
-        nuint minorIx = _num[(int)key] & _blockMask;
-        nuint offset = minorIx + ((nuint)key << _blockBits);
-        _buckets[offset] = (uint)ix;
-        ++_num[(int)key];
-    }
+    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix) =>
+        HasherCommon.StoreInBucket(_num, _buckets, (int)HashBytes(data, ix & mask, _hashShift), _blockMask, _blockBits, (uint)ix);
 
     // The two newest lines of the position's bucket, the first ones a search reads: at quality 9 the buckets
     // take 32 MiB, and a search reads them while the cache misses.
@@ -95,9 +89,15 @@ internal struct HashLongestMatch : IHasher
 
     public void StoreRange(ReadOnlySpan<byte> data, nuint mask, nuint ixStart, nuint ixEnd)
     {
+        // The fields in locals, which the loop keeps in registers.
+        ushort[] num = _num;
+        uint[] buckets = _buckets;
+        int shift = _hashShift;
+        uint blockMask = _blockMask;
+        int blockBits = _blockBits;
         for (nuint i = ixStart; i < ixEnd; ++i)
         {
-            Store(data, mask, i);
+            HasherCommon.StoreInBucket(num, buckets, (int)HashBytes(data, i & mask, shift), blockMask, blockBits, (uint)i);
         }
     }
 
@@ -288,15 +288,8 @@ internal struct HashLongestMatch64 : IHasher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix)
-    {
-        Span<ushort> num = _num;
-        nuint key = HashBytes(data, ix & mask, _hashMul);
-        nuint minorIx = num[(int)key] & _blockMask;
-        nuint offset = minorIx + (key << _blockBits);
-        ++num[(int)key];
-        _buckets[offset] = (uint)ix;
-    }
+    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix) =>
+        HasherCommon.StoreInBucket(_num, _buckets, (int)HashBytes(data, ix & mask, _hashMul), _blockMask, _blockBits, (uint)ix);
 
     // As H5's.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -322,9 +315,15 @@ internal struct HashLongestMatch64 : IHasher
 
     public void StoreRange(ReadOnlySpan<byte> data, nuint mask, nuint ixStart, nuint ixEnd)
     {
+        // As H5's.
+        ushort[] num = _num;
+        uint[] buckets = _buckets;
+        ulong hashMul = _hashMul;
+        uint blockMask = _blockMask;
+        int blockBits = _blockBits;
         for (nuint i = ixStart; i < ixEnd; ++i)
         {
-            Store(data, mask, i);
+            HasherCommon.StoreInBucket(num, buckets, (int)HashBytes(data, i & mask, hashMul), blockMask, blockBits, (uint)i);
         }
     }
 

@@ -51,6 +51,18 @@ internal static class HasherCommon
 {
     public const uint HashMul32 = 0x1E35A7BD;
     public const ulong HashMul64 = 0x1FE35A7BD3579BD3;
+
+    /// <summary>
+    /// Appends <paramref name="ix"/> to the bucket of <paramref name="key"/>: a ring of <c>1 &lt;&lt; blockBits</c>
+    /// positions in <paramref name="buckets"/>, whose count <paramref name="num"/> keeps (H5's and H6's).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void StoreInBucket(ushort[] num, uint[] buckets, int key, uint blockMask, int blockBits, uint ix)
+    {
+        ref ushort count = ref num[key];
+        buckets[(int)((count & blockMask) + ((uint)key << blockBits))] = ix;
+        count++;
+    }
     public const int LiteralByteScore = 135;
     public const int DistanceBitPenalty = 30;
 
