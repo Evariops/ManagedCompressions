@@ -39,6 +39,9 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The bytes past a copy that a wide copy may write, and must therefore have room for.</summary>
     private const int CopySlack = 32;
 
+    /// <summary>The room a dictionary word's wide stores need past the output: <see cref="Transforms.ApplyFast"/>'s.</summary>
+    private const int DictionarySlack = 64;
+
     /// <summary>What <see cref="Commands{TMode}"/> returns when the fast loop hands over to the careful one.</summary>
     private const int SwitchToCareful = -1;
 
@@ -157,6 +160,10 @@ public sealed unsafe partial class BrotliDecompressor
         nint* contextTrees = _contextTrees;
 
         ref ulong commandCodes = ref MemoryMarshal.GetReference(Prefix.CommandCodes);
+        ref byte sizeBits = ref MemoryMarshal.GetReference(StaticDictionary.SizeBitsByLength);
+        ref int offsets = ref MemoryMarshal.GetReference(StaticDictionary.OffsetsByLength);
+        ref Transforms.Info transforms = ref MemoryMarshal.GetArrayDataReference(Transforms.Infos);
+        byte* dictionary = DictionaryData;
         int result;
 
         if (resume == AtLiterals)
@@ -419,6 +426,38 @@ public sealed unsafe partial class BrotliDecompressor
             int maxDistance = pos < maxBackwardDistance ? pos : maxBackwardDistance;
             if (distance > maxDistance)
             {
+                if (opEnd - op >= DictionarySlack && distance <= Prefix.MaxAllowedDistance && (uint)(copyLength - 4) <= 20)
+                {
+                    // A word of the static dictionary, with room for wide stores: brotli's checks, inline.
+                    int shift = Unsafe.Add(ref sizeBits, copyLength);
+                    int address = distance - maxDistance - 1;
+                    int transform = address >> shift;
+                    _distRbIndex += distanceContext;
+                    if (transform >= Transforms.Count)
+                    {
+                        result = (int)BrotliError.Transform;
+                        goto Fail;
+                    }
+
+                    byte* word = dictionary + Unsafe.Add(ref offsets, copyLength) + ((address & ((1 << shift) - 1)) * copyLength);
+                    int length = Transforms.ApplyFast(op, word, copyLength, ref Unsafe.Add(ref transforms, transform));
+                    if (length == 0 && distance <= 120)
+                    {
+                        result = (int)BrotliError.Transform;
+                        goto Fail;
+                    }
+
+                    if (length > remaining)
+                    {
+                        result = (int)BrotliError.BlockLength;
+                        goto Fail;
+                    }
+
+                    op += length;
+                    remaining -= length;
+                    goto Copied;
+                }
+
                 result = CopyDictionaryWord(op, distance, copyLength, maxDistance, distanceContext, remaining);
                 if (result < 0)
                 {
@@ -446,6 +485,7 @@ public sealed unsafe partial class BrotliDecompressor
             }
         }
 
+    Copied:
         if (remaining <= 0)
         {
             goto MetaBlockDone;

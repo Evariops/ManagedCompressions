@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -163,50 +164,30 @@ internal static unsafe class Huffman
         }
     }
 
-    /// <summary>
-    /// The space of the reversed keys of <see cref="BuildTable{TKeys}"/>: brotli's 8 bits, for root tables
-    /// of at most 8 bits, or 16, for wider ones.
-    /// </summary>
-    public interface IKeys
+    /// <summary>A 16-bit key, bit-reversed.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint Reverse16(uint key)
     {
-        /// <summary>The lowest bit of the reversed key, brotli's <c>BROTLI_REVERSE_BITS_LOWEST</c>.</summary>
-        static abstract uint Lowest { get; }
-
-        /// <summary>The key, bit-reversed over the width of the space.</summary>
-        static abstract uint Reverse(uint key);
-    }
-
-    /// <summary>Brotli's keys of 8 bits, for root tables of at most 8 bits.</summary>
-    public struct Keys8 : IKeys
-    {
-        public static uint Lowest => ReverseBitsLowest;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint Reverse(uint key) => Unsafe.Add(ref Unsafe.AsRef(in ReverseBits[0]), (int)key);
-    }
-
-    /// <summary>Keys of 16 bits, for root tables of up to 15 bits.</summary>
-    public struct Keys16 : IKeys
-    {
-        public static uint Lowest => 1u << 15;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint Reverse(uint key)
-        {
-            ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
-            return ((uint)Unsafe.Add(ref reverse, (int)(key & 0xFF)) << 8) | Unsafe.Add(ref reverse, (int)(key >> 8));
-        }
+        ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
+        return ((uint)Unsafe.Add(ref reverse, (int)(key & 0xFF)) << 8) | Unsafe.Add(ref reverse, (int)(key >> 8));
     }
 
     /// <summary>
     /// The table of a code given by its lengths: <paramref name="symbolLists"/> holds, for each length,
     /// a list of the symbols of that length in increasing order (heads at <c>length - 16</c>, links at
     /// the symbols, empty heads 0xFFFF), and <paramref name="count"/> the number of symbols of each
-    /// length, which this clears. Returns the number of entries written. Brotli's algorithm, over keys
-    /// of <typeparamref name="TKeys"/>'s width.
+    /// length, of which this clears those longer than <paramref name="rootBits"/>. The code is
+    /// complete. Returns the number of entries written.
     /// </summary>
-    public static int BuildTable<TKeys>(uint* rootTable, int rootBits, ushort* symbolLists, ushort* count)
-        where TKeys : struct, IKeys
+    /// <remarks>
+    /// The entries are brotli's, built another way for the root table: brotli writes each code at every
+    /// one of its slots with a stride, which for a short code in a root of 10 bits is hundreds of
+    /// scattered stores. Here the codes are placed by increasing length, each once at its bit-reversed
+    /// codeword, and the table doubles by a copy from one length to the next, as libdeflate builds its
+    /// tables. The second-level tables are brotli's algorithm, which picks up the key where the root
+    /// codes leave it: their Kraft sum, over 16 bits.
+    /// </remarks>
+    public static int BuildTable(uint* table, int rootBits, ushort* symbolLists, ushort* count)
     {
         int maxLength = -1;
         while (symbolLists[maxLength] == 0xFFFF)
@@ -215,71 +196,90 @@ internal static unsafe class Huffman
         }
 
         maxLength += MaxCodeLength + 1;
+        int rootSize = 1 << rootBits;
+        int tableBits = Math.Min(rootBits, maxLength);
 
-        uint* table = rootTable;
-        int tableBits = rootBits;
-        int tableSize = 1 << tableBits;
-        int totalSize = tableSize;
-
-        // The root table, at the width of the longest code if that is narrower, then copied over.
-        if (tableBits > maxLength)
+        // The codes of the root table, by increasing length. codeword is the next one, bit-reversed:
+        // appending zeros to move to a longer length leaves it as it is.
+        int length = 1;
+        while (length <= tableBits && count[length] == 0)
         {
-            tableBits = maxLength;
-            tableSize = 1 << tableBits;
+            length++;
         }
 
-        uint key = 0;
-        uint keyStep = TKeys.Lowest;
-        int symbol;
-        int step = 2;
-        int bits = 1;
-        do
+        if (length <= tableBits)
         {
-            symbol = bits - (MaxCodeLength + 1);
-            for (int n = count[bits]; n != 0; --n)
+            uint codeword = 0;
+            int filled = 1 << length;
+            while (true)
             {
-                symbol = symbolLists[symbol];
-                uint code = Entry(bits, symbol);
-                Replicate(table + TKeys.Reverse(key), step, tableSize, code);
-                key += keyStep;
+                int symbol = length - (MaxCodeLength + 1);
+                for (int n = count[length]; n != 0; --n)
+                {
+                    symbol = symbolLists[symbol];
+                    table[codeword] = Entry(length, symbol);
+                    if (codeword == (uint)filled - 1)
+                    {
+                        // The last codeword, all ones: the code ends in the root table.
+                        for (; filled < rootSize; filled <<= 1)
+                        {
+                            Buffer.MemoryCopy(table, table + filled, (long)filled * sizeof(uint), (long)filled * sizeof(uint));
+                        }
+
+                        return rootSize;
+                    }
+
+                    // The next codeword of this length: increment the bit-reversed codeword, by setting
+                    // its highest clear bit and clearing the bits above it.
+                    uint bit = 1u << BitOperations.Log2(codeword ^ ((uint)filled - 1));
+                    codeword = (codeword & (bit - 1)) | bit;
+                }
+
+                if (++length > tableBits)
+                {
+                    break;
+                }
+
+                Buffer.MemoryCopy(table, table + filled, (long)filled * sizeof(uint), (long)filled * sizeof(uint));
+                filled <<= 1;
             }
-
-            step <<= 1;
-            keyStep >>= 1;
-        }
-        while (++bits <= tableBits);
-
-        while (totalSize != tableSize)
-        {
-            Buffer.MemoryCopy(table, table + tableSize, (long)tableSize * sizeof(uint), (long)tableSize * sizeof(uint));
-            tableSize <<= 1;
         }
 
-        // The second-level tables, each pointed at by a root entry.
-        keyStep = TKeys.Lowest >> (rootBits - 1);
-        uint subKey = TKeys.Lowest << 1;
-        uint subKeyStep = TKeys.Lowest;
-        step = 2;
-        for (int length = rootBits + 1; length <= maxLength; ++length)
+        // The second-level tables, each pointed at by a root entry, as brotli builds them.
+        const uint Lowest = 1u << 15;
+        uint key = 0;
+        for (int l = 1; l <= rootBits; l++)
         {
-            symbol = length - (MaxCodeLength + 1);
+            key += (uint)count[l] << (16 - l);
+        }
+
+        uint keyStep = Lowest >> (rootBits - 1);
+        uint subKey = Lowest << 1;
+        uint subKeyStep = Lowest;
+        uint* subTable = table;
+        int subTableSize = rootSize;
+        int totalSize = rootSize;
+        int step = 2;
+        for (length = rootBits + 1; length <= maxLength; ++length)
+        {
+            int symbol = length - (MaxCodeLength + 1);
             for (; count[length] != 0; --count[length])
             {
-                if (subKey == TKeys.Lowest << 1)
+                if (subKey == Lowest << 1)
                 {
-                    table += tableSize;
-                    tableBits = NextTableBitSize(count, length, rootBits);
-                    tableSize = 1 << tableBits;
-                    totalSize += tableSize;
-                    subKey = TKeys.Reverse(key);
+                    subTable += subTableSize;
+                    int subTableBits = NextTableBitSize(count, length, rootBits);
+                    subTableSize = 1 << subTableBits;
+                    totalSize += subTableSize;
+                    subKey = Reverse16(key);
                     key += keyStep;
-                    rootTable[subKey] = Entry(tableBits + rootBits, (int)(table - rootTable));
+                    table[subKey] = Entry(subTableBits + rootBits, (int)(subTable - table));
                     subKey = 0;
                 }
 
                 symbol = symbolLists[symbol];
                 uint code = Entry(length - rootBits, symbol);
-                Replicate(table + TKeys.Reverse(subKey), step, tableSize, code);
+                Replicate(subTable + Reverse16(subKey), step, subTableSize, code);
                 subKey += subKeyStep;
             }
 

@@ -9,7 +9,13 @@ namespace ManagedCompressions.Brotli.Internal;
 
 internal static partial class StaticDictionary
 {
-    /// <summary>The 122,784 bytes of RFC 7932's static dictionary: its words, bucketed by length.</summary>
+    /// <summary>The size of RFC 7932's static dictionary.</summary>
+    public const int Size = 122784;
+
+    /// <summary>
+    /// The 122,784 bytes of RFC 7932's static dictionary, its words bucketed by length, then 64 zeros,
+    /// so that a word can be read 32 bytes at a time, from past its first bytes.
+    /// </summary>
     public static ReadOnlySpan<byte> Data =>
     [
         116, 105, 109, 101, 100, 111, 119, 110, 108, 105, 102, 101, 108, 101, 102, 116, 98, 97, 99, 107, 99, 111, 100, 101,
@@ -5128,6 +5134,9 @@ internal static partial class StaticDictionary
         224, 164, 181, 224, 164, 191, 224, 164, 156, 224, 165, 141, 224, 164, 158, 224, 164, 190, 224, 164, 170, 224, 164, 168,
         224, 164, 149, 224, 164, 190, 224, 164, 176, 224, 165, 141, 224, 164, 176, 224, 164, 181, 224, 164, 190, 224, 164, 136,
         224, 164, 184, 224, 164, 149, 224, 165, 141, 224, 164, 176, 224, 164, 191, 224, 164, 175, 224, 164, 164, 224, 164, 190,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
 
     /// <summary>The number of bits of a word's index, for each length: 0 where no word has that length.</summary>

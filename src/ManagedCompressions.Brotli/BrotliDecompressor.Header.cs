@@ -431,9 +431,7 @@ public sealed unsafe partial class BrotliDecompressor
             return Fail(BrotliError.HuffmanSpace);
         }
 
-        tableSize = rootBits == Huffman.RootBits
-            ? Huffman.BuildTable<Huffman.Keys8>(table, rootBits, symbolLists, histogram)
-            : Huffman.BuildTable<Huffman.Keys16>(table, rootBits, symbolLists, histogram);
+        tableSize = Huffman.BuildTable(table, rootBits, symbolLists, histogram);
         return BrotliError.None;
     }
 
