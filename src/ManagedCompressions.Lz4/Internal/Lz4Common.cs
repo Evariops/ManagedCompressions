@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Lz4.Internal;
 
@@ -129,6 +131,23 @@ internal static unsafe class Lz4Common
         }
         while (destination < end);
     }
+
+    /// <summary>
+    /// Asserts that a candidate read back from a match finder's table lies in the block, before the
+    /// position it is a candidate for, its first four bytes readable: what the tables hold, by
+    /// construction and by the clamp of the entries left by earlier blocks.
+    /// </summary>
+    [Conditional("DEBUG")]
+    public static void AssertCandidate(byte* match, byte* source, byte* ip, byte* end)
+    {
+        Debug.Assert(match >= source && match < ip, "a candidate in the block, before its position");
+        Bounds.Within(match, MinMatch, source, end);
+    }
+
+    /// <summary>Asserts that the last literals <see cref="WriteLastLiterals"/> writes from <paramref name="op"/> lie in the output.</summary>
+    [Conditional("DEBUG")]
+    public static void AssertLastLiterals(byte* op, nuint lastRun, byte* start, byte* end) =>
+        Bounds.Within(op, (nint)(lastRun >= RunMask ? 2 + ((lastRun - RunMask) / 255) : 1) + (nint)lastRun, start, end);
 
     /// <summary>The last literals, a run with no match: its token, its length past 15, its bytes.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

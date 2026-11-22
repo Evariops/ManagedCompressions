@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 using static ManagedCompressions.Lz4.Internal.Lz4Common;
 
 namespace ManagedCompressions.Lz4.Internal;
@@ -200,6 +202,7 @@ internal sealed unsafe class Lz4FastEncoder
                     }
 
                     match = @base + matchIndex;
+                    AssertCandidate(match, source, ip, cold->End);
                     if ((!TTable.CheckDistance || current - matchIndex < MaxDistance + 1) && Read32(match) == (uint)seq)
                     {
                         break;
@@ -255,11 +258,15 @@ internal sealed unsafe class Lz4FastEncoder
                     *token = (byte)(litLength << 4);
                 }
 
+                // SAFETY: the room was checked above, or the destination holds the bound, which lz4 proves
+                // holds a wide copy's excess: as for every write below.
+                Bounds.Within(op, (nint)Math.Max((litLength + 7) & ~7u, 8u), dest, cold->OutputLimit);
                 WildCopy8(op, anchor, op + litLength);
                 op += litLength;
             }
 
         NextMatch:
+            Bounds.Within(op, sizeof(ushort), dest, cold->OutputLimit);
             Write16(op, (ushort)(ip - match));
             op += 2;
 
@@ -275,15 +282,18 @@ internal sealed unsafe class Lz4FastEncoder
                 {
                     *token += MatchLengthMask;
                     matchCode -= MatchLengthMask;
+                    Bounds.Within(op, sizeof(uint), dest, cold->OutputLimit);
                     Write32(op, 0xFFFFFFFF);
                     while (matchCode >= 4 * 255)
                     {
                         op += 4;
+                        Bounds.Within(op, sizeof(uint), dest, cold->OutputLimit);
                         Write32(op, 0xFFFFFFFF);
                         matchCode -= 4 * 255;
                     }
 
                     op += matchCode / 255;
+                    Bounds.Within(op, 1, dest, cold->OutputLimit);
                     *op++ = (byte)(matchCode % 255);
                 }
                 else
@@ -315,6 +325,7 @@ internal sealed unsafe class Lz4FastEncoder
 
                 match = @base + matchIndex;
                 TTable.Put(table, h, current);
+                AssertCandidate(match, source, ip, cold->End);
                 if ((!TTable.CheckDistance || current - matchIndex < MaxDistance + 1) && Read32(match) == (uint)next)
                 {
                     token = op++;
@@ -336,6 +347,7 @@ internal sealed unsafe class Lz4FastEncoder
                 return 0;
             }
 
+            AssertLastLiterals(op, lastRun, dest, cold->OutputLimit);
             op = WriteLastLiterals(op, anchor, lastRun);
             return (int)(op - dest);
         }
