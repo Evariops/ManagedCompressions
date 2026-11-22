@@ -99,13 +99,11 @@ internal unsafe struct BitSink
     private ulong _acc;
     private int _used;
     private byte* _p;
-    private readonly byte* _storage;
 
     /// <summary>A sink at the bit <paramref name="position"/> of <paramref name="storage"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public BitSink(int position, byte* storage)
     {
-        _storage = storage;
         _p = storage + (position >> 3);
         _used = position & 7;
 
@@ -128,11 +126,14 @@ internal unsafe struct BitSink
         _used = used & 7;
     }
 
-    /// <summary>Stores the accumulator: the bit position past the bits written.</summary>
+    /// <summary>
+    /// Stores the accumulator: the bit position past the bits written, in <paramref name="storage"/>, the
+    /// sink's. The sink does not keep it, which would take a register in the loops that write.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly int Finish()
+    public readonly int Finish(byte* storage)
     {
         Unsafe.WriteUnaligned(_p, _acc);
-        return (int)((_p - _storage) << 3) + _used;
+        return (int)((_p - storage) << 3) + _used;
     }
 }

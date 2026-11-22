@@ -437,7 +437,7 @@ internal static unsafe partial class BitStream
             BuildAndStoreHuffmanTree(lengthHisto, Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, tree, self.LengthDepths, self.LengthBits, ref storageIx, storage);
             var sink = new BitSink(storageIx, storage);
             StoreBlockSwitch(ref self, self.BlockLengths[0], self.BlockTypes[0], true, ref sink);
-            storageIx = sink.Finish();
+            storageIx = sink.Finish(storage);
         }
     }
 
@@ -595,7 +595,7 @@ internal static unsafe partial class BitStream
             }
         }
 
-        storageIx = sink.Finish();
+        storageIx = sink.Finish(storage);
         if (isLast)
         {
             BitWriter.JumpToByteBoundary(ref storageIx, storage);
@@ -655,7 +655,7 @@ internal static unsafe partial class BitStream
             }
         }
 
-        storageIx = sink.Finish();
+        storageIx = sink.Finish(storage);
     }
 
     /// <summary>brotli's <c>BrotliStoreMetaBlockTrivial</c>: quality 3, a code a category.</summary>

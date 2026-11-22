@@ -458,7 +458,7 @@ internal static unsafe class CompressFragmentTwoPass
             }
         }
 
-        storageIx = sink.Finish();
+        storageIx = sink.Finish(storage);
     }
 
     private static bool ShouldCompress(TwoPassArena s, byte* input, int inputSize, int numLiterals)
