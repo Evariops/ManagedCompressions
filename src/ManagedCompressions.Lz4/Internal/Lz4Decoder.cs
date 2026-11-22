@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Lz4.Internal;
 
@@ -111,7 +112,7 @@ internal static unsafe class Lz4Decoder
         byte* op = opRef;
         while (ip <= ipLimit && op <= opStop)
         {
-            // The margins every unchecked access below relies on (asserted in the Debug and Checked builds).
+            // The margins every unchecked access below relies on (asserted in the Debug build).
             Debug.Assert(ip + InputMargin <= iend && op + OutputMargin <= oend, "a sequence starts within both margins");
             // The next token's address is the one chain from sequence to sequence: the token's load,
             // a shift, one add to ip + 3, which does not wait on the load. afterToken is used twice,
@@ -159,6 +160,7 @@ internal static unsafe class Lz4Decoder
                 return false;
             }
 
+            Debug.Assert(match >= destination && op + length + 16 <= oend, "the short pattern lies in the output, its stores within it");
             RepeatPattern(op, match, op + length, offset);
             op += length;
             continue;
@@ -224,6 +226,7 @@ internal static unsafe class Lz4Decoder
     /// <summary>The careful loop: sequences copied exactly, every length checked against both ends.</summary>
     private static nint Careful(byte* ip, byte* iend, byte* op, byte* oend, byte* destination)
     {
+        // SAFETY: every length is checked against both ends before its copy, which the assertions restate.
         while (true)
         {
             if (ip >= iend)
@@ -245,10 +248,14 @@ internal static unsafe class Lz4Decoder
 
             if (length <= 16 && (nuint)(iend - ip) >= 16 && (nuint)(oend - op) >= 16)
             {
+                Bounds.Before(ip, 16, iend);
+                Bounds.Within(op, 16, destination, oend);
                 Copy16(op, ip);
             }
             else
             {
+                Bounds.Before(ip, (nint)length, iend);
+                Bounds.Within(op, (nint)length, destination, oend);
                 Buffer.MemoryCopy(ip, op, length, length);
             }
 
@@ -265,6 +272,7 @@ internal static unsafe class Lz4Decoder
                 return -1;
             }
 
+            Bounds.Before(ip, sizeof(ushort), iend);
             nuint offset = Unsafe.ReadUnaligned<ushort>(ip);
             ip += 2;
             length = token & 15;
@@ -283,6 +291,8 @@ internal static unsafe class Lz4Decoder
             byte* end = op + length;
             if (offset >= 8 && (nuint)(oend - end) >= 8)
             {
+                Bounds.Within(op, (nint)length + 7, destination, oend);
+                Bounds.Within(match, (nint)length + 7, destination, oend);
                 do
                 {
                     Unsafe.WriteUnaligned(op, Unsafe.ReadUnaligned<ulong>(match));
@@ -293,6 +303,8 @@ internal static unsafe class Lz4Decoder
             }
             else
             {
+                Bounds.Within(op, (nint)length, destination, oend);
+                Bounds.Within(match, (nint)length, destination, oend);
                 while (op < end)
                 {
                     *op++ = *match++;
@@ -310,6 +322,7 @@ internal static unsafe class Lz4Decoder
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool ReadLength(ref byte* ip, byte* limit, ref nuint length)
     {
+        // SAFETY: each byte is read below the limit, checked first.
         byte* p = ip;
         nuint s;
         do
@@ -359,6 +372,8 @@ internal static unsafe class Lz4Decoder
     {
         if (AdvSimd.Arm64.IsSupported || Ssse3.IsSupported)
         {
+            Bounds.Range((nint)offset * 16, 16, PatternIndexes.Length);
+            Bounds.Index((nint)offset, PatternSteps.Length);
             Vector128<byte> indexes = Vector128.LoadUnsafe(ref MemoryMarshal.GetReference(PatternIndexes), offset * 16);
             Vector128<byte> source = Vector128.Load(match);
             Vector128<byte> pattern = AdvSimd.Arm64.IsSupported
