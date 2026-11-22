@@ -1,11 +1,12 @@
+using System;
+using System.Buffers.Binary;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Lz4.Internal;
 
 /// <summary>The block format's constants and the primitives every encoder shares, as lz4 1.10.0 defines them.</summary>
-internal static unsafe class Lz4Common
+internal static class Lz4Common
 {
     public const int MinMatch = 4;
 
@@ -31,31 +32,31 @@ internal static unsafe class Lz4Common
     public static int CompressBound(int length) => (uint)length > MaxInputSize ? 0 : length + (length / 255) + 16;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint Read32(byte* p) => Unsafe.ReadUnaligned<uint>(p);
+    public static uint Read32(ReadOnlySpan<byte> data, int p) => BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(p, 4));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong Read64(byte* p) => Unsafe.ReadUnaligned<ulong>(p);
+    public static ulong Read64(ReadOnlySpan<byte> data, int p) => BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(p, 8));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ushort Read16(byte* p) => Unsafe.ReadUnaligned<ushort>(p);
+    public static ushort Read16(ReadOnlySpan<byte> data, int p) => BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(p, 2));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Write16(byte* p, ushort value) => Unsafe.WriteUnaligned(p, value);
+    public static void Write16(Span<byte> data, int p, ushort value) => BinaryPrimitives.WriteUInt16LittleEndian(data.Slice(p, 2), value);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Write32(byte* p, uint value) => Unsafe.WriteUnaligned(p, value);
+    public static void Write32(Span<byte> data, int p, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(data.Slice(p, 4), value);
 
     /// <summary>
-    /// The bytes <paramref name="pIn"/> and <paramref name="pMatch"/> have in common, reading no further
-    /// than <paramref name="pInLimit"/>: <c>LZ4_count</c>.
+    /// The bytes <paramref name="data"/> has in common at <paramref name="pIn"/> and <paramref name="pMatch"/>,
+    /// reading no further than <paramref name="pInLimit"/>: <c>LZ4_count</c>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint Count(byte* pIn, byte* pMatch, byte* pInLimit)
+    public static uint Count(ReadOnlySpan<byte> data, int pIn, int pMatch, int pInLimit)
     {
-        byte* pStart = pIn;
+        int pStart = pIn;
         if (pIn < pInLimit - 7)
         {
-            ulong diff = Read64(pMatch) ^ Read64(pIn);
+            ulong diff = Read64(data, pMatch) ^ Read64(data, pIn);
             if (diff != 0)
             {
                 return (uint)BitOperations.TrailingZeroCount(diff) >> 3;
@@ -65,14 +66,15 @@ internal static unsafe class Lz4Common
             pMatch += 8;
         }
 
-        return CountLong(pIn, pMatch, pInLimit, pStart);
+        return CountLong(data, pIn, pMatch, pInLimit, pStart);
     }
 
-    private static uint CountLong(byte* pIn, byte* pMatch, byte* pInLimit, byte* pStart)
+    /// <summary><see cref="Count"/> past its first eight bytes.</summary>
+    public static uint CountLong(ReadOnlySpan<byte> data, int pIn, int pMatch, int pInLimit, int pStart)
     {
         while (pIn < pInLimit - 7)
         {
-            ulong diff = Read64(pMatch) ^ Read64(pIn);
+            ulong diff = Read64(data, pMatch) ^ Read64(data, pIn);
             if (diff == 0)
             {
                 pIn += 8;
@@ -84,19 +86,19 @@ internal static unsafe class Lz4Common
             return (uint)(pIn - pStart);
         }
 
-        if (pIn < pInLimit - 3 && Read32(pMatch) == Read32(pIn))
+        if (pIn < pInLimit - 3 && Read32(data, pMatch) == Read32(data, pIn))
         {
             pIn += 4;
             pMatch += 4;
         }
 
-        if (pIn < pInLimit - 1 && Read16(pMatch) == Read16(pIn))
+        if (pIn < pInLimit - 1 && Read16(data, pMatch) == Read16(data, pIn))
         {
             pIn += 2;
             pMatch += 2;
         }
 
-        if (pIn < pInLimit && *pMatch == *pIn)
+        if (pIn < pInLimit && data[pMatch] == data[pIn])
         {
             pIn++;
         }
@@ -104,53 +106,52 @@ internal static unsafe class Lz4Common
         return (uint)(pIn - pStart);
     }
 
-    /// <summary>Copies eight bytes at a time until <paramref name="end"/>, up to seven past it: <c>LZ4_wildCopy8</c>.</summary>
+    /// <summary>
+    /// Copies <paramref name="length"/> bytes of <paramref name="source"/> from <paramref name="from"/> to
+    /// <paramref name="destination"/> at <paramref name="to"/>, eight at a time, up to seven past them where
+    /// both have room for it: <c>LZ4_wildCopy8</c>.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void WildCopy8(byte* destination, byte* source, byte* end)
+    public static void WildCopy8(Span<byte> destination, int to, ReadOnlySpan<byte> source, int from, int length)
     {
-        do
+        int end = to + length;
+        if (length <= destination.Length - to - 8 && length <= source.Length - from - 8)
         {
-            Unsafe.WriteUnaligned(destination, Unsafe.ReadUnaligned<ulong>(source));
-            destination += 8;
-            source += 8;
-        }
-        while (destination < end);
-    }
-
-    /// <summary>Copies sixteen bytes at a time until <paramref name="end"/>, up to fifteen past it.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void WildCopy16(byte* destination, byte* source, byte* end)
-    {
-        do
-        {
-            Vector128.Store(Vector128.Load(source), destination);
-            destination += 16;
-            source += 16;
-        }
-        while (destination < end);
-    }
-
-    /// <summary>The last literals, a run with no match: its token, its length past 15, its bytes.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static byte* WriteLastLiterals(byte* op, byte* anchor, nuint lastRun)
-    {
-        if (lastRun >= RunMask)
-        {
-            nuint accumulator = lastRun - RunMask;
-            *op++ = RunMask << 4;
-            for (; accumulator >= 255; accumulator -= 255)
+            do
             {
-                *op++ = 255;
+                BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(to, 8), BinaryPrimitives.ReadUInt64LittleEndian(source.Slice(from, 8)));
+                to += 8;
+                from += 8;
             }
-
-            *op++ = (byte)accumulator;
+            while (to < end);
         }
         else
         {
-            *op++ = (byte)(lastRun << 4);
+            source.Slice(from, length).CopyTo(destination.Slice(to));
+        }
+    }
+
+    /// <summary>The last literals, a run with no match: its token, its length past 15, its bytes; the position past them.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int WriteLastLiterals(Span<byte> destination, int op, ReadOnlySpan<byte> source, int anchor, int lastRun)
+    {
+        if (lastRun >= RunMask)
+        {
+            int accumulator = lastRun - RunMask;
+            destination[op++] = RunMask << 4;
+            for (; accumulator >= 255; accumulator -= 255)
+            {
+                destination[op++] = 255;
+            }
+
+            destination[op++] = (byte)accumulator;
+        }
+        else
+        {
+            destination[op++] = (byte)(lastRun << 4);
         }
 
-        Unsafe.CopyBlockUnaligned(op, anchor, (uint)lastRun);
+        source.Slice(anchor, lastRun).CopyTo(destination.Slice(op));
         return op + lastRun;
     }
 }

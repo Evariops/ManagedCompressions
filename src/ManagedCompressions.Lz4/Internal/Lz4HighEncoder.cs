@@ -1,7 +1,6 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using static ManagedCompressions.Lz4.Internal.Lz4Common;
 
 namespace ManagedCompressions.Lz4.Internal;
@@ -12,13 +11,19 @@ namespace ManagedCompressions.Lz4.Internal;
 /// 10 to 12. It writes the bytes lz4 1.10.0 writes, at every level.
 /// </summary>
 /// <remarks>
+/// <para>
 /// lz4 clears its 256 KiB of tables before every block (<c>LZ4_compress_HC_extStateHC</c>). This one
 /// keeps them, and numbers each block's positions from 64 KiB past where the last block ended, as lz4
 /// itself does when a state is reused without being cleared: every entry an earlier block left lies
 /// out of reach of the current block, and every chain link to it is clamped to 64 KiB, which is what a
 /// cleared table gives. The tables are cleared only when the numbering nears 1 GiB.
+/// </para>
+/// <para>
+/// A position is an index into the block, its number that index plus the block's first number. The
+/// tables are spans of their constant lengths, so that a hash or a 16-bit chain index needs no check.
+/// </para>
 /// </remarks>
-internal sealed unsafe class Lz4HighEncoder
+internal sealed class Lz4HighEncoder
 {
     private const int HashLog = 15;
     private const int HashTableSize = 1 << HashLog;
@@ -40,12 +45,9 @@ internal sealed unsafe class Lz4HighEncoder
         Optimal,
     }
 
-    private readonly uint[] _hashArray = GC.AllocateArray<uint>(HashTableSize, pinned: true);
-    private readonly ushort[] _chainArray = GC.AllocateArray<ushort>(ChainTableSize, pinned: true);
-    private readonly OptimalEntry[]? _optArray;
-    private readonly uint* _hashTable;
-    private readonly ushort* _chainTable;
-    private readonly OptimalEntry* _opt;
+    private readonly uint[] _hashArray = new uint[HashTableSize];
+    private readonly ushort[] _chainArray = new ushort[ChainTableSize];
+    private readonly OptimalEntry[] _opt = [];
 
     private readonly Strategy _strategy;
     private readonly int _nbSearches;
@@ -55,8 +57,7 @@ internal sealed unsafe class Lz4HighEncoder
     /// <summary>The number of the position after the last block's last.</summary>
     private uint _nextBase;
 
-    // The block being compressed: its first position, and its number.
-    private byte* _prefixStart;
+    // The block being compressed: the number of its first position, and of the first not yet in the chains.
     private uint _prefixIndex;
     private uint _nextToUpdate;
 
@@ -78,21 +79,19 @@ internal sealed unsafe class Lz4HighEncoder
             _ => (Strategy.Optimal, 16384, OptimalNum),
         };
         _fullUpdate = level >= 12;
-        _hashTable = (uint*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_hashArray));
-        _chainTable = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_chainArray));
         if (_strategy == Strategy.Optimal)
         {
-            _optArray = GC.AllocateArray<OptimalEntry>(OptimalNum + TrailingLiterals, pinned: true);
-            _opt = (OptimalEntry*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_optArray));
+            _opt = new OptimalEntry[OptimalNum + TrailingLiterals];
         }
     }
 
     /// <summary>
-    /// Compresses <paramref name="length"/> bytes into <paramref name="destination"/>, which holds
-    /// <paramref name="capacity"/> bytes; the bytes written, or 0 when they do not fit.
+    /// Compresses <paramref name="source"/> into <paramref name="destination"/>; the bytes written, or 0
+    /// when they do not fit.
     /// </summary>
-    public int Compress(byte* source, int length, byte* destination, int capacity)
+    public int Compress(ReadOnlySpan<byte> source, Span<byte> destination)
     {
+        int length = source.Length;
         if ((uint)length > MaxInputSize)
         {
             return 0;
@@ -106,49 +105,45 @@ internal sealed unsafe class Lz4HighEncoder
         }
 
         uint start = _nextBase + (64 * 1024);
-        _prefixStart = source;
         _prefixIndex = start;
         _nextToUpdate = start;
         _nextBase = start + (uint)length;
 
-        bool limited = capacity < CompressBound(length);
-        int result = (_strategy, limited) switch
+        bool limited = destination.Length < CompressBound(length);
+        return (_strategy, limited) switch
         {
-            (Strategy.Mid, false) => CompressMid<Unlimited>(source, length, destination, capacity),
-            (Strategy.Mid, true) => CompressMid<Limited>(source, length, destination, capacity),
+            (Strategy.Mid, false) => CompressMid<Unlimited>(source, destination),
+            (Strategy.Mid, true) => CompressMid<Limited>(source, destination),
             // Pattern analysis from level 9, as lz4 decides it: more than 128 attempts.
             (Strategy.HashChain, false) => _nbSearches > 128
-                ? CompressHashChain<Yes, Unlimited>(source, length, destination, capacity)
-                : CompressHashChain<No, Unlimited>(source, length, destination, capacity),
+                ? CompressHashChain<Yes, Unlimited>(source, destination)
+                : CompressHashChain<No, Unlimited>(source, destination),
             (Strategy.HashChain, true) => _nbSearches > 128
-                ? CompressHashChain<Yes, Limited>(source, length, destination, capacity)
-                : CompressHashChain<No, Limited>(source, length, destination, capacity),
-            (Strategy.Optimal, false) => CompressOptimal<Unlimited>(source, length, destination, capacity),
-            _ => CompressOptimal<Limited>(source, length, destination, capacity),
+                ? CompressHashChain<Yes, Limited>(source, destination)
+                : CompressHashChain<No, Limited>(source, destination),
+            (Strategy.Optimal, false) => CompressOptimal<Unlimited>(source, destination),
+            _ => CompressOptimal<Limited>(source, destination),
         };
-
-        GC.KeepAlive(this);
-        return result;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint HashPtr(byte* p) => (Read32(p) * 2654435761u) >> ((MinMatch * 8) - HashLog);
+    private static uint HashPtr(ReadOnlySpan<byte> src, int p) => (Read32(src, p) * 2654435761u) >> ((MinMatch * 8) - HashLog);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint MidHash4(byte* p) => (Read32(p) * 2654435761u) >> (32 - MidHashLog);
+    private static uint MidHash4(ReadOnlySpan<byte> src, int p) => (Read32(src, p) * 2654435761u) >> (32 - MidHashLog);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint MidHash8(byte* p) => (uint)(((Read64(p) << 8) * 58295818150454627UL) >> (64 - MidHashLog));
+    private static uint MidHash8(ReadOnlySpan<byte> src, int p) => (uint)(((Read64(src, p) << 8) * 58295818150454627UL) >> (64 - MidHashLog));
 
     /// <summary>The bytes before <paramref name="ip"/> and <paramref name="match"/> they have in common, as a negative number: <c>LZ4HC_countBack</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int CountBack(byte* ip, byte* match, byte* iMin, byte* mMin)
+    private static int CountBack(ReadOnlySpan<byte> src, int ip, int match, int iMin, int mMin)
     {
         int back = 0;
-        int min = (int)Math.Max(iMin - ip, mMin - match);
+        int min = Math.Max(iMin - ip, mMin - match);
         while (back - min > 3)
         {
-            uint v = Read32(ip + back - 4) ^ Read32(match + back - 4);
+            uint v = Read32(src, ip + back - 4) ^ Read32(src, match + back - 4);
             if (v != 0)
             {
                 return back - (BitOperations.LeadingZeroCount(v) >> 3);
@@ -157,7 +152,7 @@ internal sealed unsafe class Lz4HighEncoder
             back -= 4;
         }
 
-        while (back > min && ip[back - 1] == match[back - 1])
+        while (back > min && src[ip + back - 1] == src[match + back - 1])
         {
             back--;
         }
@@ -166,13 +161,13 @@ internal sealed unsafe class Lz4HighEncoder
     }
 
     /// <summary>The bytes from <paramref name="ip"/> that repeat a pattern of 1, 2 or 4 bytes: <c>LZ4HC_countPattern</c>.</summary>
-    private static uint CountPattern(byte* ip, byte* iEnd, uint pattern32)
+    private static uint CountPattern(ReadOnlySpan<byte> src, int ip, int iEnd, uint pattern32)
     {
-        byte* iStart = ip;
+        int iStart = ip;
         ulong pattern = pattern32 + ((ulong)pattern32 << 32);
         while (ip < iEnd - 7)
         {
-            ulong diff = Read64(ip) ^ pattern;
+            ulong diff = Read64(src, ip) ^ pattern;
             if (diff == 0)
             {
                 ip += 8;
@@ -184,7 +179,7 @@ internal sealed unsafe class Lz4HighEncoder
         }
 
         ulong patternByte = pattern;
-        while (ip < iEnd && *ip == (byte)patternByte)
+        while (ip < iEnd && src[ip] == (byte)patternByte)
         {
             ip++;
             patternByte >>= 8;
@@ -194,12 +189,12 @@ internal sealed unsafe class Lz4HighEncoder
     }
 
     /// <summary>The bytes before <paramref name="ip"/> that repeat the pattern, back to <paramref name="iLow"/>: <c>LZ4HC_reverseCountPattern</c>.</summary>
-    private static uint ReverseCountPattern(byte* ip, byte* iLow, uint pattern)
+    private static uint ReverseCountPattern(ReadOnlySpan<byte> src, int ip, int iLow, uint pattern)
     {
-        byte* iStart = ip;
+        int iStart = ip;
         while (ip >= iLow + 4)
         {
-            if (Read32(ip - 4) != pattern)
+            if (Read32(src, ip - 4) != pattern)
             {
                 break;
             }
@@ -207,16 +202,17 @@ internal sealed unsafe class Lz4HighEncoder
             ip -= 4;
         }
 
-        byte* bytePtr = (byte*)&pattern + 3;
+        // The pattern's bytes from its last, which comes just before ip; a mismatch comes within four.
+        int shift = 24;
         while (ip > iLow)
         {
-            if (ip[-1] != *bytePtr)
+            if (src[ip - 1] != (byte)(pattern >> shift))
             {
                 break;
             }
 
             ip--;
-            bytePtr--;
+            shift -= 8;
         }
 
         return (uint)(iStart - ip);
@@ -228,25 +224,24 @@ internal sealed unsafe class Lz4HighEncoder
 
     /// <summary>Links every position up to <paramref name="ip"/>, excluded, into the hash chains: <c>LZ4HC_Insert</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void Insert(byte* ip)
+    private void Insert(ReadOnlySpan<byte> src, int ip)
     {
-        uint* hashTable = _hashTable;
-        ushort* chainTable = _chainTable;
-        byte* prefixPtr = _prefixStart;
+        Span<uint> hashTable = _hashArray.AsSpan(0, HashTableSize);
+        Span<ushort> chainTable = _chainArray.AsSpan(0, ChainTableSize);
         uint prefixIdx = _prefixIndex;
-        uint target = (uint)(ip - prefixPtr) + prefixIdx;
+        uint target = (uint)ip + prefixIdx;
         uint idx = _nextToUpdate;
         while (idx < target)
         {
-            uint h = HashPtr(prefixPtr + idx - prefixIdx);
-            uint delta = idx - hashTable[h];
+            uint h = HashPtr(src, (int)(idx - prefixIdx));
+            uint delta = idx - hashTable[(int)h];
             if (delta > MaxDistance)
             {
                 delta = MaxDistance;
             }
 
             chainTable[(ushort)idx] = (ushort)delta;
-            hashTable[h] = idx;
+            hashTable[(int)h] = idx;
             idx++;
         }
 
@@ -312,50 +307,48 @@ internal sealed unsafe class Lz4HighEncoder
     /// would keep the loop's values in the few registers a call preserves, and the rest in memory.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private Match InsertAndGetWiderMatch<TPattern, TSwap>(byte* ip, byte* iLowLimit, byte* iHighLimit, int longest, int maxNbAttempts)
+    private Match InsertAndGetWiderMatch<TPattern, TSwap>(ReadOnlySpan<byte> src, int ip, int iLowLimit, int iHighLimit, int longest, int maxNbAttempts)
         where TPattern : struct, IFlag
         where TSwap : struct, IFlag
     {
-        ushort* chainTable = _chainTable;
-        uint* hashTable = _hashTable;
-        byte* prefixPtr = _prefixStart;
+        Span<ushort> chainTable = _chainArray.AsSpan(0, ChainTableSize);
+        Span<uint> hashTable = _hashArray.AsSpan(0, HashTableSize);
         uint prefixIdx = _prefixIndex;
-        byte* @base = prefixPtr - prefixIdx;
-        uint ipIndex = (uint)(ip - prefixPtr) + prefixIdx;
+        uint ipIndex = (uint)ip + prefixIdx;
         bool withinStartDistance = prefixIdx + (MaxDistance + 1) > ipIndex;
         uint lowestMatchIndex = withinStartDistance ? prefixIdx : ipIndex - MaxDistance;
-        int lookBackLength = (int)(ip - iLowLimit);
+        int lookBackLength = ip - iLowLimit;
         int nbAttempts = maxNbAttempts;
         uint matchChainPos = 0;
-        uint pattern = Read32(ip);
+        uint pattern = Read32(src, ip);
         int offset = 0;
         int sBack = 0;
         PatternState state = default;
 
-        Insert(ip);
-        uint matchIndex = hashTable[HashPtr(ip)];
+        Insert(src, ip);
+        uint matchIndex = hashTable[(int)HashPtr(src, ip)];
 
         // The two bytes a candidate must share at the end of the longest match so far, read once a
         // longest match rather than once a candidate.
-        ushort probe = Read16(iLowLimit + longest - 1);
-        nint probeDelta = longest - 1 - lookBackLength;
+        ushort probe = Read16(src, iLowLimit + longest - 1);
+        int probeDelta = longest - 1 - lookBackLength;
 
         while (matchIndex >= lowestMatchIndex && nbAttempts > 0)
         {
             int matchLength = 0;
             nbAttempts--;
-            byte* matchPtr = @base + matchIndex;
-            if (Read16(matchPtr + probeDelta) == probe && Read32(matchPtr) == pattern)
+            int matchPtr = (int)(matchIndex - prefixIdx);
+            if (Read16(src, matchPtr + probeDelta) == probe && Read32(src, matchPtr) == pattern)
             {
-                int back = lookBackLength != 0 ? CountBack(ip, matchPtr, iLowLimit, prefixPtr) : 0;
-                matchLength = MinMatch + (int)CountInline(ip + MinMatch, matchPtr + MinMatch, iHighLimit);
+                int back = lookBackLength != 0 ? CountBack(src, ip, matchPtr, iLowLimit, 0) : 0;
+                matchLength = MinMatch + (int)CountInline(src, ip + MinMatch, matchPtr + MinMatch, iHighLimit);
                 matchLength -= back;
                 if (matchLength > longest)
                 {
                     longest = matchLength;
                     offset = (int)(ipIndex - matchIndex);
                     sBack = back;
-                    probe = Read16(iLowLimit + longest - 1);
+                    probe = Read16(src, iLowLimit + longest - 1);
                     probeDelta = longest - 1 - lookBackLength;
                 }
             }
@@ -398,8 +391,8 @@ internal sealed unsafe class Lz4HighEncoder
                 state.Longest = longest;
                 state.Offset = offset;
                 int action = TPattern.Inline
-                    ? AnalyzePatternInline(ref state, ip, iHighLimit, prefixPtr, prefixIdx, lowestMatchIndex, lookBackLength, ipIndex, pattern, chainTable)
-                    : AnalyzePattern(ref state, ip, iHighLimit, prefixPtr, prefixIdx, lowestMatchIndex, lookBackLength, ipIndex, pattern, chainTable);
+                    ? AnalyzePatternInline(ref state, src, ip, iHighLimit, prefixIdx, lowestMatchIndex, lookBackLength, ipIndex, pattern, chainTable)
+                    : AnalyzePattern(ref state, src, ip, iHighLimit, prefixIdx, lowestMatchIndex, lookBackLength, ipIndex, pattern, chainTable);
                 if (action != 0)
                 {
                     matchIndex = state.MatchIndex;
@@ -407,7 +400,7 @@ internal sealed unsafe class Lz4HighEncoder
                     {
                         longest = state.Longest;
                         offset = state.Offset;
-                        probe = Read16(iLowLimit + longest - 1);
+                        probe = Read16(src, iLowLimit + longest - 1);
                         probeDelta = longest - 1 - lookBackLength;
                     }
 
@@ -433,11 +426,11 @@ internal sealed unsafe class Lz4HighEncoder
     /// when the search continues at <see cref="PatternState.MatchIndex"/>; 2 when it stops.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static int AnalyzePattern(ref PatternState state, byte* ip, byte* iHighLimit, byte* prefixPtr, uint prefixIdx, uint lowestMatchIndex, int lookBackLength, uint ipIndex, uint pattern, ushort* chainTable) =>
-        AnalyzePatternInline(ref state, ip, iHighLimit, prefixPtr, prefixIdx, lowestMatchIndex, lookBackLength, ipIndex, pattern, chainTable);
+    private static int AnalyzePattern(ref PatternState state, ReadOnlySpan<byte> src, int ip, int iHighLimit, uint prefixIdx, uint lowestMatchIndex, int lookBackLength, uint ipIndex, uint pattern, Span<ushort> chainTable) =>
+        AnalyzePatternInline(ref state, src, ip, iHighLimit, prefixIdx, lowestMatchIndex, lookBackLength, ipIndex, pattern, chainTable);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int AnalyzePatternInline(ref PatternState state, byte* ip, byte* iHighLimit, byte* prefixPtr, uint prefixIdx, uint lowestMatchIndex, int lookBackLength, uint ipIndex, uint pattern, ushort* chainTable)
+    private static int AnalyzePatternInline(ref PatternState state, ReadOnlySpan<byte> src, int ip, int iHighLimit, uint prefixIdx, uint lowestMatchIndex, int lookBackLength, uint ipIndex, uint pattern, Span<ushort> chainTable)
     {
         uint matchIndex = state.MatchIndex;
         uint matchCandidateIdx = matchIndex - 1;
@@ -446,7 +439,7 @@ internal sealed unsafe class Lz4HighEncoder
             if (((pattern & 0xFFFF) == (pattern >> 16)) & ((pattern & 0xFF) == (pattern >> 24)))
             {
                 state.Repeat = RepeatState.Confirmed;
-                state.SourcePatternLength = CountPattern(ip + sizeof(uint), iHighLimit, pattern) + sizeof(uint);
+                state.SourcePatternLength = CountPattern(src, ip + sizeof(uint), iHighLimit, pattern) + sizeof(uint);
             }
             else
             {
@@ -459,15 +452,15 @@ internal sealed unsafe class Lz4HighEncoder
             return 0;
         }
 
-        byte* matchPtr = prefixPtr + (matchCandidateIdx - prefixIdx);
-        if (Read32(matchPtr) != pattern)
+        int matchPtr = (int)(matchCandidateIdx - prefixIdx);
+        if (Read32(src, matchPtr) != pattern)
         {
             return 0;
         }
 
         nuint srcPatternLength = state.SourcePatternLength;
-        nuint forwardPatternLength = CountPattern(matchPtr + sizeof(uint), iHighLimit, pattern) + sizeof(uint);
-        nuint backLength = ReverseCountPattern(matchPtr, prefixPtr, pattern);
+        nuint forwardPatternLength = CountPattern(src, matchPtr + sizeof(uint), iHighLimit, pattern) + sizeof(uint);
+        nuint backLength = ReverseCountPattern(src, matchPtr, 0, pattern);
 
         // No further back than the lowest index.
         backLength = matchCandidateIdx - Math.Max(matchCandidateIdx - (uint)backLength, lowestMatchIndex);
@@ -494,7 +487,7 @@ internal sealed unsafe class Lz4HighEncoder
             nuint maxML = Math.Min(currentSegmentLength, srcPatternLength);
             if ((nuint)state.Longest < maxML)
             {
-                if ((nuint)(ip - prefixPtr) + prefixIdx - farthest > MaxDistance)
+                if ((nuint)ip + prefixIdx - farthest > MaxDistance)
                 {
                     return 2;
                 }
@@ -517,12 +510,12 @@ internal sealed unsafe class Lz4HighEncoder
 
     /// <summary><see cref="Lz4Common.Count"/>, inlined whole: no call out of the search loop.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint CountInline(byte* pIn, byte* pMatch, byte* pInLimit)
+    private static uint CountInline(ReadOnlySpan<byte> src, int pIn, int pMatch, int pInLimit)
     {
-        byte* pStart = pIn;
+        int pStart = pIn;
         while (pIn < pInLimit - 7)
         {
-            ulong diff = Read64(pMatch) ^ Read64(pIn);
+            ulong diff = Read64(src, pMatch) ^ Read64(src, pIn);
             if (diff != 0)
             {
                 return (uint)(pIn - pStart) + ((uint)BitOperations.TrailingZeroCount(diff) >> 3);
@@ -532,19 +525,19 @@ internal sealed unsafe class Lz4HighEncoder
             pMatch += 8;
         }
 
-        if (pIn < pInLimit - 3 && Read32(pMatch) == Read32(pIn))
+        if (pIn < pInLimit - 3 && Read32(src, pMatch) == Read32(src, pIn))
         {
             pIn += 4;
             pMatch += 4;
         }
 
-        if (pIn < pInLimit - 1 && Read16(pMatch) == Read16(pIn))
+        if (pIn < pInLimit - 1 && Read16(src, pMatch) == Read16(src, pIn))
         {
             pIn += 2;
             pMatch += 2;
         }
 
-        if (pIn < pInLimit && *pMatch == *pIn)
+        if (pIn < pInLimit && src[pMatch] == src[pIn])
         {
             pIn++;
         }
@@ -554,68 +547,68 @@ internal sealed unsafe class Lz4HighEncoder
 
     /// <summary>
     /// A sequence: the literals since <paramref name="anchor"/>, then a match at <paramref name="ip"/>;
-    /// false when it does not fit before <paramref name="oend"/>: <c>LZ4HC_encodeSequence</c>.
+    /// false when it does not fit in <paramref name="dst"/>: <c>LZ4HC_encodeSequence</c>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool EncodeSequence<TLimit>(ref byte* ip, ref byte* op, ref byte* anchor, int matchLength, int offset, byte* oend)
+    private static bool EncodeSequence<TLimit>(ReadOnlySpan<byte> src, Span<byte> dst, ref int ip, ref int op, ref int anchor, int matchLength, int offset)
         where TLimit : struct, ILimit
     {
-        byte* token = op++;
-        nuint length = (nuint)(ip - anchor);
-        if (TLimit.Enabled && op + (length / 255) + length + (2 + 1 + LastLiterals) > oend)
+        int token = op++;
+        int length = ip - anchor;
+        if (TLimit.Enabled && (long)op + (length / 255) + length + (2 + 1 + LastLiterals) > dst.Length)
         {
             return false;
         }
 
         if (length >= RunMask)
         {
-            nuint len = length - RunMask;
-            *token = RunMask << 4;
+            int len = length - RunMask;
+            dst[token] = RunMask << 4;
             for (; len >= 255; len -= 255)
             {
-                *op++ = 255;
+                dst[op++] = 255;
             }
 
-            *op++ = (byte)len;
+            dst[op++] = (byte)len;
         }
         else
         {
-            *token = (byte)(length << 4);
+            dst[token] = (byte)(length << 4);
         }
 
-        WildCopy8(op, anchor, op + length);
+        WildCopy8(dst, op, src, anchor, length);
         op += length;
 
-        Write16(op, (ushort)offset);
+        Write16(dst, op, (ushort)offset);
         op += 2;
 
-        length = (nuint)matchLength - MinMatch;
-        if (TLimit.Enabled && op + (length / 255) + (1 + LastLiterals) > oend)
+        length = matchLength - MinMatch;
+        if (TLimit.Enabled && (long)op + (length / 255) + (1 + LastLiterals) > dst.Length)
         {
             return false;
         }
 
         if (length >= MatchLengthMask)
         {
-            *token += MatchLengthMask;
+            dst[token] += MatchLengthMask;
             length -= MatchLengthMask;
             for (; length >= 510; length -= 510)
             {
-                *op++ = 255;
-                *op++ = 255;
+                dst[op++] = 255;
+                dst[op++] = 255;
             }
 
             if (length >= 255)
             {
                 length -= 255;
-                *op++ = 255;
+                dst[op++] = 255;
             }
 
-            *op++ = (byte)length;
+            dst[op++] = (byte)length;
         }
         else
         {
-            *token += (byte)length;
+            dst[token] += (byte)length;
         }
 
         ip += matchLength;
@@ -623,40 +616,37 @@ internal sealed unsafe class Lz4HighEncoder
         return true;
     }
 
-    /// <summary>The last literals, or 0 when they do not fit.</summary>
+    /// <summary>The last literals, from <paramref name="anchor"/> to the source's end; the bytes written, or 0 when they do not fit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int EncodeLastLiterals<TLimit>(byte* op, byte* oend, byte* anchor, byte* iend, byte* dest)
+    private static int EncodeLastLiterals<TLimit>(ReadOnlySpan<byte> src, Span<byte> dst, int op, int anchor)
         where TLimit : struct, ILimit
     {
-        nuint lastRunSize = (nuint)(iend - anchor);
-        nuint llAdd = (lastRunSize + 255 - RunMask) / 255;
-        nuint totalSize = 1 + llAdd + lastRunSize;
-        if (TLimit.Enabled && op + totalSize > oend)
+        int lastRunSize = src.Length - anchor;
+        int llAdd = (lastRunSize + 255 - RunMask) / 255;
+        long totalSize = 1L + llAdd + lastRunSize;
+        if (TLimit.Enabled && op + totalSize > dst.Length)
         {
             return 0;
         }
 
-        op = WriteLastLiterals(op, anchor, lastRunSize);
-        return (int)(op - dest);
+        return WriteLastLiterals(dst, op, src, anchor, lastRunSize);
     }
 
     /// <summary>Level 2: a table of 8-byte hashes, then one of 4-byte hashes, no chain: <c>LZ4MID_compress</c>.</summary>
-    private int CompressMid<TLimit>(byte* src, int srcSize, byte* dst, int maxOutputSize)
+    private int CompressMid<TLimit>(ReadOnlySpan<byte> src, Span<byte> dst)
         where TLimit : struct, ILimit
     {
-        uint* hash4Table = _hashTable;
-        uint* hash8Table = _hashTable + MidHashTableSize;
-        byte* ip = src;
-        byte* anchor = ip;
-        byte* iend = ip + srcSize;
-        byte* mflimit = iend - MatchFindLimit;
-        byte* matchlimit = iend - LastLiterals;
-        byte* ilimit = iend - 8;
-        byte* op = dst;
-        byte* oend = op + maxOutputSize;
-        byte* prefixPtr = _prefixStart;
+        Span<uint> hash4Table = _hashArray.AsSpan(0, MidHashTableSize);
+        Span<uint> hash8Table = _hashArray.AsSpan(MidHashTableSize, MidHashTableSize);
+        int srcSize = src.Length;
+        int ip = 0;
+        int anchor = 0;
+        int mflimit = srcSize - MatchFindLimit;
+        int matchlimit = srcSize - LastLiterals;
+        int ilimit = srcSize - 8;
+        int op = 0;
         uint prefixIdx = _prefixIndex;
-        uint ilimitIdx = (uint)(ilimit - prefixPtr) + prefixIdx;
+        uint ilimitIdx = (uint)ilimit + prefixIdx;
 
         if (srcSize < MinLength)
         {
@@ -665,19 +655,19 @@ internal sealed unsafe class Lz4HighEncoder
 
         while (ip <= mflimit)
         {
-            uint ipIndex = (uint)(ip - prefixPtr) + prefixIdx;
+            uint ipIndex = (uint)ip + prefixIdx;
             uint matchLength = 0;
             uint matchDistance = 0;
 
             // A long match first.
             {
-                uint h8 = MidHash8(ip);
-                uint pos8 = hash8Table[h8];
-                hash8Table[h8] = ipIndex;
+                uint h8 = MidHash8(src, ip);
+                uint pos8 = hash8Table[(int)h8];
+                hash8Table[(int)h8] = ipIndex;
                 if (ipIndex - pos8 <= MaxDistance && pos8 >= prefixIdx)
                 {
-                    byte* matchPtr = prefixPtr + pos8 - prefixIdx;
-                    matchLength = Count(ip, matchPtr, matchlimit);
+                    int matchPtr = (int)(pos8 - prefixIdx);
+                    matchLength = Count(src, ip, matchPtr, matchlimit);
                     if (matchLength >= MinMatch)
                     {
                         matchDistance = ipIndex - pos8;
@@ -688,27 +678,27 @@ internal sealed unsafe class Lz4HighEncoder
 
             // Then a short one.
             {
-                uint h4 = MidHash4(ip);
-                uint pos4 = hash4Table[h4];
-                hash4Table[h4] = ipIndex;
+                uint h4 = MidHash4(src, ip);
+                uint pos4 = hash4Table[(int)h4];
+                hash4Table[(int)h4] = ipIndex;
                 if (ipIndex - pos4 <= MaxDistance && pos4 >= prefixIdx)
                 {
-                    byte* matchPtr = prefixPtr + (pos4 - prefixIdx);
-                    matchLength = Count(ip, matchPtr, matchlimit);
+                    int matchPtr = (int)(pos4 - prefixIdx);
+                    matchLength = Count(src, ip, matchPtr, matchlimit);
                     if (matchLength >= MinMatch)
                     {
                         // A short match: one look at ip + 1 for a longer one.
-                        uint h8 = MidHash8(ip + 1);
-                        uint pos8 = hash8Table[h8];
+                        uint h8 = MidHash8(src, ip + 1);
+                        uint pos8 = hash8Table[(int)h8];
                         uint m2Distance = ipIndex + 1 - pos8;
                         matchDistance = ipIndex - pos4;
                         if (m2Distance <= MaxDistance && pos8 >= prefixIdx && ip < mflimit)
                         {
-                            byte* m2Ptr = prefixPtr + (pos8 - prefixIdx);
-                            uint ml2 = Count(ip + 1, m2Ptr, matchlimit);
+                            int m2Ptr = (int)(pos8 - prefixIdx);
+                            uint ml2 = Count(src, ip + 1, m2Ptr, matchlimit);
                             if (ml2 > matchLength)
                             {
-                                hash8Table[h8] = ipIndex + 1;
+                                hash8Table[(int)h8] = ipIndex + 1;
                                 ip++;
                                 matchLength = ml2;
                                 matchDistance = m2Distance;
@@ -726,63 +716,62 @@ internal sealed unsafe class Lz4HighEncoder
 
         EncodeSequenceLabel:
             // Catch back.
-            while ((ip > anchor) & ((uint)(ip - prefixPtr) > matchDistance) && ip[-1] == ip[-(int)matchDistance - 1])
+            while ((ip > anchor) & ((uint)ip > matchDistance) && src[ip - 1] == src[ip - (int)matchDistance - 1])
             {
                 ip--;
                 matchLength++;
             }
 
             // The table filled with the beginning of the match.
-            hash8Table[MidHash8(ip + 1)] = ipIndex + 1;
-            hash8Table[MidHash8(ip + 2)] = ipIndex + 2;
-            hash4Table[MidHash4(ip + 1)] = ipIndex + 1;
+            hash8Table[(int)MidHash8(src, ip + 1)] = ipIndex + 1;
+            hash8Table[(int)MidHash8(src, ip + 2)] = ipIndex + 2;
+            hash4Table[(int)MidHash4(src, ip + 1)] = ipIndex + 1;
 
-            if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, (int)matchLength, (int)matchDistance, oend))
+            if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, (int)matchLength, (int)matchDistance))
             {
                 return 0;
             }
 
             // And with its end.
             {
-                uint endMatchIdx = (uint)(ip - prefixPtr) + prefixIdx;
+                uint endMatchIdx = (uint)ip + prefixIdx;
                 uint posM2 = endMatchIdx - 2;
                 if (posM2 < ilimitIdx)
                 {
-                    if (ip - prefixPtr > 5)
+                    if (ip > 5)
                     {
-                        hash8Table[MidHash8(ip - 5)] = endMatchIdx - 5;
+                        hash8Table[(int)MidHash8(src, ip - 5)] = endMatchIdx - 5;
                     }
 
-                    hash8Table[MidHash8(ip - 3)] = endMatchIdx - 3;
-                    hash8Table[MidHash8(ip - 2)] = endMatchIdx - 2;
-                    hash4Table[MidHash4(ip - 2)] = endMatchIdx - 2;
-                    hash4Table[MidHash4(ip - 1)] = endMatchIdx - 1;
+                    hash8Table[(int)MidHash8(src, ip - 3)] = endMatchIdx - 3;
+                    hash8Table[(int)MidHash8(src, ip - 2)] = endMatchIdx - 2;
+                    hash4Table[(int)MidHash4(src, ip - 2)] = endMatchIdx - 2;
+                    hash4Table[(int)MidHash4(src, ip - 1)] = endMatchIdx - 1;
                 }
             }
         }
 
     LastLiteralsLabel:
-        return EncodeLastLiterals<TLimit>(op, oend, anchor, iend, dst);
+        return EncodeLastLiterals<TLimit>(src, dst, op, anchor);
     }
 
     /// <summary>Levels 3 to 9: hash chains, and up to three overlapping matches weighed: <c>LZ4HC_compress_hashChain</c>.</summary>
-    private int CompressHashChain<TPattern, TLimit>(byte* source, int inputSize, byte* dest, int maxOutputSize)
+    private int CompressHashChain<TPattern, TLimit>(ReadOnlySpan<byte> src, Span<byte> dst)
         where TPattern : struct, IFlag
         where TLimit : struct, ILimit
     {
         int maxNbAttempts = _nbSearches;
 
-        byte* ip = source;
-        byte* anchor = ip;
-        byte* iend = ip + inputSize;
-        byte* mflimit = iend - MatchFindLimit;
-        byte* matchlimit = iend - LastLiterals;
-        byte* op = dest;
-        byte* oend = op + maxOutputSize;
+        int inputSize = src.Length;
+        int ip = 0;
+        int anchor = 0;
+        int mflimit = inputSize - MatchFindLimit;
+        int matchlimit = inputSize - LastLiterals;
+        int op = 0;
 
-        byte* start0;
-        byte* start2 = null;
-        byte* start3 = null;
+        int start0;
+        int start2 = 0;
+        int start3 = 0;
         Match m0, m1, m2, m3;
 
         if (inputSize < MinLength)
@@ -792,7 +781,7 @@ internal sealed unsafe class Lz4HighEncoder
 
         while (ip <= mflimit)
         {
-            m1 = InsertAndGetWiderMatch<TPattern, No>(ip, ip, matchlimit, MinMatch - 1, maxNbAttempts);
+            m1 = InsertAndGetWiderMatch<TPattern, No>(src, ip, ip, matchlimit, MinMatch - 1, maxNbAttempts);
             if (m1.Length < MinMatch)
             {
                 ip++;
@@ -807,7 +796,7 @@ internal sealed unsafe class Lz4HighEncoder
             if (ip + m1.Length <= mflimit)
             {
                 start2 = ip + m1.Length - 2;
-                m2 = InsertAndGetWiderMatch<TPattern, No>(start2, ip, matchlimit, m1.Length, maxNbAttempts);
+                m2 = InsertAndGetWiderMatch<TPattern, No>(src, start2, ip, matchlimit, m1.Length, maxNbAttempts);
                 start2 += m2.Back;
             }
             else
@@ -818,7 +807,7 @@ internal sealed unsafe class Lz4HighEncoder
             if (m2.Length <= m1.Length)
             {
                 // No better match: ML1 encoded right away.
-                if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, m1.Length, m1.Offset, oend))
+                if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, m1.Length, m1.Offset))
                 {
                     return 0;
                 }
@@ -852,10 +841,10 @@ internal sealed unsafe class Lz4HighEncoder
 
                 if (ip + newMl > start2 + m2.Length - MinMatch)
                 {
-                    newMl = (int)(start2 - ip) + m2.Length - MinMatch;
+                    newMl = start2 - ip + m2.Length - MinMatch;
                 }
 
-                int correction = newMl - (int)(start2 - ip);
+                int correction = newMl - (start2 - ip);
                 if (correction > 0)
                 {
                     start2 += correction;
@@ -866,7 +855,7 @@ internal sealed unsafe class Lz4HighEncoder
             if (start2 + m2.Length <= mflimit)
             {
                 start3 = start2 + m2.Length - 3;
-                m3 = InsertAndGetWiderMatch<TPattern, No>(start3, start2, matchlimit, m2.Length, maxNbAttempts);
+                m3 = InsertAndGetWiderMatch<TPattern, No>(src, start3, start2, matchlimit, m2.Length, maxNbAttempts);
                 start3 += m3.Back;
             }
             else
@@ -879,16 +868,16 @@ internal sealed unsafe class Lz4HighEncoder
                 // No better match: ML1 and ML2 encoded.
                 if (start2 < ip + m1.Length)
                 {
-                    m1.Length = (int)(start2 - ip);
+                    m1.Length = start2 - ip;
                 }
 
-                if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, m1.Length, m1.Offset, oend))
+                if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, m1.Length, m1.Offset))
                 {
                     return 0;
                 }
 
                 ip = start2;
-                if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, m2.Length, m2.Offset, oend))
+                if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, m2.Length, m2.Offset))
                 {
                     return 0;
                 }
@@ -904,7 +893,7 @@ internal sealed unsafe class Lz4HighEncoder
                     // Seq1 written right away, Seq2 removed, so Seq3 becomes Seq1.
                     if (start2 < ip + m1.Length)
                     {
-                        int correction = (int)(ip + m1.Length - start2);
+                        int correction = ip + m1.Length - start2;
                         start2 += correction;
                         m2.Length -= correction;
                         if (m2.Length < MinMatch)
@@ -914,7 +903,7 @@ internal sealed unsafe class Lz4HighEncoder
                         }
                     }
 
-                    if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, m1.Length, m1.Offset, oend))
+                    if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, m1.Length, m1.Offset))
                     {
                         return 0;
                     }
@@ -944,10 +933,10 @@ internal sealed unsafe class Lz4HighEncoder
 
                     if (ip + m1.Length > start2 + m2.Length - MinMatch)
                     {
-                        m1.Length = (int)(start2 - ip) + m2.Length - MinMatch;
+                        m1.Length = start2 - ip + m2.Length - MinMatch;
                     }
 
-                    int correction = m1.Length - (int)(start2 - ip);
+                    int correction = m1.Length - (start2 - ip);
                     if (correction > 0)
                     {
                         start2 += correction;
@@ -956,11 +945,11 @@ internal sealed unsafe class Lz4HighEncoder
                 }
                 else
                 {
-                    m1.Length = (int)(start2 - ip);
+                    m1.Length = start2 - ip;
                 }
             }
 
-            if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, m1.Length, m1.Offset, oend))
+            if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, m1.Length, m1.Offset))
             {
                 return 0;
             }
@@ -974,7 +963,7 @@ internal sealed unsafe class Lz4HighEncoder
         }
 
     LastLiteralsLabel:
-        return EncodeLastLiterals<TLimit>(op, oend, anchor, iend, dest);
+        return EncodeLastLiterals<TLimit>(src, dst, op, anchor);
     }
 
     /// <summary>The cost of a run of literals, in bytes.</summary>
@@ -1008,45 +997,44 @@ internal sealed unsafe class Lz4HighEncoder
     /// loop has the registers to itself rather than share them with the parser's.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private Match FindLongerMatch(byte* ip, byte* iHighLimit, int minLen, int nbSearches)
+    private Match FindLongerMatch(ReadOnlySpan<byte> src, int ip, int iHighLimit, int minLen, int nbSearches)
     {
-        Match md = InsertAndGetWiderMatch<Yes, Yes>(ip, ip, iHighLimit, minLen, nbSearches);
+        Match md = InsertAndGetWiderMatch<Yes, Yes>(src, ip, ip, iHighLimit, minLen, nbSearches);
         return md.Length <= minLen ? default : md;
     }
 
     /// <summary>Levels 10 to 12: the cheapest parse of every stretch the matches cover: <c>LZ4HC_compress_optimal</c>.</summary>
-    private int CompressOptimal<TLimit>(byte* source, int srcSize, byte* dst, int dstCapacity)
+    private int CompressOptimal<TLimit>(ReadOnlySpan<byte> src, Span<byte> dst)
         where TLimit : struct, ILimit
     {
-        OptimalEntry* opt = _opt;
+        OptimalEntry[] opt = _opt;
         int nbSearches = _nbSearches;
         int sufficientLen = Math.Min(_targetLength, OptimalNum - 1);
         bool fullUpdate = _fullUpdate;
 
-        byte* ip = source;
-        byte* anchor = ip;
-        byte* iend = ip + srcSize;
-        byte* mflimit = iend - MatchFindLimit;
-        byte* matchlimit = iend - LastLiterals;
-        byte* op = dst;
-        byte* oend = op + dstCapacity;
+        int srcSize = src.Length;
+        int ip = 0;
+        int anchor = 0;
+        int mflimit = srcSize - MatchFindLimit;
+        int matchlimit = srcSize - LastLiterals;
+        int op = 0;
 
         // lz4 has no such guard here, and reads through a null source when it is empty. The bytes are
         // the same: a shorter input never enters the loop.
         if (srcSize < MinLength)
         {
-            return EncodeLastLiterals<TLimit>(op, oend, anchor, iend, dst);
+            return EncodeLastLiterals<TLimit>(src, dst, op, anchor);
         }
 
         while (ip <= mflimit)
         {
-            int llen = (int)(ip - anchor);
+            int llen = ip - anchor;
             int bestMlen;
             int bestOff;
             int cur;
             int lastMatchPos;
 
-            Match firstMatch = FindLongerMatch(ip, matchlimit, MinMatch - 1, nbSearches);
+            Match firstMatch = FindLongerMatch(src, ip, matchlimit, MinMatch - 1, nbSearches);
             if (firstMatch.Length == 0)
             {
                 ip++;
@@ -1056,7 +1044,7 @@ internal sealed unsafe class Lz4HighEncoder
             if (firstMatch.Length > sufficientLen)
             {
                 // Good enough: encoded right away.
-                if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, firstMatch.Length, firstMatch.Offset, oend))
+                if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, firstMatch.Length, firstMatch.Offset))
                 {
                     return 0;
                 }
@@ -1089,7 +1077,7 @@ internal sealed unsafe class Lz4HighEncoder
             // The positions further on.
             for (cur = 1; cur < lastMatchPos; cur++)
             {
-                byte* curPtr = ip + cur;
+                int curPtr = ip + cur;
                 if (curPtr > mflimit)
                 {
                     break;
@@ -1110,8 +1098,8 @@ internal sealed unsafe class Lz4HighEncoder
                 }
 
                 Match newMatch = fullUpdate
-                    ? FindLongerMatch(curPtr, matchlimit, MinMatch - 1, nbSearches)
-                    : FindLongerMatch(curPtr, matchlimit, lastMatchPos - cur, nbSearches);
+                    ? FindLongerMatch(src, curPtr, matchlimit, MinMatch - 1, nbSearches)
+                    : FindLongerMatch(src, curPtr, matchlimit, lastMatchPos - cur, nbSearches);
                 if (newMatch.Length == 0)
                 {
                     continue;
@@ -1221,7 +1209,7 @@ internal sealed unsafe class Lz4HighEncoder
                     }
 
                     rPos += ml;
-                    if (!EncodeSequence<TLimit>(ref ip, ref op, ref anchor, ml, offset, oend))
+                    if (!EncodeSequence<TLimit>(src, dst, ref ip, ref op, ref anchor, ml, offset))
                     {
                         return 0;
                     }
@@ -1229,7 +1217,7 @@ internal sealed unsafe class Lz4HighEncoder
             }
         }
 
-        return EncodeLastLiterals<TLimit>(op, oend, anchor, iend, dst);
+        return EncodeLastLiterals<TLimit>(src, dst, op, anchor);
     }
 
     private struct Match(int length, int offset, int back)

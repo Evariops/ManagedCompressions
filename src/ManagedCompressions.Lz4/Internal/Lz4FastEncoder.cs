@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using static ManagedCompressions.Lz4.Internal.Lz4Common;
 
 namespace ManagedCompressions.Lz4.Internal;
@@ -23,10 +22,11 @@ namespace ManagedCompressions.Lz4.Internal;
 /// entries, since any entry from another block reads as the block's start.
 /// </para>
 /// </remarks>
-internal sealed unsafe class Lz4FastEncoder
+internal sealed class Lz4FastEncoder
 {
     private const int SkipTrigger = 6;
     private const int Limit64K = (64 * 1024) + (MatchFindLimit - 1);
+
     /// <summary>lz4's 16-bit table: 13 bits of a four-byte hash (LZ4_HASHLOG + 1).</summary>
     private const int SmallHashLog = 13;
 
@@ -45,26 +45,27 @@ internal sealed unsafe class Lz4FastEncoder
     private const int ClearAbove = 4096;
 
     /// <summary>The table blocks of every size share, its entries tagged by the numbering.</summary>
-    private readonly uint[] _table = GC.AllocateArray<uint>(TableSize, pinned: true);
+    private readonly uint[] _table = new uint[TableSize];
 
     /// <summary>lz4's own 16-bit table, cleared before each block between <see cref="ClearAbove"/> and 64 KiB.</summary>
-    private readonly ushort[] _table16 = GC.AllocateArray<ushort>(TableSize, pinned: true);
+    private readonly ushort[] _table16 = new ushort[TableSize];
 
-    /// <summary>
-    /// The search's cold values, behind a pointer the JIT cannot promote to registers: a stackalloc
-    /// would do the same, but keeps the method from tiering, and from its profile.
-    /// </summary>
-    private readonly Cold[] _cold = GC.AllocateArray<Cold>(1, pinned: true);
+    // The search's cold values, in the encoder's fields rather than in registers, where they pushed the
+    // loop's own out: the anchor, the output position, the end and the acceleration.
+    private int _anchor;
+    private int _op;
+    private int _acceleration;
 
     /// <summary>The number of the next block's first position.</summary>
     private uint _nextIndex;
 
     /// <summary>
-    /// Compresses <paramref name="length"/> bytes into <paramref name="destination"/>, which holds
-    /// <paramref name="capacity"/> bytes; the bytes written, or 0 when they do not fit.
+    /// Compresses <paramref name="source"/> into <paramref name="destination"/>; the bytes written, or 0
+    /// when they do not fit.
     /// </summary>
-    public int Compress(byte* source, int length, byte* destination, int capacity, int acceleration)
+    public int Compress(ReadOnlySpan<byte> source, Span<byte> destination, int acceleration)
     {
+        int length = source.Length;
         if ((uint)length > MaxInputSize)
         {
             return 0;
@@ -72,40 +73,35 @@ internal sealed unsafe class Lz4FastEncoder
 
         if (length == 0)
         {
-            if (capacity <= 0)
+            if (destination.IsEmpty)
             {
                 return 0;
             }
 
-            *destination = 0;
+            destination[0] = 0;
             return 1;
         }
 
-        bool limited = capacity < CompressBound(length);
+        _acceleration = acceleration;
+        bool limited = destination.Length < CompressBound(length);
         if (length >= ClearAbove)
         {
             // A cleared table numbered from the block's start, lz4's own: no entry to clamp.
             if (length < Limit64K)
             {
-                fixed (ushort* table = _table16)
-                {
-                    Unsafe.InitBlockUnaligned(table, 0, (1 << SmallHashLog) * sizeof(ushort));
-                    return limited
-                        ? Compress<Small16, Limited>(ColdPointer, (uint*)table, 0, source, length, destination, capacity, acceleration)
-                        : Compress<Small16, Unlimited>(ColdPointer, (uint*)table, 0, source, length, destination, capacity, acceleration);
-                }
-            }
-
-            fixed (uint* table = _table)
-            {
-                Unsafe.InitBlockUnaligned(table, 0, (1 << LargeHashLog) * sizeof(uint));
-
-                // Its entries lie below the block's length: a tagged block after it starts above.
-                _nextIndex = Math.Max(_nextIndex, (uint)length);
+                Array.Clear(_table16, 0, 1 << SmallHashLog);
                 return limited
-                    ? Compress<Large32, Limited>(ColdPointer, table, 0, source, length, destination, capacity, acceleration)
-                    : Compress<Large32, Unlimited>(ColdPointer, table, 0, source, length, destination, capacity, acceleration);
+                    ? Compress<Small16, Limited>(0, source, destination)
+                    : Compress<Small16, Unlimited>(0, source, destination);
             }
+
+            Array.Clear(_table, 0, 1 << LargeHashLog);
+
+            // Its entries lie below the block's length: a tagged block after it starts above.
+            _nextIndex = Math.Max(_nextIndex, (uint)length);
+            return limited
+                ? Compress<Large32, Limited>(0, source, destination)
+                : Compress<Large32, Unlimited>(0, source, destination);
         }
 
         if (_nextIndex > ResetAbove)
@@ -116,49 +112,30 @@ internal sealed unsafe class Lz4FastEncoder
 
         uint startIndex = _nextIndex;
         _nextIndex += (uint)length;
-        fixed (uint* table = _table)
-        {
-            return limited
-                ? Compress<SmallTagged, Limited>(ColdPointer, table, startIndex, source, length, destination, capacity, acceleration)
-                : Compress<SmallTagged, Unlimited>(ColdPointer, table, startIndex, source, length, destination, capacity, acceleration);
-        }
-    }
-
-    /// <summary>
-    /// What the search loop does not touch, in memory the JIT does not promote (stack allocated): in
-    /// registers, these pushed the loop's own out.
-    /// </summary>
-    private Cold* ColdPointer => (Cold*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_cold));
-
-    private struct Cold
-    {
-        public byte* Anchor;
-        public byte* Op;
-        public byte* Source;
-        public byte* End;
-        public byte* OutputLimit;
-        public int Acceleration;
+        return limited
+            ? Compress<SmallTagged, Limited>(startIndex, source, destination)
+            : Compress<SmallTagged, Unlimited>(startIndex, source, destination);
     }
 
     /// <summary>
     /// <c>LZ4_compress_generic_validated</c>, for a single block without a dictionary. The bytes read
     /// at a position serve both its hash and the compare with its candidate, as clang compiles lz4's
-    /// loop: one load a position.
+    /// loop: one load a position. Positions are numbered from <paramref name="startIndex"/> at the
+    /// source's first byte.
     /// </summary>
-    private static int Compress<TTable, TLimit>(Cold* cold, uint* table, uint startIndex, byte* source, int inputSize, byte* dest, int capacity, int acceleration)
+    private int Compress<TTable, TLimit>(uint startIndex, ReadOnlySpan<byte> source, Span<byte> dest)
         where TTable : struct, ITable
         where TLimit : struct, ILimit
     {
-        cold->Anchor = source;
-        cold->Op = dest;
-        cold->Source = source;
-        cold->End = source + inputSize;
-        cold->OutputLimit = dest + capacity;
-        cold->Acceleration = acceleration;
+        // The tables at their constant length: a hash, masked or shifted to its bits, needs no check.
+        Span<uint> table32 = _table.AsSpan(0, TableSize);
+        Span<ushort> table16 = _table16.AsSpan(0, TableSize);
+        _anchor = 0;
+        _op = 0;
 
-        byte* ip = source;
-        byte* @base = source - startIndex;
-        byte* mflimitPlusOne = source + inputSize - MatchFindLimit + 1;
+        int inputSize = source.Length;
+        int ip = 0;
+        int mflimitPlusOne = inputSize - MatchFindLimit + 1;
         ulong seq;
 
         if (inputSize < MinLength)
@@ -166,20 +143,20 @@ internal sealed unsafe class Lz4FastEncoder
             goto LastLiteralsLabel;
         }
 
-        TTable.Put(table, TTable.Hash(Read64(ip)), startIndex);
+        TTable.Put(table32, table16, TTable.Hash(Read64(source, ip)), startIndex);
         ip++;
-        seq = Read64(ip);
+        seq = Read64(source, ip);
 
         while (true)
         {
-            byte* match;
+            int match;
 
             // Find a match, the step growing by one every 64 misses (times the acceleration). The
             // table is read for a position before it is written with it, and written before the
             // next position is read, as lz4 does.
             {
-                nuint step = 1;
-                nuint searchMatchNb = (nuint)cold->Acceleration << SkipTrigger;
+                int step = 1;
+                int searchMatchNb = _acceleration << SkipTrigger;
                 while (true)
                 {
                     // lz4 leaves without testing a position whose next would pass the limit.
@@ -189,9 +166,9 @@ internal sealed unsafe class Lz4FastEncoder
                     }
 
                     nuint h = TTable.Hash(seq);
-                    uint matchIndex = TTable.Get(table, h);
-                    uint current = (uint)(ip - @base);
-                    TTable.Put(table, h, current);
+                    uint matchIndex = TTable.Get(table32, table16, h);
+                    uint current = (uint)ip + startIndex;
+                    TTable.Put(table32, table16, h, current);
                     if (TTable.Tagged)
                     {
                         // An entry from an earlier block reads as this block's first position, as a
@@ -199,8 +176,8 @@ internal sealed unsafe class Lz4FastEncoder
                         matchIndex = matchIndex < startIndex ? startIndex : matchIndex;
                     }
 
-                    match = @base + matchIndex;
-                    if ((!TTable.CheckDistance || current - matchIndex < MaxDistance + 1) && Read32(match) == (uint)seq)
+                    match = (int)(matchIndex - startIndex);
+                    if ((!TTable.CheckDistance || current - matchIndex < MaxDistance + 1) && Read32(source, match) == (uint)seq)
                     {
                         break;
                     }
@@ -208,136 +185,132 @@ internal sealed unsafe class Lz4FastEncoder
                     ip += step;
                     step = searchMatchNb >> SkipTrigger;
                     searchMatchNb++;
-                    seq = Read64(ip);
+                    seq = Read64(source, ip);
                 }
             }
 
-            byte* anchor = cold->Anchor;
-            byte* op = cold->Op;
-            byte* token;
+            int anchor = _anchor;
+            int op = _op;
+            int token;
 
             // Catch up: extend the match backwards over the literals.
+            if (match > 0 && source[ip - 1] == source[match - 1])
             {
-                byte* lowLimit = cold->Source;
-                if (match > lowLimit && ip[-1] == match[-1])
+                do
                 {
-                    do
-                    {
-                        ip--;
-                        match--;
-                    }
-                    while (ip > anchor && match > lowLimit && ip[-1] == match[-1]);
+                    ip--;
+                    match--;
                 }
+                while (ip > anchor && match > 0 && source[ip - 1] == source[match - 1]);
             }
 
             // The literals.
             {
-                uint litLength = (uint)(ip - anchor);
+                int litLength = ip - anchor;
                 token = op++;
-                if (TLimit.Enabled && op + litLength + (2 + 1 + LastLiterals) + (litLength / 255) > cold->OutputLimit)
+                if (TLimit.Enabled && (long)op + litLength + (2 + 1 + LastLiterals) + (litLength / 255) > dest.Length)
                 {
                     return 0;
                 }
 
                 if (litLength >= RunMask)
                 {
-                    uint len = litLength - RunMask;
-                    *token = RunMask << 4;
+                    int len = litLength - RunMask;
+                    dest[token] = RunMask << 4;
                     for (; len >= 255; len -= 255)
                     {
-                        *op++ = 255;
+                        dest[op++] = 255;
                     }
 
-                    *op++ = (byte)len;
+                    dest[op++] = (byte)len;
                 }
                 else
                 {
-                    *token = (byte)(litLength << 4);
+                    dest[token] = (byte)(litLength << 4);
                 }
 
-                WildCopy8(op, anchor, op + litLength);
+                WildCopy8(dest, op, source, anchor, litLength);
                 op += litLength;
             }
 
         NextMatch:
-            Write16(op, (ushort)(ip - match));
+            Write16(dest, op, (ushort)(ip - match));
             op += 2;
 
             {
-                uint matchCode = Count(ip + MinMatch, match + MinMatch, cold->End - LastLiterals);
-                ip += matchCode + MinMatch;
-                if (TLimit.Enabled && op + (1 + LastLiterals) + ((matchCode + 240) / 255) > cold->OutputLimit)
+                uint matchCode = Count(source, ip + MinMatch, match + MinMatch, inputSize - LastLiterals);
+                ip += (int)matchCode + MinMatch;
+                if (TLimit.Enabled && (long)op + (1 + LastLiterals) + ((matchCode + 240) / 255) > dest.Length)
                 {
                     return 0;
                 }
 
                 if (matchCode >= MatchLengthMask)
                 {
-                    *token += MatchLengthMask;
+                    dest[token] += MatchLengthMask;
                     matchCode -= MatchLengthMask;
-                    Write32(op, 0xFFFFFFFF);
+                    Write32(dest, op, 0xFFFFFFFF);
                     while (matchCode >= 4 * 255)
                     {
                         op += 4;
-                        Write32(op, 0xFFFFFFFF);
+                        Write32(dest, op, 0xFFFFFFFF);
                         matchCode -= 4 * 255;
                     }
 
-                    op += matchCode / 255;
-                    *op++ = (byte)(matchCode % 255);
+                    op += (int)(matchCode / 255);
+                    dest[op++] = (byte)(matchCode % 255);
                 }
                 else
                 {
-                    *token += (byte)matchCode;
+                    dest[token] += (byte)matchCode;
                 }
             }
 
-            cold->Anchor = ip;
-            cold->Op = op;
+            _anchor = ip;
+            _op = op;
             if (ip >= mflimitPlusOne)
             {
                 break;
             }
 
             // Fill the table with a position inside the match.
-            TTable.Put(table, TTable.Hash(Read64(ip - 2)), (uint)(ip - 2 - @base));
+            TTable.Put(table32, table16, TTable.Hash(Read64(source, ip - 2)), (uint)(ip - 2) + startIndex);
 
             // A match right away, with no literal between.
             {
-                ulong next = Read64(ip);
+                ulong next = Read64(source, ip);
                 nuint h = TTable.Hash(next);
-                uint current = (uint)(ip - @base);
-                uint matchIndex = TTable.Get(table, h);
+                uint current = (uint)ip + startIndex;
+                uint matchIndex = TTable.Get(table32, table16, h);
                 if (TTable.Tagged)
                 {
                     matchIndex = matchIndex < startIndex ? startIndex : matchIndex;
                 }
 
-                match = @base + matchIndex;
-                TTable.Put(table, h, current);
-                if ((!TTable.CheckDistance || current - matchIndex < MaxDistance + 1) && Read32(match) == (uint)next)
+                match = (int)(matchIndex - startIndex);
+                TTable.Put(table32, table16, h, current);
+                if ((!TTable.CheckDistance || current - matchIndex < MaxDistance + 1) && Read32(source, match) == (uint)next)
                 {
                     token = op++;
-                    *token = 0;
+                    dest[token] = 0;
                     goto NextMatch;
                 }
             }
 
-            seq = Read64(++ip);
+            seq = Read64(source, ++ip);
         }
 
     LastLiteralsLabel:
         {
-            byte* anchor = cold->Anchor;
-            byte* op = cold->Op;
-            nuint lastRun = (nuint)(cold->End - anchor);
-            if (TLimit.Enabled && op + lastRun + 1 + ((lastRun + 255 - RunMask) / 255) > cold->OutputLimit)
+            int anchor = _anchor;
+            int op = _op;
+            int lastRun = inputSize - anchor;
+            if (TLimit.Enabled && (long)op + lastRun + 1 + ((lastRun + 255 - RunMask) / 255) > dest.Length)
             {
                 return 0;
             }
 
-            op = WriteLastLiterals(op, anchor, lastRun);
-            return (int)(op - dest);
+            return WriteLastLiterals(dest, op, source, anchor, lastRun);
         }
     }
 
@@ -352,9 +325,9 @@ internal sealed unsafe class Lz4FastEncoder
         /// <summary>The hash, computed in 64 bits so that no zero extension follows it.</summary>
         static abstract nuint Hash(ulong sequence);
 
-        static abstract uint Get(uint* table, nuint hash);
+        static abstract uint Get(Span<uint> table32, Span<ushort> table16, nuint hash);
 
-        static abstract void Put(uint* table, nuint hash, uint index);
+        static abstract void Put(Span<uint> table32, Span<ushort> table16, nuint hash, uint index);
     }
 
     /// <summary>lz4's 16-bit table: four bytes hashed to 13 bits, every position within 64 KiB, cleared before the block.</summary>
@@ -368,10 +341,10 @@ internal sealed unsafe class Lz4FastEncoder
         public static nuint Hash(ulong sequence) => (nuint)((((ulong)(uint)sequence * 2654435761UL) >> (32 - SmallHashLog)) & ((1 << SmallHashLog) - 1));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint Get(uint* table, nuint hash) => ((ushort*)table)[hash];
+        public static uint Get(Span<uint> table32, Span<ushort> table16, nuint hash) => table16[(int)hash];
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Put(uint* table, nuint hash, uint index) => ((ushort*)table)[hash] = (ushort)index;
+        public static void Put(Span<uint> table32, Span<ushort> table16, nuint hash, uint index) => table16[(int)hash] = (ushort)index;
     }
 
     /// <summary>The same hash into the tagged 32-bit table, for blocks too small to clear one.</summary>
@@ -385,10 +358,10 @@ internal sealed unsafe class Lz4FastEncoder
         public static nuint Hash(ulong sequence) => (nuint)((((ulong)(uint)sequence * 2654435761UL) >> (32 - SmallHashLog)) & ((1 << SmallHashLog) - 1));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint Get(uint* table, nuint hash) => table[hash];
+        public static uint Get(Span<uint> table32, Span<ushort> table16, nuint hash) => table32[(int)hash];
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Put(uint* table, nuint hash, uint index) => table[hash] = index;
+        public static void Put(Span<uint> table32, Span<ushort> table16, nuint hash, uint index) => table32[(int)hash] = index;
     }
 
     /// <summary>lz4's 32-bit table on a 64-bit machine: five bytes hashed to 12 bits, cleared before the block.</summary>
@@ -402,10 +375,10 @@ internal sealed unsafe class Lz4FastEncoder
         public static nuint Hash(ulong sequence) => (nuint)(((sequence << 24) * 889523592379UL) >> (64 - LargeHashLog));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint Get(uint* table, nuint hash) => table[hash];
+        public static uint Get(Span<uint> table32, Span<ushort> table16, nuint hash) => table32[(int)hash];
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Put(uint* table, nuint hash, uint index) => table[hash] = index;
+        public static void Put(Span<uint> table32, Span<ushort> table16, nuint hash, uint index) => table32[(int)hash] = index;
     }
 }
 

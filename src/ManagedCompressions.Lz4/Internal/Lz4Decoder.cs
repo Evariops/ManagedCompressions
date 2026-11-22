@@ -1,6 +1,6 @@
 using System;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
@@ -25,12 +25,12 @@ namespace ManagedCompressions.Lz4.Internal;
 /// start and every one is checked; then past them, where no offset can, and only zero is refused.
 /// </para>
 /// <para>
-/// Every read stays within the source and every write within the destination, whatever the source
-/// holds. A block is refused, as -1, when a literal or a match runs past either end, when an offset
-/// is zero or reaches before the start, or when the source ends anywhere but after a sequence's literals.
+/// Every read and write goes through a span, bounds-checked, whatever the source holds. A block is
+/// refused, as -1, when a literal or a match runs past either end, when an offset is zero or reaches
+/// before the start, or when the source ends anywhere but after a sequence's literals.
 /// </para>
 /// </remarks>
-internal static unsafe class Lz4Decoder
+internal static class Lz4Decoder
 {
     private const int MinMatch = 4;
 
@@ -44,41 +44,38 @@ internal static unsafe class Lz4Decoder
     private const int MaxOffset = 65535;
 
     /// <summary>Decodes a whole block; the bytes written, or -1 when the block is corrupt or does not fit.</summary>
-    public static nint Decode(byte* source, nint sourceLength, byte* destination, nint capacity)
+    public static int Decode(ReadOnlySpan<byte> source, Span<byte> destination)
     {
-        if (capacity == 0)
+        if (destination.IsEmpty)
         {
             // An empty block is a lone token of no literal.
-            return sourceLength == 1 && *source == 0 ? 0 : -1;
+            return source.Length == 1 && source[0] == 0 ? 0 : -1;
         }
 
-        if (sourceLength == 0)
+        if (source.IsEmpty)
         {
             return -1;
         }
 
-        byte* ip = source;
-        byte* iend = source + sourceLength;
-        byte* op = destination;
-        byte* oend = destination + capacity;
-
-        if (sourceLength > InputMargin && capacity > OutputMargin)
+        int ip = 0;
+        int op = 0;
+        if (source.Length > InputMargin && destination.Length > OutputMargin)
         {
-            byte* ipLimit = iend - InputMargin;
-            byte* opLimit = oend - OutputMargin;
-            byte* farStart = destination + MaxOffset + 1;
-            if (!FastLoop<NearStart>(ref ip, ref op, ipLimit, farStart < opLimit ? farStart : opLimit, destination, iend, oend))
+            int ipLimit = source.Length - InputMargin;
+            int opLimit = destination.Length - OutputMargin;
+            const int FarStart = MaxOffset + 1;
+            if (!FastLoop<NearStart>(source, destination, ref ip, ref op, ipLimit, Math.Min(FarStart, opLimit)))
             {
                 return -1;
             }
 
-            if (op >= farStart && !FastLoop<FarFromStart>(ref ip, ref op, ipLimit, opLimit, destination, iend, oend))
+            if (op >= FarStart && !FastLoop<FarFromStart>(source, destination, ref ip, ref op, ipLimit, opLimit))
             {
                 return -1;
             }
         }
 
-        return Careful(ip, iend, op, oend, destination);
+        return Careful(source, destination, ip, op);
     }
 
     private interface IOffsetCheck
@@ -103,88 +100,88 @@ internal static unsafe class Lz4Decoder
     /// <paramref name="opRef"/> at the start of the next sequence; false when the block is corrupt.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool FastLoop<TCheck>(ref byte* ipRef, ref byte* opRef, byte* ipLimit, byte* opStop, byte* destination, byte* iend, byte* oend)
+    private static bool FastLoop<TCheck>(ReadOnlySpan<byte> src, Span<byte> dst, ref int ipRef, ref int opRef, int ipLimit, int opStop)
         where TCheck : struct, IOffsetCheck
     {
-        byte* ip = ipRef;
-        byte* op = opRef;
+        int ip = ipRef;
+        int op = opRef;
         while (ip <= ipLimit && op <= opStop)
         {
-            // The next token's address is the one chain from sequence to sequence: the token's load,
-            // a shift, one add to ip + 3, which does not wait on the load. afterToken is used twice,
-            // so the JIT keeps it rather than folding the 3 into an add after the shift.
-            byte* sequence = ip;
-            byte* sequenceOutput = op;
-            byte* afterToken = ip + 3;
-            nuint token = *ip;
+            // The next token's position is the one chain from sequence to sequence: the token's load,
+            // a shift, one add to ip + 3, which does not wait on the load.
+            int sequence = ip;
+            int sequenceOutput = op;
+            int afterToken = ip + 3;
+            nuint token = src[ip];
             nuint literals = token >> 4;
             nuint length = token & 15;
             nuint offset;
-            byte* match;
+            int match;
             if (literals == 15)
             {
                 goto LongLiterals;
             }
 
-            Copy16(op, afterToken - 2);
-            ip = afterToken + literals;
-            op += literals;
+            Copy16(dst, op, src, afterToken - 2);
+            ip = afterToken + (int)literals;
+            op += (int)literals;
 
         Offset:
-            offset = Unsafe.ReadUnaligned<ushort>(ip - 2);
-            match = op - offset;
+            offset = BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(ip - 2, 2));
+            match = op - (int)offset;
             if (length == 15)
             {
                 goto LongMatch;
             }
 
             length += MinMatch;
-            if (offset >= 8 && (!TCheck.NearStart || match >= destination))
+            if (offset >= 8 && (!TCheck.NearStart || match >= 0))
             {
                 // Three words, each read after the one before it is written.
-                Unsafe.WriteUnaligned(op, Unsafe.ReadUnaligned<ulong>(match));
-                Unsafe.WriteUnaligned(op + 8, Unsafe.ReadUnaligned<ulong>(match + 8));
-                Unsafe.WriteUnaligned(op + 16, Unsafe.ReadUnaligned<ushort>(match + 16));
-                op += length;
+                Span<byte> words = dst.Slice(op, 18);
+                BinaryPrimitives.WriteUInt64LittleEndian(words, BinaryPrimitives.ReadUInt64LittleEndian(dst.Slice(match, 8)));
+                BinaryPrimitives.WriteUInt64LittleEndian(words.Slice(8), BinaryPrimitives.ReadUInt64LittleEndian(dst.Slice(match + 8, 8)));
+                BinaryPrimitives.WriteUInt16LittleEndian(words.Slice(16), BinaryPrimitives.ReadUInt16LittleEndian(dst.Slice(match + 16, 2)));
+                op += (int)length;
                 continue;
             }
 
-            if (TCheck.NearStart ? offset - 1 >= (nuint)(op - destination) : offset == 0)
+            if (TCheck.NearStart ? offset - 1 >= (nuint)op : offset == 0)
             {
                 return false;
             }
 
-            RepeatPattern(op, match, op + length, offset);
-            op += length;
+            RepeatPattern(dst, op, match, op + (int)length, (int)offset);
+            op += (int)length;
             continue;
 
         LongLiterals:
             ip = sequence + 1;
-            if (!ReadLength(ref ip, iend - 15, ref literals))
+            if (!ReadLength(src, ref ip, src.Length - 15, ref literals))
             {
                 return false;
             }
 
             // Room for the wild copy past the literals, then the offset, at both ends.
-            if (literals + InputMargin > (nuint)(iend - ip) || literals + InputMargin > (nuint)(oend - op))
+            if (literals + InputMargin > (nuint)(src.Length - ip) || literals + InputMargin > (nuint)(dst.Length - op))
             {
                 ip = sequence;
                 break;
             }
 
-            WildCopy32(op, ip, op + literals);
-            ip += literals + 2;
-            op += literals;
+            WildCopy32(dst, op, src, ip, op + (int)literals);
+            ip += (int)literals + 2;
+            op += (int)literals;
             goto Offset;
 
         LongMatch:
-            if (!ReadLength(ref ip, iend - 4, ref length))
+            if (!ReadLength(src, ref ip, src.Length - 4, ref length))
             {
                 return false;
             }
 
             length += MinMatch;
-            if (length + 32 > (nuint)(oend - op))
+            if (length + 32 > (nuint)(dst.Length - op))
             {
                 // Up to the end: the careful loop takes the sequence again, literals included.
                 ip = sequence;
@@ -192,21 +189,21 @@ internal static unsafe class Lz4Decoder
                 break;
             }
 
-            if (TCheck.NearStart ? offset - 1 >= (nuint)(op - destination) : offset == 0)
+            if (TCheck.NearStart ? offset - 1 >= (nuint)op : offset == 0)
             {
                 return false;
             }
 
             if (offset >= 16)
             {
-                WildCopy32(op, match, op + length);
+                WildCopy32(dst, op, dst, match, op + (int)length);
             }
             else
             {
-                RepeatPattern(op, match, op + length, offset);
+                RepeatPattern(dst, op, match, op + (int)length, (int)offset);
             }
 
-            op += length;
+            op += (int)length;
         }
 
         ipRef = ip;
@@ -215,70 +212,70 @@ internal static unsafe class Lz4Decoder
     }
 
     /// <summary>The careful loop: sequences copied exactly, every length checked against both ends.</summary>
-    private static nint Careful(byte* ip, byte* iend, byte* op, byte* oend, byte* destination)
+    private static int Careful(ReadOnlySpan<byte> src, Span<byte> dst, int ip, int op)
     {
         while (true)
         {
-            if (ip >= iend)
+            if (ip >= src.Length)
             {
                 return -1;
             }
 
-            uint token = *ip++;
+            uint token = src[ip++];
             nuint length = token >> 4;
-            if (length == 15 && !ReadLength(ref ip, iend, ref length))
+            if (length == 15 && !ReadLength(src, ref ip, src.Length, ref length))
             {
                 return -1;
             }
 
-            if (length > (nuint)(iend - ip) || length > (nuint)(oend - op))
+            if (length > (nuint)(src.Length - ip) || length > (nuint)(dst.Length - op))
             {
                 return -1;
             }
 
-            if (length <= 16 && (nuint)(iend - ip) >= 16 && (nuint)(oend - op) >= 16)
+            if (length <= 16 && src.Length - ip >= 16 && dst.Length - op >= 16)
             {
-                Copy16(op, ip);
+                Copy16(dst, op, src, ip);
             }
             else
             {
-                Buffer.MemoryCopy(ip, op, length, length);
+                src.Slice(ip, (int)length).CopyTo(dst.Slice(op));
             }
 
-            ip += length;
-            op += length;
-            if (ip == iend)
+            ip += (int)length;
+            op += (int)length;
+            if (ip == src.Length)
             {
                 // The last sequence: literals and no match.
-                return (nint)(op - destination);
+                return op;
             }
 
-            if (iend - ip < 2)
+            if (src.Length - ip < 2)
             {
                 return -1;
             }
 
-            nuint offset = Unsafe.ReadUnaligned<ushort>(ip);
+            nuint offset = BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(ip, 2));
             ip += 2;
             length = token & 15;
-            if (length == 15 && !ReadLength(ref ip, iend, ref length))
+            if (length == 15 && !ReadLength(src, ref ip, src.Length, ref length))
             {
                 return -1;
             }
 
             length += MinMatch;
-            if (offset - 1 >= (nuint)(op - destination) || length > (nuint)(oend - op))
+            if (offset - 1 >= (nuint)op || length > (nuint)(dst.Length - op))
             {
                 return -1;
             }
 
-            byte* match = op - offset;
-            byte* end = op + length;
-            if (offset >= 8 && (nuint)(oend - end) >= 8)
+            int match = op - (int)offset;
+            int end = op + (int)length;
+            if (offset >= 8 && dst.Length - end >= 8)
             {
                 do
                 {
-                    Unsafe.WriteUnaligned(op, Unsafe.ReadUnaligned<ulong>(match));
+                    BinaryPrimitives.WriteUInt64LittleEndian(dst.Slice(op, 8), BinaryPrimitives.ReadUInt64LittleEndian(dst.Slice(match, 8)));
                     op += 8;
                     match += 8;
                 }
@@ -288,7 +285,7 @@ internal static unsafe class Lz4Decoder
             {
                 while (op < end)
                 {
-                    *op++ = *match++;
+                    dst[op++] = dst[match++];
                 }
             }
 
@@ -301,9 +298,9 @@ internal static unsafe class Lz4Decoder
     /// reads at or past <paramref name="limit"/>, or when it would overflow.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool ReadLength(ref byte* ip, byte* limit, ref nuint length)
+    private static bool ReadLength(ReadOnlySpan<byte> src, ref int ip, int limit, ref nuint length)
     {
-        byte* p = ip;
+        int p = ip;
         nuint s;
         do
         {
@@ -312,7 +309,7 @@ internal static unsafe class Lz4Decoder
                 return false;
             }
 
-            s = *p++;
+            s = src[p++];
             length += s;
         }
         while (s == 255);
@@ -324,22 +321,23 @@ internal static unsafe class Lz4Decoder
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void Copy16(byte* destination, byte* source) => Vector128.Store(Vector128.Load(source), destination);
+    private static void Copy16(Span<byte> destination, int to, ReadOnlySpan<byte> source, int from) =>
+        Vector128.Create(source.Slice(from, 16)).CopyTo(destination.Slice(to, 16));
 
-    /// <summary>Copies from <paramref name="source"/> until <paramref name="end"/>, thirty-two bytes a step, up to 31 bytes past it.</summary>
+    /// <summary>Copies from <paramref name="from"/> until <paramref name="end"/>, thirty-two bytes a step, up to 31 bytes past it.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WildCopy32(byte* destination, byte* source, byte* end)
+    private static void WildCopy32(Span<byte> destination, int to, ReadOnlySpan<byte> source, int from, int end)
     {
         do
         {
             // Each half read after the one before it is written: a source sixteen bytes behind
             // reads what the step itself wrote.
-            Copy16(destination, source);
-            Copy16(destination + 16, source + 16);
-            destination += 32;
-            source += 32;
+            Copy16(destination, to, source, from);
+            Copy16(destination, to + 16, source, from + 16);
+            to += 32;
+            from += 32;
         }
-        while (destination < end);
+        while (to < end);
     }
 
     /// <summary>
@@ -348,19 +346,19 @@ internal static unsafe class Lz4Decoder
     /// vector, stored as many times as needed, each store advancing a whole number of periods.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RepeatPattern(byte* op, byte* match, byte* end, nuint offset)
+    private static void RepeatPattern(Span<byte> dst, int op, int match, int end, int offset)
     {
         if (AdvSimd.Arm64.IsSupported || Ssse3.IsSupported)
         {
-            Vector128<byte> indexes = Vector128.LoadUnsafe(ref MemoryMarshal.GetReference(PatternIndexes), offset * 16);
-            Vector128<byte> source = Vector128.Load(match);
+            Vector128<byte> indexes = Vector128.Create(PatternIndexes.Slice(offset * 16, 16));
+            Vector128<byte> source = Vector128.Create((ReadOnlySpan<byte>)dst.Slice(match, 16));
             Vector128<byte> pattern = AdvSimd.Arm64.IsSupported
                 ? AdvSimd.Arm64.VectorTableLookup(source, indexes)
                 : Ssse3.Shuffle(source, indexes);
-            nuint step = Unsafe.Add(ref MemoryMarshal.GetReference(PatternSteps), offset);
+            int step = PatternSteps[offset];
             do
             {
-                Vector128.Store(pattern, op);
+                pattern.CopyTo(dst.Slice(op, 16));
                 op += step;
             }
             while (op < end);
@@ -370,7 +368,7 @@ internal static unsafe class Lz4Decoder
 
         while (op < end)
         {
-            *op++ = *match++;
+            dst[op++] = dst[match++];
         }
     }
 

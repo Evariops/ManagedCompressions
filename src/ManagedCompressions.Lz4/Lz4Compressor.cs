@@ -19,7 +19,7 @@ namespace ManagedCompressions.Lz4;
 /// instance allocates nothing, and does not clear its tables before each block, as lz4 does.
 /// </para>
 /// </remarks>
-public sealed unsafe class Lz4Compressor
+public sealed class Lz4Compressor
 {
     /// <summary>The lowest level: the highest acceleration lz4 takes.</summary>
     public const int MinLevel = -65536;
@@ -84,13 +84,9 @@ public sealed unsafe class Lz4Compressor
     public bool TryCompress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
     {
         ArgumentOutOfRangeException.ThrowIfGreaterThan(source.Length, Lz4Common.MaxInputSize, nameof(source));
-        fixed (byte* src = source)
-        fixed (byte* dst = destination)
-        {
-            bytesWritten = _fast is not null
-                ? _fast.Compress(src, source.Length, dst, destination.Length, _acceleration)
-                : _high!.Compress(src, source.Length, dst, destination.Length);
-        }
+        bytesWritten = _fast is not null
+            ? _fast.Compress(source, destination, _acceleration)
+            : _high!.Compress(source, destination);
 
         return bytesWritten > 0;
     }

@@ -19,7 +19,7 @@ namespace ManagedCompressions.Lz4;
 /// writes; <see cref="Lz4Compressor"/> takes the other levels, and keeps its tables between blocks.
 /// </para>
 /// </remarks>
-public static unsafe class Lz4Block
+public static class Lz4Block
 {
     [ThreadStatic]
     private static Lz4Compressor? t_compressor;
@@ -33,12 +33,7 @@ public static unsafe class Lz4Block
     public static void Decompress(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         LittleEndian.Require();
-        nint written;
-        fixed (byte* src = source)
-        fixed (byte* dst = destination)
-        {
-            written = Lz4Decoder.Decode(src, source.Length, dst, destination.Length);
-        }
+        int written = Lz4Decoder.Decode(source, destination);
 
         if (written < 0)
         {
@@ -59,14 +54,9 @@ public static unsafe class Lz4Block
     public static bool TryDecompress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
     {
         LittleEndian.Require();
-        nint written;
-        fixed (byte* src = source)
-        fixed (byte* dst = destination)
-        {
-            written = Lz4Decoder.Decode(src, source.Length, dst, destination.Length);
-        }
+        int written = Lz4Decoder.Decode(source, destination);
 
-        bytesWritten = written < 0 ? 0 : (int)written;
+        bytesWritten = written < 0 ? 0 : written;
         return written >= 0;
     }
 

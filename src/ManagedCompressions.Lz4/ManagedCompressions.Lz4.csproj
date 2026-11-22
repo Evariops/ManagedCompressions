@@ -11,6 +11,17 @@
     <PackageLicenseExpression>MIT AND BSD-2-Clause</PackageLicenseExpression>
   </PropertyGroup>
 
+  <!-- Safe code only: no unsafe context, nor the escape hatches of Unsafe and MemoryMarshal, which
+       src/BannedSymbols.txt bans. Every access to memory is a checked index into an array or a span. -->
+  <PropertyGroup>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" PrivateAssets="all" />
+    <AdditionalFiles Include="../BannedSymbols.txt" Link="BannedSymbols.txt" />
+  </ItemGroup>
+
   <!-- The package page shows the repository's readme, which covers LZ4 beside Zstandard. -->
 
   <ItemGroup>
