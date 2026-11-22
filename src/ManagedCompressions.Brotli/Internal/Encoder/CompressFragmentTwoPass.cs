@@ -318,8 +318,14 @@ internal static unsafe class CompressFragmentTwoPass
     }
 
     /// <summary>brotli's <c>CreateCommands</c>: the commands and literals of a block, the first pass.</summary>
-    private static void CreateCommands(byte* input, int blockSize, int inputSize, byte* baseIp, int* table, int tableBits, int minMatch, ref byte* literals, ref uint* commands)
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CreateCommands<TMinMatch>(byte* input, int blockSize, int inputSize, byte* baseIp, int* table, int tableBits, ref byte* literalsRef, ref uint* commandsRef)
+        where TMinMatch : struct, IMinMatch
     {
+        // The output pointers in locals, which the JIT keeps in registers; the minimal match a constant.
+        int minMatch = TMinMatch.Value;
+        byte* literals = literalsRef;
+        uint* commands = commandsRef;
         byte* ip = input;
         int shift = 64 - tableBits;
         byte* ipEnd = input + blockSize;
@@ -334,40 +340,10 @@ internal static unsafe class CompressFragmentTwoPass
             uint nextHash = Hash(++ip, shift, minMatch);
             while (true)
             {
-                uint skip = 32;
-                byte* nextIp = ip;
-                byte* candidate;
-            Trawl:
-                do
+                ip = FindMatch<TMinMatch>(ip, ipLimit, ref nextHash, table, baseIp, shift, lastDistance, out byte* candidate);
+                if (ip == null)
                 {
-                    uint hash = nextHash;
-                    uint bytesBetweenHashLookups = skip++ >> 5;
-                    ip = nextIp;
-                    nextIp = ip + bytesBetweenHashLookups;
-                    if (nextIp > ipLimit)
-                    {
-                        goto EmitRemainder;
-                    }
-
-                    nextHash = Hash(nextIp, shift, minMatch);
-                    candidate = ip - lastDistance;
-                    if (IsMatch(ip, candidate, minMatch))
-                    {
-                        if (candidate < ip)
-                        {
-                            table[hash] = (int)(ip - baseIp);
-                            break;
-                        }
-                    }
-
-                    candidate = baseIp + table[hash];
-                    table[hash] = (int)(ip - baseIp);
-                }
-                while (!IsMatch(ip, candidate, minMatch));
-
-                if (ip - candidate > MaxDistance)
-                {
-                    goto Trawl;
+                    goto EmitRemainder;
                 }
 
                 {
@@ -428,9 +404,13 @@ internal static unsafe class CompressFragmentTwoPass
             Buffer.MemoryCopy(nextEmit, literals, insert, insert);
             literals += insert;
         }
+
+        literalsRef = literals;
+        commandsRef = commands;
     }
 
     /// <summary>brotli's <c>StoreCommands</c>: the codes from the histograms, then the commands and literals.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void StoreCommands(TwoPassArena s, byte* literals, int numLiterals, uint* commands, int numCommands, ref int storageIx, byte* storage)
     {
         new Span<uint>(s.LitHisto, 256).Clear();
@@ -460,23 +440,25 @@ internal static unsafe class CompressFragmentTwoPass
         ushort* cmdBits = s.CmdBits;
         byte* litDepth = s.LitDepth;
         ushort* litBits = s.LitBits;
+        var sink = new BitSink(storageIx, storage);
         for (int i = 0; i < numCommands; ++i)
         {
             uint cmd = commands[i];
             uint code = cmd & 0xFF;
             uint extra = cmd >> 8;
-            BitWriter.Write(cmdDepth[code], cmdBits[code], ref storageIx, storage);
-            BitWriter.Write(numExtraBits[(int)code], extra, ref storageIx, storage);
+            sink.Write(cmdDepth[code], cmdBits[code]);
+            sink.Write(numExtraBits[(int)code], extra);
             if (code < 24)
             {
                 uint insert = insertOffset[(int)code] + extra;
-                for (uint j = 0; j < insert; ++j)
+                for (byte* end = literals + insert; literals < end; literals++)
                 {
-                    byte literal = *literals++;
-                    BitWriter.Write(litDepth[literal], litBits[literal], ref storageIx, storage);
+                    BitWriter.WriteLiteral(ref sink, *literals, litDepth, litBits);
                 }
             }
         }
+
+        storageIx = sink.Finish();
     }
 
     private static bool ShouldCompress(TwoPassArena s, byte* input, int inputSize, int numLiterals)
@@ -511,6 +493,7 @@ internal static unsafe class CompressFragmentTwoPass
     /// <see cref="TwoPassArena.BlockSize"/>, then, if it is the last fragment, the empty last meta-block.
     /// <paramref name="table"/> holds <paramref name="tableSize"/> zeros, a power of two from 2^8 to 2^17.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void Compress(TwoPassArena s, byte* input, int inputSize, bool isLast, int* table, int tableSize, ref int storageIx, byte* storage)
     {
         int initialStorageIx = storageIx;
@@ -524,7 +507,14 @@ internal static unsafe class CompressFragmentTwoPass
             int blockSize = Math.Min(remaining, TwoPassArena.BlockSize);
             uint* commands = s.Commands;
             byte* literals = s.Literals;
-            CreateCommands(block, blockSize, remaining, baseIp, table, tableBits, minMatch, ref literals, ref commands);
+            if (minMatch == 4)
+            {
+                CreateCommands<MinMatch4>(block, blockSize, remaining, baseIp, table, tableBits, ref literals, ref commands);
+            }
+            else
+            {
+                CreateCommands<MinMatch6>(block, blockSize, remaining, baseIp, table, tableBits, ref literals, ref commands);
+            }
             int numLiterals = (int)(literals - s.Literals);
             if (ShouldCompress(s, block, blockSize, numLiterals))
             {
@@ -559,4 +549,73 @@ internal static unsafe class CompressFragmentTwoPass
             storageIx = (storageIx + 7) & ~7;
         }
     }
+
+    /// <summary>
+    /// The trawl of brotli's <c>CreateCommands</c>: the next position from <paramref name="ip"/> on whose
+    /// bytes match those at the last distance or at the table's position, looking further apart after
+    /// every 32 bytes without one; null past <paramref name="ipLimit"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static byte* FindMatch<TMinMatch>(byte* ip, byte* ipLimit, ref uint nextHashRef, int* table, byte* baseIp, int shift, int lastDistance, out byte* candidateOut)
+        where TMinMatch : struct, IMinMatch
+    {
+        int minMatch = TMinMatch.Value;
+        uint nextHash = nextHashRef;
+        uint skip = 32;
+        byte* nextIp = ip;
+        byte* candidate;
+        do
+        {
+            do
+            {
+                uint hash = nextHash;
+                uint bytesBetweenHashLookups = skip++ >> 5;
+                ip = nextIp;
+                nextIp = ip + bytesBetweenHashLookups;
+                if (nextIp > ipLimit)
+                {
+                    nextHashRef = nextHash;
+                    candidateOut = null;
+                    return null;
+                }
+
+                nextHash = Hash(nextIp, shift, minMatch);
+                candidate = ip - lastDistance;
+                if (IsMatch(ip, candidate, minMatch) && candidate < ip)
+                {
+                    table[hash] = (int)(ip - baseIp);
+                    break;
+                }
+
+                candidate = baseIp + table[hash];
+                table[hash] = (int)(ip - baseIp);
+            }
+            while (!IsMatch(ip, candidate, minMatch));
+        }
+
+        // A candidate too far is no match: search on.
+        while (ip - candidate > MaxDistance);
+
+        nextHashRef = nextHash;
+        candidateOut = candidate;
+        return ip;
+    }
+}
+
+/// <summary>The minimal match of quality 1, which its hash table's size sets: a type, so that it is a constant.</summary>
+internal interface IMinMatch
+{
+    static abstract int Value { get; }
+}
+
+/// <summary>Matches of 4 bytes, for tables of 2^15 entries and less.</summary>
+internal struct MinMatch4 : IMinMatch
+{
+    public static int Value => 4;
+}
+
+/// <summary>Matches of 6 bytes, for larger tables.</summary>
+internal struct MinMatch6 : IMinMatch
+{
+    public static int Value => 6;
 }
