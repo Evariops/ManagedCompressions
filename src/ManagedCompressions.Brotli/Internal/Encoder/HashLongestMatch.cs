@@ -1,7 +1,6 @@
 using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using System.Threading;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -76,21 +75,21 @@ internal struct HashLongestMatch : IHasher
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
-        // A position past the input, after a copy to its end: nothing ahead to fetch.
-        if ((ix & mask) > (nuint)data.Length - 4)
+        // Nothing to fetch without the instruction, nor past the input, after a copy to its end.
+        if (!Internal.Prefetch.IsSupported || (ix & mask) > (nuint)data.Length - 4)
         {
             return;
         }
 
         uint key = HashBytes(data, ix & mask, _hashShift);
-        Span<uint> bucket = _buckets.AsSpan((int)((nuint)key << _blockBits), (int)_blockSize);
+        nuint bucket = (nuint)key << _blockBits;
         nuint top = (nuint)(_num[(int)key] - 1);
-        Volatile.Read(ref bucket[(int)(top & _blockMask)]);
-        Volatile.Read(ref bucket[(int)((top - 16) & _blockMask)]);
+        Internal.Prefetch.Element(_buckets, bucket + (top & _blockMask));
+        Internal.Prefetch.Element(_buckets, bucket + ((top - 16) & _blockMask));
         if (_blockBits >= 6)
         {
-            Volatile.Read(ref bucket[(int)((top - 32) & _blockMask)]);
-            Volatile.Read(ref bucket[(int)((top - 48) & _blockMask)]);
+            Internal.Prefetch.Element(_buckets, bucket + ((top - 32) & _blockMask));
+            Internal.Prefetch.Element(_buckets, bucket + ((top - 48) & _blockMask));
         }
     }
 
@@ -297,21 +296,21 @@ internal struct HashLongestMatch64 : IHasher
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
-        // A position past the input, after a copy to its end: nothing ahead to fetch.
-        if ((ix & mask) > (nuint)data.Length - 8)
+        // Nothing to fetch without the instruction, nor past the input, after a copy to its end.
+        if (!Internal.Prefetch.IsSupported || (ix & mask) > (nuint)data.Length - 8)
         {
             return;
         }
 
         nuint key = HashBytes(data, ix & mask, _hashMul);
-        Span<uint> bucket = _buckets.AsSpan((int)((nuint)key << _blockBits), (int)_blockSize);
+        nuint bucket = (nuint)key << _blockBits;
         nuint top = (nuint)(_num[(int)key] - 1);
-        Volatile.Read(ref bucket[(int)(top & _blockMask)]);
-        Volatile.Read(ref bucket[(int)((top - 16) & _blockMask)]);
+        Internal.Prefetch.Element(_buckets, bucket + (top & _blockMask));
+        Internal.Prefetch.Element(_buckets, bucket + ((top - 16) & _blockMask));
         if (_blockBits >= 6)
         {
-            Volatile.Read(ref bucket[(int)((top - 32) & _blockMask)]);
-            Volatile.Read(ref bucket[(int)((top - 48) & _blockMask)]);
+            Internal.Prefetch.Element(_buckets, bucket + ((top - 32) & _blockMask));
+            Internal.Prefetch.Element(_buckets, bucket + ((top - 48) & _blockMask));
         }
     }
 
