@@ -105,6 +105,29 @@ internal static class Program
             Expect(failures, $"brotli q{quality}", input, decoded ? content : []);
         }
 
+        // The Brotli compressor writes the bytes of the brotli .NET ships on this platform, whose logarithms
+        // differ from one platform to the next, so the check is against them rather than a hash.
+        foreach (int quality in (int[])[0, 1, 2, 4, 5, 9, 10, 11])
+        {
+            byte[] input = quality >= 10 ? text.AsSpan(0, 256 << 10).ToArray() : text;
+            byte[] expected = new byte[BrotliEncoder.GetMaxCompressedLength(input.Length)];
+            if (!BrotliEncoder.TryCompress(input, expected, out int expectedSize, quality, 22))
+            {
+                throw new InvalidOperationException("brotli compression failed");
+            }
+
+            byte[] stream = new byte[BrotliCompressor.GetMaxCompressedLength(input.Length)];
+            OperationStatus compressed = new BrotliCompressor(quality).Compress(input, stream, out _, out int size);
+            if (compressed != OperationStatus.Done || !stream.AsSpan(0, size).SequenceEqual(expected.AsSpan(0, expectedSize)))
+            {
+                failures.Add($"brotli compression q{quality}: other bytes than brotli's");
+            }
+
+            byte[] content = new byte[input.Length];
+            OperationStatus status = new BrotliDecompressor().Decompress(stream.AsSpan(0, size), content, out _, out int written);
+            Expect(failures, $"brotli compression q{quality}", input, status == OperationStatus.Done && written == input.Length ? content : []);
+        }
+
         string where = $"{RuntimeInformation.ProcessArchitecture}, {RuntimeInformation.FrameworkDescription}";
         if (failures.Count > 0)
         {
