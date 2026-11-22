@@ -3,8 +3,8 @@
 **Zstandard, LZ4 and Brotli written entirely in C#.** No native library and no P/Invoke: the code runs
 wherever .NET runs on a little-endian processor, trims, and compiles with Native AOT.
 
-- **Brotli faster than the brotli .NET ships**, on x64: compression 1.00 to 1.60× at qualities 1 to 11,
-  with brotli 1.1.1's bytes at every quality, and up to 21× on small inputs; decompression 1.07 to 1.37×,
+- **Brotli at least as fast as the brotli .NET ships at every quality**, on x64: compression 1.00 to 1.29×
+  on large inputs and 1.03 to 21× on small ones, with brotli 1.1.1's bytes; decompression 1.07 to 1.37×,
   with brotli's verdict and error code for every stream ([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md)).
 
 - **Same bytes as the native libraries.** Every frame, block and stream is byte-for-byte what libzstd
@@ -249,16 +249,17 @@ and the table shows one of those
 
 On x64 (AMD Ryzen 9 7950X), against the brotli 1.1.1 .NET ships, through `BrotliEncoder.TryCompress`
 and `BrotliDecoder.TryDecompress`. The managed compressor writes brotli's bytes; it keeps its tables from
-one stream to the next where brotli allocates and clears them at every call, writes its bits through a
-64-bit accumulator, and runs the block splitter of qualities 10 and 11 on vectors. The decoder writes
+one stream to the next where brotli allocates and clears them at every call, fetches the lines of its hash
+tables ahead of the search, writes its bits through a 64-bit accumulator, several codes at a time at the
+fast qualities, and runs the block splitter of qualities 10 and 11 on vectors. The decoder writes
 straight into the destination where brotli goes through a ring buffer, decodes literals in runs between
 its checks, and looks literals up in tables of 10 bits where brotli's have 8
 ([`src/ManagedCompressions.Brotli/README.md`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md#how-it-is-fast)).
 
 | Compression | 0 | 1 | 4 | 5 | 9 | 10 | 11 |
 |:--|--:|--:|--:|--:|--:|--:|--:|
-| silesia.tar sample, one stream | 0.95× | **1.06×** | **1.60×** | **1.16×** | 1.05× | **1.20×** | **1.14×** |
-| JSON records | 0.90× | **1.07×** | **1.10×** | **11.9×** | **21.0×** | **1.13×** | 1.03× |
+| silesia.tar sample, one stream | 1.00× | **1.12×** | **1.08×** | **1.29×** | **1.18×** | **1.18×** | **1.15×** |
+| JSON records | **1.09×** | **1.06×** | **1.16×** | **12.4×** | **21.0×** | **1.13×** | 1.03× |
 
 Qualities 4 to 9 move by up to 20 % from one process to the next, on both sides
 ([`bench/results/x64/brotli-compression.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/brotli-compression.md)

@@ -148,8 +148,8 @@ internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
         }
     }
 
-    // The lines of the position's slots, the first ones a search reads, when the table outgrows the L2 cache:
-    // 2 MiB for H4, 16 MiB for H54.
+    // The lines of the position's slots, the first ones a search reads, for the large tables: 512 KiB for H4,
+    // which shares the L2 cache with the window and the commands, 4 MiB for H54.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Prefetch(byte* data, nuint mask, nuint ix)
     {
