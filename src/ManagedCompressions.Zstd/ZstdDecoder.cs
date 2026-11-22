@@ -493,8 +493,10 @@ public sealed class ZstdDecoder
     /// <summary>
     /// libzstd's checks of a frame header (<c>ZSTD_decodeFrameHeader</c>, the window against
     /// <c>ZSTD_d_windowLogMax</c>) and its window, <c>ZSTD_decodingBufferSize_internal</c>: the window
-    /// and a block, and their margins, or the content size when it is smaller. libzstd adds a second
-    /// block, for the literals it splits into that buffer; the block decoder keeps them apart.
+    /// and two blocks, and their margins, or the content size when it is smaller. libzstd's second block
+    /// is room for the literals it splits into the buffer, which the block decoder keeps apart; but it is
+    /// room for content too, and where the buffer restarts sets how far back an offset may reach, so the
+    /// window is as large as libzstd's.
     /// </summary>
     private void BeginFrame()
     {
@@ -510,7 +512,8 @@ public sealed class ZstdDecoder
             Throw.Error(ZstdError.WindowTooLarge);
         }
 
-        ulong ring = window + (ulong)Math.Min((ulong)_frame.BlockSizeMax, window) + (2 * 32);
+        ulong block = Math.Min((ulong)_frame.BlockSizeMax, window);
+        ulong ring = window + (2 * block) + (2 * 32);
         ulong capacity = _frame.HasContentSize ? Math.Min(_frame.ContentSize, ring) : ring;
         _capacity = (int)capacity;
         _restarts = !_frame.HasContentSize || capacity < _frame.ContentSize;
