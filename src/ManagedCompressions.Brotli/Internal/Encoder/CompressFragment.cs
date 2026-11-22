@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -162,54 +163,112 @@ internal static unsafe class CompressFragment
     private static nuint BuildAndStoreLiteralPrefixCode(OnePassArena s, byte* input, int inputSize, byte* depths, ushort* bits, ref int storageIx, byte* storage)
     {
         uint* histogram = s.Histogram;
-        new Span<uint>(histogram, 256).Clear();
         nuint histogramTotal;
         if (inputSize < (1 << 15))
         {
-            for (int i = 0; i < inputSize; ++i)
+            // Every byte, in four histograms interleaved: one would make each repeated byte wait for the
+            // increment before. The first 11 samples weigh three times, for the balance LZ77 brings.
+            uint* parts = stackalloc uint[4 * 256];
+            new Span<uint>(parts, 4 * 256).Clear();
+            int i = 0;
+            for (; i + 4 <= inputSize; i += 4)
             {
-                ++histogram[input[i]];
+                ++parts[input[i]];
+                ++parts[256 + input[i + 1]];
+                ++parts[512 + input[i + 2]];
+                ++parts[768 + input[i + 3]];
             }
 
-            histogramTotal = (nuint)inputSize;
-            for (int i = 0; i < 256; ++i)
+            for (; i < inputSize; ++i)
             {
-                // The first 11 samples weigh three times, for the balance LZ77 brings.
-                uint adjust = 2 * Math.Min(histogram[i], 11u);
-                histogram[i] += adjust;
-                histogramTotal += adjust;
+                ++parts[input[i]];
             }
+
+            histogramTotal = (nuint)inputSize + MergeAndAdjust(parts, 4, histogram, 0);
         }
         else
         {
+            // A sample every 29 bytes, one more for each byte, as a sample says nothing of the bytes it misses.
             const int SampleRate = 29;
+            new Span<uint>(histogram, 256).Clear();
             for (int i = 0; i < inputSize; i += SampleRate)
             {
                 ++histogram[input[i]];
             }
 
-            histogramTotal = (nuint)((inputSize + SampleRate - 1) / SampleRate);
-            for (int i = 0; i < 256; ++i)
-            {
-                // One more for each byte, as a sample says nothing of the bytes it misses.
-                uint adjust = 1 + (2 * Math.Min(histogram[i], 11u));
-                histogram[i] += adjust;
-                histogramTotal += adjust;
-            }
+            histogramTotal = (nuint)((inputSize + SampleRate - 1) / SampleRate) + MergeAndAdjust(histogram, 1, histogram, 1);
         }
 
         BitStream.BuildAndStoreHuffmanTreeFast(s.Tree, histogram, histogramTotal, 8, depths, bits, ref storageIx, storage);
         BitWriter.CombineCodes(depths, bits, s.LitCodes, 256);
+        // The bits the histogram takes: brotli skips the empty counts, which add nothing. Each product takes
+        // 19 bits at most, so 64 of them sum in 32.
         nuint literalRatio = 0;
-        for (int i = 0; i < 256; ++i)
+        int at = 0;
+        if (Vector128.IsHardwareAccelerated)
         {
-            if (histogram[i] != 0)
+            Vector128<uint> sum = Vector128<uint>.Zero;
+            for (; at < 256; at += 16)
             {
-                literalRatio += histogram[i] * (nuint)depths[i];
+                (Vector128<ushort> low, Vector128<ushort> high) = Vector128.Widen(Vector128.Load(depths + at));
+                (Vector128<uint> d0, Vector128<uint> d1) = Vector128.Widen(low);
+                (Vector128<uint> d2, Vector128<uint> d3) = Vector128.Widen(high);
+                sum += (Vector128.Load(histogram + at) * d0) + (Vector128.Load(histogram + at + 4) * d1) + (Vector128.Load(histogram + at + 8) * d2) + (Vector128.Load(histogram + at + 12) * d3);
             }
+
+            literalRatio = Vector128.Sum(sum);
+        }
+
+        for (; at < 256; ++at)
+        {
+            literalRatio += histogram[at] * (nuint)depths[at];
         }
 
         return literalRatio * 125 / histogramTotal;
+    }
+
+    /// <summary>
+    /// The <paramref name="numParts"/> histograms of <paramref name="parts"/> summed into
+    /// <paramref name="histogram"/> (which may be the first), each count raised by <paramref name="extra"/>
+    /// and by twice its first 11: returns what that adds to the total, as brotli's loop does.
+    /// </summary>
+    private static nuint MergeAndAdjust(uint* parts, int numParts, uint* histogram, uint extra)
+    {
+        nuint added = 0;
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated)
+        {
+            Vector128<uint> sum = Vector128<uint>.Zero;
+            for (; i < 256; i += 4)
+            {
+                Vector128<uint> count = Vector128.Load(parts + i);
+                for (int p = 1; p < numParts; ++p)
+                {
+                    count += Vector128.Load(parts + (p * 256) + i);
+                }
+
+                Vector128<uint> adjust = Vector128.Create(extra) + (Vector128.Min(count, Vector128.Create(11u)) << 1);
+                (count + adjust).Store(histogram + i);
+                sum += adjust;
+            }
+
+            added = Vector128.Sum(sum);
+        }
+
+        for (; i < 256; ++i)
+        {
+            uint count = parts[i];
+            for (int p = 1; p < numParts; ++p)
+            {
+                count += parts[(p * 256) + i];
+            }
+
+            uint adjust = extra + (2 * Math.Min(count, 11u));
+            histogram[i] = count + adjust;
+            added += adjust;
+        }
+
+        return added;
     }
 
     /// <summary>

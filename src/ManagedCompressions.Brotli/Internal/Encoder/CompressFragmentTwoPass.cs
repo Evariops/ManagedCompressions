@@ -413,13 +413,32 @@ internal static unsafe class CompressFragmentTwoPass
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void StoreCommands(TwoPassArena s, byte* literals, int numLiterals, uint* commands, int numCommands, ref int storageIx, byte* storage)
     {
-        new Span<uint>(s.LitHisto, 256).Clear();
         new Span<byte>(s.CmdDepth, 128).Clear();
         new Span<ushort>(s.CmdBits, 128).Clear();
         new Span<uint>(s.CmdHisto, 128).Clear();
-        for (int i = 0; i < numLiterals; ++i)
+
+        // The literals counted in four histograms interleaved, so that repeated bytes do not wait on one
+        // another's increments, then summed.
+        uint* parts = stackalloc uint[4 * 256];
+        new Span<uint>(parts, 4 * 256).Clear();
+        int at = 0;
+        for (; at + 4 <= numLiterals; at += 4)
         {
-            ++s.LitHisto[literals[i]];
+            ++parts[literals[at]];
+            ++parts[256 + literals[at + 1]];
+            ++parts[512 + literals[at + 2]];
+            ++parts[768 + literals[at + 3]];
+        }
+
+        for (; at < numLiterals; ++at)
+        {
+            ++parts[literals[at]];
+        }
+
+        uint* litHisto = s.LitHisto;
+        for (int i = 0; i < 256; ++i)
+        {
+            litHisto[i] = parts[i] + parts[256 + i] + parts[512 + i] + parts[768 + i];
         }
 
         BitStream.BuildAndStoreHuffmanTreeFast(s.TmpTree, s.LitHisto, (nuint)numLiterals, 8, s.LitDepth, s.LitBits, ref storageIx, storage);

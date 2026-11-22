@@ -393,6 +393,7 @@ internal static unsafe partial class BitStream
         // A complex code, its depths RLE-coded with the static code length code.
         byte previousValue = 8;
         StoreStaticCodeLengthCode(ref storageIx, storage);
+        var sink = new BitSink(storageIx, storage);
         ref byte codeLengthDepth = ref MemoryMarshal.GetReference(EncoderTables.CodeLengthDepth);
         ref uint codeLengthBits = ref MemoryMarshal.GetReference(EncoderTables.CodeLengthBits);
         ref uint zeroRepsDepth = ref MemoryMarshal.GetReference(EncoderTables.ZeroRepsDepth);
@@ -411,13 +412,13 @@ internal static unsafe partial class BitStream
             i += reps;
             if (value == 0)
             {
-                BitWriter.Write((int)Unsafe.Add(ref zeroRepsDepth, reps), Unsafe.Add(ref zeroRepsBits, reps), ref storageIx, storage);
+                sink.Write((int)Unsafe.Add(ref zeroRepsDepth, reps), Unsafe.Add(ref zeroRepsBits, reps));
                 continue;
             }
 
             if (previousValue != value)
             {
-                BitWriter.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value), ref storageIx, storage);
+                sink.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value));
                 --reps;
             }
 
@@ -426,17 +427,19 @@ internal static unsafe partial class BitStream
                 while (reps != 0)
                 {
                     reps--;
-                    BitWriter.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value), ref storageIx, storage);
+                    sink.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value));
                 }
             }
             else
             {
                 reps -= 3;
-                BitWriter.Write((int)Unsafe.Add(ref nonZeroRepsDepth, reps), Unsafe.Add(ref nonZeroRepsBits, reps), ref storageIx, storage);
+                sink.Write((int)Unsafe.Add(ref nonZeroRepsDepth, reps), Unsafe.Add(ref nonZeroRepsBits, reps));
             }
 
             previousValue = value;
         }
+
+        storageIx = sink.Finish(storage);
     }
 
     /// <summary>brotli's <c>StoreStaticCodeLengthCode</c>.</summary>
