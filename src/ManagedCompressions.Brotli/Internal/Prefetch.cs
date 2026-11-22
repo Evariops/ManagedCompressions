@@ -27,7 +27,7 @@ internal static unsafe class Prefetch
     /// <summary>Hints that the cache line of <c>array[index]</c> will be read soon.</summary>
     /// <exception cref="System.IndexOutOfRangeException"><paramref name="index"/> is past the array.</exception>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Element<T>(T[] array, nuint index)
+    public static void Element<T>(T[] array, int index)
         where T : unmanaged
     {
         if (Sse.IsSupported)

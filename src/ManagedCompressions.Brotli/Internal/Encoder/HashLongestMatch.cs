@@ -84,12 +84,12 @@ internal struct HashLongestMatch : IHasher
         uint key = HashBytes(data, ix & mask, _hashShift);
         nuint bucket = (nuint)key << _blockBits;
         nuint top = (nuint)(_num[(int)key] - 1);
-        Internal.Prefetch.Element(_buckets, bucket + (top & _blockMask));
-        Internal.Prefetch.Element(_buckets, bucket + ((top - 16) & _blockMask));
+        Internal.Prefetch.Element(_buckets, (int)(bucket + (top & _blockMask)));
+        Internal.Prefetch.Element(_buckets, (int)(bucket + ((top - 16) & _blockMask)));
         if (_blockBits >= 6)
         {
-            Internal.Prefetch.Element(_buckets, bucket + ((top - 32) & _blockMask));
-            Internal.Prefetch.Element(_buckets, bucket + ((top - 48) & _blockMask));
+            Internal.Prefetch.Element(_buckets, (int)(bucket + ((top - 32) & _blockMask)));
+            Internal.Prefetch.Element(_buckets, (int)(bucket + ((top - 48) & _blockMask)));
         }
     }
 
@@ -115,6 +115,7 @@ internal struct HashLongestMatch : IHasher
 
     // The best match is kept in locals and stored in the result once: a store through the result's pointer
     // could alias this hasher's fields and the data, so the JIT would reload them for every candidate.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public void FindLongestMatch(ReadOnlySpan<byte> data, nuint ringBufferMask, ReadOnlySpan<int> distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
         Span<ushort> num = _num;
@@ -129,11 +130,15 @@ internal struct HashLongestMatch : IHasher
         // The next position is nearly always the next one searched, after a literal or to weigh a lazy match.
         Prefetch(data, ringBufferMask, curIx + 1);
 
+        // The byte past the best match, which a longer candidate must match first: it changes only with the best,
+        // and is 256, which no byte equals, while the best reaches the end of the ring buffer.
+        int curAtBest = curIxMasked + bestLen > ringBufferMask ? 256 : cur[(int)bestLen];
+
         // The distance cache first.
-        nuint numLastDistancesToCheck = (nuint)_numLastDistancesToCheck;
-        for (nuint i = 0; i < numLastDistancesToCheck; ++i)
+        ReadOnlySpan<int> lastDistances = distanceCache.Slice(0, _numLastDistancesToCheck);
+        for (int i = 0; i < lastDistances.Length; ++i)
         {
-            nuint backward = (nuint)(nint)distanceCache[(int)i];
+            nuint backward = (nuint)(nint)lastDistances[i];
             nuint prevIx = curIx - backward;
             if (prevIx >= curIx)
             {
@@ -146,7 +151,7 @@ internal struct HashLongestMatch : IHasher
             }
 
             prevIx &= ringBufferMask;
-            if (curIxMasked + bestLen > ringBufferMask || prevIx + bestLen > ringBufferMask || cur[(int)bestLen] != data[(int)(prevIx + bestLen)])
+            if (prevIx + bestLen > ringBufferMask || curAtBest != data[(int)(prevIx + bestLen)])
             {
                 continue;
             }
@@ -159,13 +164,14 @@ internal struct HashLongestMatch : IHasher
                 {
                     if (i != 0)
                     {
-                        score -= HasherCommon.BackwardReferencePenaltyUsingLastDistance(i);
+                        score -= HasherCommon.BackwardReferencePenaltyUsingLastDistance((nuint)i);
                     }
 
                     if (bestScore < score)
                     {
                         bestScore = score;
                         bestLen = len;
+                        curAtBest = curIxMasked + bestLen > ringBufferMask ? 256 : cur[(int)bestLen];
                         foundLen = len;
                         foundDistance = backward;
                     }
@@ -188,7 +194,7 @@ internal struct HashLongestMatch : IHasher
                 }
 
                 prevIx &= ringBufferMask;
-                if (curIxMasked + bestLen > ringBufferMask || prevIx + bestLen > ringBufferMask || cur[(int)bestLen] != data[(int)(prevIx + bestLen)])
+                if (prevIx + bestLen > ringBufferMask || curAtBest != data[(int)(prevIx + bestLen)])
                 {
                     continue;
                 }
@@ -201,6 +207,7 @@ internal struct HashLongestMatch : IHasher
                     {
                         bestScore = score;
                         bestLen = len;
+                        curAtBest = curIxMasked + bestLen > ringBufferMask ? 256 : cur[(int)bestLen];
                         foundLen = len;
                         foundDistance = backward;
                     }
@@ -305,12 +312,12 @@ internal struct HashLongestMatch64 : IHasher
         nuint key = HashBytes(data, ix & mask, _hashMul);
         nuint bucket = (nuint)key << _blockBits;
         nuint top = (nuint)(_num[(int)key] - 1);
-        Internal.Prefetch.Element(_buckets, bucket + (top & _blockMask));
-        Internal.Prefetch.Element(_buckets, bucket + ((top - 16) & _blockMask));
+        Internal.Prefetch.Element(_buckets, (int)(bucket + (top & _blockMask)));
+        Internal.Prefetch.Element(_buckets, (int)(bucket + ((top - 16) & _blockMask)));
         if (_blockBits >= 6)
         {
-            Internal.Prefetch.Element(_buckets, bucket + ((top - 32) & _blockMask));
-            Internal.Prefetch.Element(_buckets, bucket + ((top - 48) & _blockMask));
+            Internal.Prefetch.Element(_buckets, (int)(bucket + ((top - 32) & _blockMask)));
+            Internal.Prefetch.Element(_buckets, (int)(bucket + ((top - 48) & _blockMask)));
         }
     }
 
@@ -335,6 +342,7 @@ internal struct HashLongestMatch64 : IHasher
     public void PrepareDistanceCache(Span<int> distanceCache) => HasherCommon.PrepareDistanceCache(distanceCache, _numLastDistancesToCheck);
 
     // As H5's: the best match in locals, stored in the result once.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public void FindLongestMatch(ReadOnlySpan<byte> data, nuint ringBufferMask, ReadOnlySpan<int> distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
         Span<ushort> num = _num;
@@ -347,11 +355,12 @@ internal struct HashLongestMatch64 : IHasher
         nuint foundLen = 0;
         nuint foundDistance = result.Distance;
         Prefetch(data, ringBufferMask, curIx + 1);
+        int curAtBest = curIxMasked + bestLen > ringBufferMask ? 256 : cur[(int)bestLen];
 
-        nuint numLastDistancesToCheck = (nuint)_numLastDistancesToCheck;
-        for (nuint i = 0; i < numLastDistancesToCheck; ++i)
+        ReadOnlySpan<int> lastDistances = distanceCache.Slice(0, _numLastDistancesToCheck);
+        for (int i = 0; i < lastDistances.Length; ++i)
         {
-            nuint backward = (nuint)(nint)distanceCache[(int)i];
+            nuint backward = (nuint)(nint)lastDistances[i];
             nuint prevIx = curIx - backward;
             if (prevIx >= curIx)
             {
@@ -364,7 +373,7 @@ internal struct HashLongestMatch64 : IHasher
             }
 
             prevIx &= ringBufferMask;
-            if (curIxMasked + bestLen > ringBufferMask || prevIx + bestLen > ringBufferMask || cur[(int)bestLen] != data[(int)(prevIx + bestLen)])
+            if (prevIx + bestLen > ringBufferMask || curAtBest != data[(int)(prevIx + bestLen)])
             {
                 continue;
             }
@@ -377,13 +386,14 @@ internal struct HashLongestMatch64 : IHasher
                 {
                     if (i != 0)
                     {
-                        score -= HasherCommon.BackwardReferencePenaltyUsingLastDistance(i);
+                        score -= HasherCommon.BackwardReferencePenaltyUsingLastDistance((nuint)i);
                     }
 
                     if (bestScore < score)
                     {
                         bestScore = score;
                         bestLen = len;
+                        curAtBest = curIxMasked + bestLen > ringBufferMask ? 256 : cur[(int)bestLen];
                         foundLen = len;
                         foundDistance = backward;
                     }
@@ -408,7 +418,7 @@ internal struct HashLongestMatch64 : IHasher
                 }
 
                 prevIx &= ringBufferMask;
-                if (curIxMasked + bestLen > ringBufferMask || prevIx + bestLen > ringBufferMask || cur[(int)bestLen] != data[(int)(prevIx + bestLen)])
+                if (prevIx + bestLen > ringBufferMask || curAtBest != data[(int)(prevIx + bestLen)])
                 {
                     continue;
                 }
@@ -424,6 +434,7 @@ internal struct HashLongestMatch64 : IHasher
                 {
                     bestScore = score;
                     bestLen = len;
+                    curAtBest = curIxMasked + bestLen > ringBufferMask ? 256 : cur[(int)bestLen];
                     foundLen = len;
                     foundDistance = backward;
                 }

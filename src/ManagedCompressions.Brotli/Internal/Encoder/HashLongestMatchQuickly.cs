@@ -154,10 +154,10 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
         if (Internal.Prefetch.IsSupported && TParams.BucketBits >= 17 && (ix & mask) <= (nuint)data.Length - 8)
         {
             uint key = HashBytes(data, ix & mask);
-            Internal.Prefetch.Element(_buckets, key);
+            Internal.Prefetch.Element(_buckets, (int)key);
             if (BucketSweep > 1)
             {
-                Internal.Prefetch.Element(_buckets, (key + ((uint)(BucketSweep - 1) << 3)) & BucketMask);
+                Internal.Prefetch.Element(_buckets, (int)((key + ((uint)(BucketSweep - 1) << 3)) & BucketMask));
             }
         }
     }
