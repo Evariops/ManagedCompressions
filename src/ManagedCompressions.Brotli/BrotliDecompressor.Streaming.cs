@@ -192,7 +192,9 @@ public sealed unsafe partial class BrotliDecompressor
                 return StreamResult.NeedInput;
             }
 
+            // A metadata block can be the last one, as an empty one can.
             _bitPosition = ReaderPosition(input);
+            _phase = last ? StreamPhase.Padding : StreamPhase.Header;
             return StreamResult.Progress;
         }
 
