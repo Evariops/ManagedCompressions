@@ -48,9 +48,6 @@ public sealed partial class BrotliDecompressor
     private const int AtCommandBegin = 0;
     private const int AtLiterals = 1;
 
-    /// <summary>The size of a context mode's lookup table in <see cref="Context.Lookup"/>.</summary>
-    private const int ContextLookupSize = 512;
-
     private interface IMode
     {
     }
@@ -93,7 +90,6 @@ public sealed partial class BrotliDecompressor
     private int _copyLength;
     private int _distanceCode;
     private int _distanceContext;
-    private int _distanceTreeIndex;
 
     /// <summary>The current insert-and-copy code: its offset in the command group's tables.</summary>
     private int _commandTree;
@@ -110,7 +106,14 @@ public sealed partial class BrotliDecompressor
     private int _distContextMapSlice;
 
     /// <summary>The code of each of the 64 literal contexts of the current block type: offsets in the literal group's tables.</summary>
-    private readonly int[] _contextTrees = new int[1 << Prefix.LiteralContextBits];
+    private ContextTreeArray _contextTrees;
+
+    /// <summary>The 64 codes of <see cref="_contextTrees"/>, inline in the decoder: the loop reaches them from <c>this</c>, without a register of their own.</summary>
+    [InlineArray(1 << Prefix.LiteralContextBits)]
+    private struct ContextTreeArray
+    {
+        private int _element;
+    }
 
     private BrotliError DecodeCompressedMetaBlock(ReadOnlySpan<byte> src, Span<byte> dst)
     {
@@ -163,24 +166,17 @@ public sealed partial class BrotliDecompressor
         int copyLength = _copyLength;
         int distanceCode = _distanceCode;
         int distanceContext = _distanceContext;
-        int distanceTreeIndex = _distanceTreeIndex;
-        ReadOnlySpan<uint> commandTables = _commandGroup.Codes;
+        uint[] commandTables = _commandGroup.Codes;
         int commandTree = _commandTree;
-        ReadOnlySpan<byte> distContextMap = _distContextMap;
         int distContextMapSlice = _distContextMapSlice;
-        ReadOnlySpan<uint> distanceTables = _distanceGroup.Codes;
-        ReadOnlySpan<int> distanceTrees = _distanceGroup.Trees;
-        ReadOnlySpan<byte> distExtraBits = _distExtraBits;
-        ReadOnlySpan<int> distOffset = _distOffset;
-        int maxBackwardDistance = _maxBackwardDistance;
-        int postfixBits = _distancePostfixBits;
 
         // The literals.
         bool trivial = _trivialLiteralContext;
-        ReadOnlySpan<uint> literalTables = _literalGroup.Codes;
+        uint[] literalTables = _literalGroup.Codes;
         int literalTree = _literalTree;
-        ReadOnlySpan<byte> lookup = Context.Lookup.Slice(_contextLookup, ContextLookupSize);
-        ReadOnlySpan<int> contextTrees = _contextTrees.AsSpan(0, 1 << Prefix.LiteralContextBits);
+        // The context lookup of the block type's mode: an offset into the table of the four modes, a constant.
+        ReadOnlySpan<byte> contextLookup = Context.Lookup;
+        int lut = _contextLookup;
 
         ReadOnlySpan<ulong> commandCodes = Prefix.CommandCodes;
         ReadOnlySpan<byte> sizeBits = StaticDictionary.SizeBitsByLength;
@@ -237,7 +233,6 @@ public sealed partial class BrotliDecompressor
             int copyExtraBits = (int)((code >> 8) & 0xFF);
             distanceCode = (sbyte)(byte)(code >> 16);
             distanceContext = (int)((code >> 24) & 0xFF);
-            distanceTreeIndex = distContextMap[distContextMapSlice + distanceContext];
             insert = (int)((code >> 32) & 0xFFFF);
             copyLength = (int)(code >> 48);
             if (count < insertExtraBits + copyExtraBits)
@@ -348,11 +343,11 @@ public sealed partial class BrotliDecompressor
                         }
 
                         Span<byte> three = dst.Slice(op, 3);
-                        p2 = (byte)DecodeSymbol(literalTables, contextTrees[(lookup[p1] | lookup[256 + p2]) & 63], ref bits, ref count, TRoot.Bits);
+                        p2 = (byte)DecodeSymbol(literalTables, _contextTrees[(contextLookup[(lut + p1) & 0x7FF] | contextLookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
                         three[0] = p2;
-                        p1 = (byte)DecodeSymbol(literalTables, contextTrees[(lookup[p2] | lookup[256 + p1]) & 63], ref bits, ref count, TRoot.Bits);
+                        p1 = (byte)DecodeSymbol(literalTables, _contextTrees[(contextLookup[(lut + p2) & 0x7FF] | contextLookup[(lut + 256 + p1) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
                         three[1] = p1;
-                        p2 = (byte)DecodeSymbol(literalTables, contextTrees[(lookup[p1] | lookup[256 + p2]) & 63], ref bits, ref count, TRoot.Bits);
+                        p2 = (byte)DecodeSymbol(literalTables, _contextTrees[(contextLookup[(lut + p1) & 0x7FF] | contextLookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
                         three[2] = p2;
                         op += 3;
                         (p1, p2) = (p2, p1);
@@ -366,7 +361,7 @@ public sealed partial class BrotliDecompressor
                         Refill<TMode>(src, ref bits, ref count, ref next, end);
                     }
 
-                    int tree = contextTrees[(lookup[p1] | lookup[256 + p2]) & 63];
+                    int tree = _contextTrees[(contextLookup[(lut + p1) & 0x7FF] | contextLookup[(lut + 256 + p2) & 0x7FF]) & 63];
                     p2 = p1;
                     p1 = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
                     dst[op++] = p1;
@@ -415,7 +410,6 @@ public sealed partial class BrotliDecompressor
 
                 blockLength2 = _s.BlockLength[2];
                 distContextMapSlice = _s.BlockTypeRb[5] << Prefix.DistanceContextBits;
-                distanceTreeIndex = distContextMap[distContextMapSlice + distanceContext];
             }
 
             if (count < Huffman.MaxCodeLength + Prefix.MaxDistanceBits)
@@ -423,7 +417,7 @@ public sealed partial class BrotliDecompressor
                 Refill<TMode>(src, ref bits, ref count, ref next, end);
             }
 
-            int code = DecodeSymbol(distanceTables, distanceTrees[distanceTreeIndex], ref bits, ref count, DistanceRootBits);
+            int code = DecodeSymbol(_distanceGroup.Codes, _distanceGroup.Trees[_distContextMap[distContextMapSlice + distanceContext]], ref bits, ref count, DistanceRootBits);
             blockLength2--;
             distanceContext = 0;
             if ((code & ~0xF) == 0)
@@ -432,8 +426,8 @@ public sealed partial class BrotliDecompressor
             }
             else
             {
-                int extraBits = distExtraBits[code];
-                distance = distOffset[code] + (int)((uint)(bits & ((1UL << extraBits) - 1)) << postfixBits);
+                int extraBits = _distExtraBits[code];
+                distance = _distOffset[code] + (int)((uint)(bits & ((1UL << extraBits) - 1)) << _distancePostfixBits);
                 bits >>= extraBits;
                 count -= extraBits;
             }
@@ -445,6 +439,7 @@ public sealed partial class BrotliDecompressor
         }
 
         {
+            int maxBackwardDistance = _maxBackwardDistance;
             int maxDistance = op < maxBackwardDistance ? op : maxBackwardDistance;
             if (distance > maxDistance)
             {
@@ -532,7 +527,7 @@ public sealed partial class BrotliDecompressor
         PrepareLiteralDecoding();
         trivial = _trivialLiteralContext;
         literalTree = _literalTree;
-        lookup = Context.Lookup.Slice(_contextLookup, ContextLookupSize);
+        lut = _contextLookup;
         if (careful && Overrun(next, end, count))
         {
             goto Truncated;
@@ -571,7 +566,6 @@ public sealed partial class BrotliDecompressor
         _copyLength = copyLength;
         _distanceCode = distanceCode;
         _distanceContext = distanceContext;
-        _distanceTreeIndex = distanceTreeIndex;
         _commandTree = commandTree;
         _distContextMapSlice = distContextMapSlice;
         return result;
@@ -621,7 +615,7 @@ public sealed partial class BrotliDecompressor
     /// <paramref name="tables"/>; at least 15 bits must be there.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int DecodeSymbol(ReadOnlySpan<uint> tables, int tree, ref ulong bits, ref int count, int rootBits = Huffman.RootBits)
+    private static int DecodeSymbol(uint[] tables, int tree, ref ulong bits, ref int count, int rootBits = Huffman.RootBits)
     {
         uint entry = tables[tree + (int)(bits & ((1UL << rootBits) - 1))];
         if ((entry & 0xFF) > (uint)rootBits)
