@@ -161,8 +161,11 @@ byte[] content = new byte[contentSize];              // a stream does not record
 OperationStatus status = decompressor.Decompress(stream.AsSpan(0, size), content, out int consumed, out int written);
 ```
 
-`decompressor.LastError` names the check that refused a stream, as brotli does. The names do not clash
-with `System.IO.Compression`'s `BrotliEncoder`, `BrotliDecoder` and `BrotliStream`.
+`decompressor.LastError` names the check that refused a stream, as brotli does. `BrotliCompressionStream`
+is a managed `BrotliStream`, which writes its bytes and reads streams of any size, and `BrotliStreamEncoder`
+and `BrotliStreamDecoder` work piece by piece, as `BrotliEncoder` and `BrotliDecoder` do
+([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md#streams)).
+The names do not clash with `System.IO.Compression`'s `BrotliEncoder`, `BrotliDecoder` and `BrotliStream`.
 
 ## Performance, level by level
 
@@ -296,13 +299,13 @@ x64 alike.
 | Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level | the quality, the window (10 to 24 bits), the mode (generic, text, font) |
 | Checksums | XXH64, written on request, always verified | not in the block format | not in the format |
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no | – |
-| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames; `ZstdStream`, both ways | no | no: a stream is compressed or decoded in one call, from and into memory |
+| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames; `ZstdStream`, both ways | no | `BrotliCompressionStream`, both ways; compression (`BrotliStreamEncoder`), brotli's streamed bytes; decompression (`BrotliStreamDecoder`), any size, its memory bounded by the window and a meta-block |
 | Validation | accepts and refuses what libzstd does | refuses any literal or match past either end | accepts and refuses what brotli 1.1.1 does, with its error codes; refuses the large window |
 | Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same | the same |
 
-Not supported: LZ4 and Brotli streaming (a block or a stream is compressed in one call, from and into
-memory), Brotli's large window and shared dictionaries, one-shot inputs over 2 GiB (`ZstdEncoder`
-streams them), the LZ4 frame format, libzstd's finer parameters (strategy, hash and chain logs, target
+Not supported: LZ4 streaming (a block is compressed in one call, from and into memory), Brotli's large
+window and shared dictionaries, one-shot inputs over 2 GiB (`ZstdEncoder` and `BrotliStreamEncoder`
+stream them), the LZ4 frame format, libzstd's finer parameters (strategy, hash and chain logs, target
 block size), and big-endian processors (IBM Z), where the constructors throw
 `PlatformNotSupportedException`. WebAssembly has not been tried.
 
@@ -383,7 +386,7 @@ then pushes the packages to nuget.org.
 |:--|:--|
 | `src/ManagedCompressions.Zstd` | Zstandard: decompressor, compressor, dictionaries, parallel compression |
 | `src/ManagedCompressions.Lz4` | LZ4 block format: `Lz4Block` (decoder, default compressor), `Lz4Compressor` (every level) |
-| `src/ManagedCompressions.Brotli` | Brotli: `BrotliCompressor` (every quality), `BrotliDecompressor` |
+| `src/ManagedCompressions.Brotli` | Brotli: `BrotliCompressor` (every quality), `BrotliDecompressor`, streaming (`BrotliCompressionStream`, `BrotliStreamEncoder`, `BrotliStreamDecoder`) |
 | `tests/` | differential tests against the native libraries, golden files, fuzzing |
 | `bench/ManagedCompressions.Bench` | level-by-level comparison with NativeCompressions |
 | `bench/ManagedCompressions.Benchmarks` | BenchmarkDotNet on silesia.tar, JIT and Native AOT (`--check` verifies every case once) |

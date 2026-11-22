@@ -94,6 +94,41 @@ true when the stream decodes.
 The names do not clash with `System.IO.Compression`'s `BrotliEncoder`, `BrotliDecoder` and
 `BrotliStream`: both namespaces can be imported at once.
 
+### Streams
+
+`BrotliCompressionStream` is a managed `BrotliStream`: it compresses what is written to it, or
+decompresses what it reads, synchronously or asynchronously, with no size limit.
+
+```csharp
+using System.IO.Compression;
+using ManagedCompressions.Brotli;
+
+using (var output = new BrotliCompressionStream(file, CompressionLevel.Optimal))   // or a quality, a window, a mode
+{
+    input.CopyTo(output);   // the bytes BrotliStream writes for the same writes and flushes
+}
+
+using var reader = new BrotliCompressionStream(compressedFile, CompressionMode.Decompress);
+reader.CopyTo(destination);   // InvalidDataException for an invalid or truncated stream
+```
+
+Underneath, `BrotliStreamEncoder` and `BrotliStreamDecoder` work piece by piece, as `System.IO.Compression`'s
+`BrotliEncoder` and `BrotliDecoder` do:
+
+```csharp
+var encoder = new BrotliStreamEncoder(quality: 4);
+OperationStatus status = encoder.Compress(piece, destination, out int consumed, out int written, isFinalBlock: false);
+status = encoder.Flush(destination, out written);   // everything so far, decodable, ending on a byte boundary
+
+var decoder = new BrotliStreamDecoder();
+status = decoder.Decompress(nextBytes, destination, out consumed, out written);   // NeedMoreData: give it more
+```
+
+`BrotliStreamEncoder` takes the calls .NET's `BrotliEncoder` takes and answers as it does: the same status,
+the same bytes consumed and written, the same stream. `BrotliStreamDecoder` keeps the stream's window, the
+last 1 KiB to 16 MiB of content, and a meta-block, and consumes nothing past the stream's end; its buffers
+come from `ArrayPool<byte>.Shared` and go back when it is disposed.
+
 ## What it supports
 
 | | |
@@ -102,7 +137,7 @@ The names do not clash with `System.IO.Compression`'s `BrotliEncoder`, `BrotliDe
 | Compression | qualities 0 to 11, windows 10 to 24, the generic, text and font modes: brotli 1.1.1's bytes at each |
 | Large window | not written, and refused, as brotli refuses it by default (`BROTLI_DECODER_PARAM_LARGE_WINDOW`) |
 | Shared dictionaries | no (RFC 9841) |
-| Streaming | no: a stream is compressed or decoded in one call, from and into memory |
+| Streaming | `BrotliCompressionStream`, both ways; `BrotliStreamEncoder`, brotli's streamed bytes, flushes included; `BrotliStreamDecoder`, any size, its memory bounded by the window and a meta-block |
 | Validation | accepts and refuses what brotli 1.1.1 does, with its error codes |
 | Processors | little-endian: x64 and arm64; big-endian refused |
 
@@ -210,6 +245,25 @@ Native is `BrotliDecoder.TryDecompress`, managed `BrotliDecompressor.Decompress`
 
 Quality 4 is .NET's default (`BrotliEncoder.TryCompress`, `CompressionLevel.Optimal`), 11 the highest.
 `bench/ManagedCompressions.Bench --codecs brotli` measures it, against the brotli .NET ships.
+
+### Streams
+
+`BrotliCompressionStream` against .NET's `BrotliStream` on the Silesia sample, 2 MiB of it at quality 11:
+written in pieces of 64 KiB, the same bytes out, and read back 80 KiB at a time from a stream brotli
+wrote. The two alternate in one process; each speed is the best of several seconds of runs, the same in
+two processes.
+
+| Quality | Writing, native MB/s | managed MB/s | × | Reading, native MB/s | managed MB/s | × |
+|--:|--:|--:|--:|--:|--:|--:|
+| 1 | 455 | 468 | 1.03× | 561 | 740 | **1.32×** |
+| 4 | 113 | 118 | 1.05× | 666 | 887 | **1.33×** |
+| 5 | 60.3 | 62.2 | 1.03× | 703 | 858 | **1.22×** |
+| 9 | 17.3 | 16.3 | 0.94× | 720 | 890 | **1.24×** |
+| 11 | 1.10 | 1.30 | **1.19×** | 583 | 625 | 1.07× |
+
+A stream written piece by piece does not announce its size, so brotli picks the hashers of an input of
+unknown size, the same on both sides: at quality 4, not the one that makes one-shot compression 1.60×
+faster.
 
 ## Tests
 
