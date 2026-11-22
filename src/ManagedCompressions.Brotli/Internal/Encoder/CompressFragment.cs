@@ -744,9 +744,12 @@ internal static class CompressFragment
     {
         var sink = new BitSink(storageIxRef, storage);
         int nextEmit = nextEmitRef;
-        ReadOnlySpan<uint> cmdCodes = s.CmdCodes;
-        Span<uint> cmdHisto = s.CmdHisto;
-        ReadOnlySpan<uint> litCodes = s.LitCodes;
+
+        // The codes and the histogram at their constant lengths: no register for a length, and no check for a
+        // literal's index.
+        ReadOnlySpan<uint> cmdCodes = s.CmdCodes.AsSpan(0, 128);
+        Span<uint> cmdHisto = s.CmdHisto.AsSpan(0, 128);
+        ReadOnlySpan<uint> litCodes = s.LitCodes.AsSpan(0, 256);
         int lastDistance = -1;
         int result = -1;
         uint nextHash = Hash(data, ++ip, shift);
@@ -871,25 +874,33 @@ internal static class CompressFragment
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static ulong FindMatch(ReadOnlySpan<byte> data, int ip, int ipLimit, uint nextHash, Span<int> table, int shift, int lastDistance)
     {
+        // The 8 bytes at the next position, hashed for it and then compared as the current position's: one
+        // checked read a position, and one a candidate.
+        int hashShift = shift;
+        int distance = lastDistance;
+        ulong nextBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(ip, 8));
         uint skip = 32;
         int nextIp = ip;
         int candidate;
         do
         {
+            ulong bytes;
             do
             {
                 uint hash = nextHash;
                 uint bytesBetweenHashLookups = skip++ >> 5;
                 ip = nextIp;
+                bytes = nextBytes;
                 nextIp = ip + (int)bytesBetweenHashLookups;
                 if (nextIp > ipLimit)
                 {
                     return NoMatch;
                 }
 
-                nextHash = Hash(data, nextIp, shift);
-                candidate = ip - lastDistance;
-                if (IsMatch(data, ip, candidate) && candidate < ip)
+                nextBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(nextIp, 8));
+                nextHash = (uint)(((nextBytes << 24) * HashMul32) >> hashShift);
+                candidate = ip - distance;
+                if (Matches5(bytes, data, candidate) && candidate < ip)
                 {
                     table[(int)hash] = ip;
                     break;
@@ -898,11 +909,16 @@ internal static class CompressFragment
                 candidate = table[(int)hash];
                 table[(int)hash] = ip;
             }
-            while (!IsMatch(data, ip, candidate));
+            while (!Matches5(bytes, data, candidate));
         }
 
         // A candidate too far is no match: search on.
         while (ip - candidate > MaxDistance);
         return (ulong)(uint)ip | ((ulong)(uint)candidate << 32);
     }
+
+    /// <summary>Whether the 5 bytes at <paramref name="p"/> are the low 5 of <paramref name="bytes"/>: one read of 8, whose last 3 the shift drops.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool Matches5(ulong bytes, ReadOnlySpan<byte> data, int p) =>
+        ((BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(p, 8)) ^ bytes) << 24) == 0;
 }

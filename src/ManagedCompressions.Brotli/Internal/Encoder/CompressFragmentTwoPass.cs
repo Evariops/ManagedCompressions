@@ -66,6 +66,11 @@ internal static class CompressFragmentTwoPass
     private static uint HashBytesAtOffset(ulong v, int offset, int shift, int length) =>
         (uint)((((v >> (8 * offset)) << ((8 - length) * 8)) * HashMul32) >> shift);
 
+    /// <summary>Whether the <paramref name="length"/> bytes at <paramref name="p"/> are the low ones of <paramref name="bytes"/>: one read of 8, the rest shifted out.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool MatchesFirst(ulong bytes, ReadOnlySpan<byte> data, int p, int length) =>
+        ((BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(p, 8)) ^ bytes) << ((8 - length) * 8)) == 0;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool IsMatch(ReadOnlySpan<byte> data, int p1, int p2, int length)
     {
@@ -587,16 +592,21 @@ internal static class CompressFragmentTwoPass
     {
         int minMatch = TMinMatch.Value;
         uint nextHash = nextHashRef;
+        // The 8 bytes at the next position, hashed for it and then compared as the current position's: one
+        // checked read a position, and one a candidate.
+        ulong nextBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(ip, 8));
         uint skip = 32;
         int nextIp = ip;
         int candidate;
         do
         {
+            ulong bytes;
             do
             {
                 uint hash = nextHash;
                 uint bytesBetweenHashLookups = skip++ >> 5;
                 ip = nextIp;
+                bytes = nextBytes;
                 nextIp = ip + (int)bytesBetweenHashLookups;
                 if (nextIp > ipLimit)
                 {
@@ -605,9 +615,10 @@ internal static class CompressFragmentTwoPass
                     return -1;
                 }
 
-                nextHash = Hash(data, nextIp, shift, minMatch);
+                nextBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(nextIp, 8));
+                nextHash = HashBytesAtOffset(nextBytes, 0, shift, minMatch);
                 candidate = ip - lastDistance;
-                if (IsMatch(data, ip, candidate, minMatch) && candidate < ip)
+                if (MatchesFirst(bytes, data, candidate, minMatch) && candidate < ip)
                 {
                     table[(int)hash] = ip;
                     break;
@@ -616,7 +627,7 @@ internal static class CompressFragmentTwoPass
                 candidate = table[(int)hash];
                 table[(int)hash] = ip;
             }
-            while (!IsMatch(data, ip, candidate, minMatch));
+            while (!MatchesFirst(bytes, data, candidate, minMatch));
         }
 
         // A candidate too far is no match: search on.

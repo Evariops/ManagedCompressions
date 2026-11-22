@@ -86,6 +86,8 @@ internal static class BackwardReferences
         nuint minScore = HasherCommon.ScoreBase + 100;
         nuint maxDistanceParam = dist.MaxDistance;
 
+        // The cache at its constant length, brotli's 4 distances and their 12 neighbours: no check for its first.
+        distCache = distCache.Slice(0, 16);
         hasher.PrepareDistanceCache(distCache);
         HasherSearchResult sr;
         HasherSearchResult sr2;
