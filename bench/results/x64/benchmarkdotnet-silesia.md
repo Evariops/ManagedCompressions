@@ -30,6 +30,10 @@ The run was confined to the processor's second CCD, logical processors 16 to 31
 out at 0.99 to 1.02 times those of the previous run, made the same way, 1.00 on average; each ratio
 compares cases run on the same cores.
 
+LZ4's rows are those of its safe code, which indexes spans and has no unsafe context: a run of the LZ4
+classes alone (`--filter *Lz4*`), on the same cores, while builds and tests ran on the first CCD. The
+native times came out at 1.00 to 1.03 times those of the run above.
+
 ```
 BenchmarkDotNet v0.16.0-preview.2, Windows 11 (10.0.26300.9911)
 AMD Ryzen 9 7950X 4.49GHz, 1 CPU, 32 logical and 16 physical cores
@@ -82,23 +86,23 @@ would otherwise be measured instrumented.
 | ManagedCompressions.Zstd Decompress | 19 | 106.6 ms | 0.92 | 202.13MB | - |
 | .NET ZstandardDecoder Decompress | 19 | 119.1 ms | 1.03 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 1 | 212.57 ms | 1.00 | 96.21MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 1 | 222.21 ms | 1.05 | 96.21MB | - |
+| NativeCompressions LZ4 Compress(Block) | 1 | 212.35 ms | 1.00 | 96.21MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 1 | 279.63 ms | 1.32 | 96.21MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 9 | 3,803.11 ms | 1.00 | 74.28MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,020.10 ms | 1.06 | 74.28MB | - |
+| NativeCompressions LZ4 Compress(Block) | 9 | 3,826.80 ms | 1.00 | 74.28MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,476.24 ms | 1.17 | 74.28MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 1 | 33.83 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 1 | 33.08 ms | 0.98 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 1 | 33.93 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 1 | 44.78 ms | 1.32 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 9 | 35.39 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 9 | 34.98 ms | 0.99 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 9 | 35.56 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 9 | 47.19 ms | 1.33 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 12 | 11,511.44 ms | 1.00 | 73.68MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 12 | 12,583.16 ms | 1.09 | 73.68MB | - |
+| NativeCompressions LZ4 Compress(Block) | 12 | 11,799.66 ms | 1.00 | 73.68MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 12 | 13,426.25 ms | 1.14 | 73.68MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 12 | 34.40 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 12 | 34.36 ms | 1.00 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 12 | 34.58 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 12 | 46.48 ms | 1.34 | 202.13MB | - |
 | | | | | | |
 | NativeCompressions Zstandard Compress(Default) | – | 487.1 ms | 1.00 | 63.07MB | - |
 | BrotliEncoder TryCompress(Default) | – | 1,451.9 ms | 2.98 | 61.18MB | - |
@@ -146,23 +150,23 @@ The same code compiled ahead of time: no tiers, no profile.
 | ManagedCompressions.Zstd Decompress | 19 | 104.3 ms | 0.91 | 202.13MB | - |
 | .NET ZstandardDecoder Decompress | 19 | 123.6 ms | 1.07 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 1 | 211.54 ms | 1.00 | 96.21MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 1 | 220.63 ms | 1.04 | 96.21MB | - |
+| NativeCompressions LZ4 Compress(Block) | 1 | 212.73 ms | 1.00 | 96.21MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 1 | 282.95 ms | 1.33 | 96.21MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 9 | 3,802.15 ms | 1.00 | 74.28MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,165.83 ms | 1.10 | 74.28MB | - |
+| NativeCompressions LZ4 Compress(Block) | 9 | 3,807.50 ms | 1.00 | 74.28MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 9 | 4,690.92 ms | 1.23 | 74.28MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 1 | 33.89 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 1 | 33.77 ms | 1.00 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 1 | 33.99 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 1 | 45.10 ms | 1.33 | 202.13MB | - |
 | | | | | | |
 | NativeCompressions LZ4 Decompress(Block) | 9 | 35.61 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 9 | 35.78 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 9 | 47.36 ms | 1.33 | 202.13MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Compress(Block) | 12 | 11,526.30 ms | 1.00 | 73.68MB | - |
-| ManagedCompressions.Lz4 Compress(Block) | 12 | 12,891.24 ms | 1.12 | 73.68MB | - |
+| NativeCompressions LZ4 Compress(Block) | 12 | 11,496.80 ms | 1.00 | 73.68MB | - |
+| ManagedCompressions.Lz4 Compress(Block) | 12 | 14,580.65 ms | 1.27 | 73.68MB | - |
 | | | | | | |
-| NativeCompressions LZ4 Decompress(Block) | 12 | 34.42 ms | 1.00 | 202.13MB | - |
-| ManagedCompressions.Lz4 Decompress(Block) | 12 | 34.76 ms | 1.01 | 202.13MB | - |
+| NativeCompressions LZ4 Decompress(Block) | 12 | 34.60 ms | 1.00 | 202.13MB | - |
+| ManagedCompressions.Lz4 Decompress(Block) | 12 | 46.10 ms | 1.33 | 202.13MB | - |
 | | | | | | |
 | NativeCompressions Zstandard Compress(Default) | – | 486.5 ms | 1.00 | 63.07MB | - |
 | BrotliEncoder TryCompress(Default) | – | 1,481.9 ms | 3.05 | 61.18MB | - |
