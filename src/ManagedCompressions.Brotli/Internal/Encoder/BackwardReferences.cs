@@ -129,8 +129,14 @@ internal static unsafe class BackwardReferences
                     break;
                 }
 
-                // The next search is past the copy, after the copy's positions are stored.
-                hasher.Prefetch(ringBuffer, ringBufferMask, position + sr.Len);
+                // The next search is past the copy, after the copy's positions are stored: its bucket
+                // fetched ahead, when there is a next search. At the end of the input there is none,
+                // and the hash would read a byte past the ring buffer's slack, which only covers a
+                // hash at the last position.
+                if (position + sr.Len + (nuint)THasher.HashTypeLength < posEnd)
+                {
+                    hasher.Prefetch(ringBuffer, ringBufferMask, position + sr.Len);
+                }
                 applyRandomHeuristics = position + (2 * sr.Len) + randomHeuristicsWindowSize;
                 dictionaryStart = Math.Min(position, maxBackwardLimit);
                 {
