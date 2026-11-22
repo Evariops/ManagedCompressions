@@ -1,6 +1,6 @@
 name: Fuzz
 
-# Coverage-guided fuzzing of both libraries (fuzz/README.md): a short run on every pull request, from
+# Coverage-guided fuzzing of the libraries (fuzz/README.md): a short run on every pull request, from
 # the corpus the nightly runs grew, and a long one each night.
 on:
   pull_request:
