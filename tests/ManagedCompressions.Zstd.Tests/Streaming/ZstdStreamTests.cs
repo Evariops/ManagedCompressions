@@ -142,9 +142,7 @@ public sealed class ZstdStreamTests
     [Fact]
     public void ReadByte_allocates_nothing()
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         using var zstd = new ZstdStream(new MemoryStream(Compressed), CompressionMode.Decompress);
         int[] read = new int[10_000];
         read[0] = zstd.ReadByte();

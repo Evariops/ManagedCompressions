@@ -180,9 +180,7 @@ public sealed class CompressionAllocationTests
     [MemberData(nameof(Frames))]
     public void A_warm_compressor_allocates_nothing(string name)
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         CorpusCase @case = CorpusCase.Parse(name);
         byte[] data = @case.Data;
         var compressor = new ZstdCompressor(@case.Level) { AppendChecksum = @case.Checksum };
