@@ -56,6 +56,7 @@ internal static unsafe class BackwardReferences
     /// The commands of <paramref name="numBytes"/> bytes from <paramref name="position"/>, appended to
     /// <paramref name="commands"/>; the literals past the last copy are left in <paramref name="lastInsertLen"/>.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void Create<THasher>(
         ref THasher hasherRef,
         nuint numBytes,
