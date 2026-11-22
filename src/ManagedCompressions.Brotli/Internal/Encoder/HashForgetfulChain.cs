@@ -1,5 +1,4 @@
 using System;
-using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -52,7 +51,7 @@ internal struct H42 : IForgetfulChainParams
 /// Chains end at a delta past the window, which the 64 KiB windows of these hashers always reach: the
 /// nodes past it, and the banks' nodes never written, are not read.
 /// </remarks>
-internal struct HashForgetfulChain<TParams> : IHasher
+internal unsafe struct HashForgetfulChain<TParams> : IHasher
     where TParams : struct, IForgetfulChainParams
 {
     private const int BucketBits = 15;
@@ -60,13 +59,13 @@ internal struct HashForgetfulChain<TParams> : IHasher
 
     private static int BankSize => 1 << TParams.BankBits;
 
-    private uint[] _addr;
-    private ushort[] _head;
-    private byte[] _tinyHash;
+    private uint* _addr;
+    private ushort* _head;
+    private byte* _tinyHash;
 
     /// <summary>The banks: a delta and a next node, 16 bits each, a node.</summary>
-    private uint[] _banks;
-    private ushort[] _freeSlotIdx;
+    private uint* _banks;
+    private ushort* _freeSlotIdx;
     private nuint _maxHops;
     private nuint _dictNumLookups;
     private nuint _dictNumMatches;
@@ -77,27 +76,28 @@ internal struct HashForgetfulChain<TParams> : IHasher
 
     public void Initialize(HasherMemory memory, int quality)
     {
-        _addr = memory.Get<uint>(0, BucketSize);
-        _head = memory.Get<ushort>(3, BucketSize);
-        _tinyHash = memory.Get<byte>(4, 65536);
-        _banks = memory.Get<uint>(1, (nuint)(BankSize * TParams.NumBanks));
-        _freeSlotIdx = memory.Get<ushort>(2, (nuint)TParams.NumBanks);
+        byte* extra = memory.Get(0, (nuint)((sizeof(uint) * BucketSize) + (sizeof(ushort) * BucketSize) + 65536));
+        _addr = (uint*)extra;
+        _head = (ushort*)(_addr + BucketSize);
+        _tinyHash = (byte*)(_head + BucketSize);
+        _banks = (uint*)memory.Get(1, (nuint)(sizeof(uint) * BankSize * TParams.NumBanks));
+        _freeSlotIdx = (ushort*)memory.Get(2, (nuint)(sizeof(ushort) * TParams.NumBanks));
         _maxHops = (nuint)((quality > 6 ? 7u : 8u) << (quality - 4));
         _dictNumLookups = 0;
         _dictNumMatches = 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static nuint HashBytes(ReadOnlySpan<byte> data, nuint at) => (BinaryPrimitives.ReadUInt32LittleEndian(data.Slice((int)at, 4)) * HasherCommon.HashMul32) >> (32 - BucketBits);
+    private static nuint HashBytes(byte* data) => (Unsafe.ReadUnaligned<uint>(data) * HasherCommon.HashMul32) >> (32 - BucketBits);
 
-    public void Prepare(bool oneShot, nuint inputSize, ReadOnlySpan<byte> data)
+    public void Prepare(bool oneShot, nuint inputSize, byte* data)
     {
         nuint partialPrepareThreshold = BucketSize >> 6;
         if (oneShot && inputSize <= partialPrepareThreshold)
         {
             for (nuint i = 0; i < inputSize; ++i)
             {
-                nuint bucket = HashBytes(data, i);
+                nuint bucket = HashBytes(data + i);
                 _addr[bucket] = 0xCCCCCCCC;
                 _head[bucket] = 0xCCCC;
             }
@@ -105,18 +105,18 @@ internal struct HashForgetfulChain<TParams> : IHasher
         else
         {
             // Every chain then ends at its first node: no position reaches 3 GiB + 64 MiB.
-            _addr.AsSpan(0, BucketSize).Fill(0xCCCCCCCC);
-            _head.AsSpan(0, BucketSize).Clear();
+            new Span<uint>(_addr, BucketSize).Fill(0xCCCCCCCC);
+            new Span<ushort>(_head, BucketSize).Clear();
         }
 
-        _tinyHash.AsSpan(0, 65536).Clear();
-        _freeSlotIdx.AsSpan(0, TParams.NumBanks).Clear();
+        new Span<byte>(_tinyHash, 65536).Clear();
+        new Span<ushort>(_freeSlotIdx, TParams.NumBanks).Clear();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix)
+    public void Store(byte* data, nuint mask, nuint ix)
     {
-        nuint key = HashBytes(data, ix & mask);
+        nuint key = HashBytes(data + (ix & mask));
         nuint bank = key & (nuint)(TParams.NumBanks - 1);
         nuint idx = (nuint)(_freeSlotIdx[bank]++ & (BankSize - 1));
         nuint delta = ix - _addr[key];
@@ -131,11 +131,11 @@ internal struct HashForgetfulChain<TParams> : IHasher
         _head[key] = (ushort)idx;
     }
 
-    public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
+    public void Prefetch(byte* data, nuint mask, nuint ix)
     {
     }
 
-    public void StoreRange(ReadOnlySpan<byte> data, nuint mask, nuint ixStart, nuint ixEnd)
+    public void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd)
     {
         for (nuint i = ixStart; i < ixEnd; ++i)
         {
@@ -143,7 +143,7 @@ internal struct HashForgetfulChain<TParams> : IHasher
         }
     }
 
-    public void StitchToPreviousBlock(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask)
+    public void StitchToPreviousBlock(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask)
     {
         if (numBytes >= (nuint)HashTypeLength - 1 && position >= 3)
         {
@@ -153,22 +153,22 @@ internal struct HashForgetfulChain<TParams> : IHasher
         }
     }
 
-    public void PrepareDistanceCache(Span<int> distanceCache) => HasherCommon.PrepareDistanceCache(distanceCache, TParams.NumLastDistancesToCheck);
+    public void PrepareDistanceCache(int* distanceCache) => HasherCommon.PrepareDistanceCache(distanceCache, TParams.NumLastDistancesToCheck);
 
-    public void FindLongestMatch(ReadOnlySpan<byte> data, nuint ringBufferMask, ReadOnlySpan<int> distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
+    public void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
         nuint curIxMasked = curIx & ringBufferMask;
         nuint minScore = result.Score;
         nuint bestScore = result.Score;
         nuint bestLen = result.Len;
-        nuint key = HashBytes(data, curIxMasked);
+        nuint key = HashBytes(data + curIxMasked);
         byte tinyHash = (byte)key;
         result.Len = 0;
         result.LenCodeDelta = 0;
 
         for (nuint i = 0; i < (nuint)TParams.NumLastDistancesToCheck; ++i)
         {
-            nuint backward = (nuint)(nint)distanceCache[(int)i];
+            nuint backward = (nuint)(nint)distanceCache[i];
             nuint prevIx = curIx - backward;
 
             // Two-byte matches at the last distance.
@@ -183,7 +183,7 @@ internal struct HashForgetfulChain<TParams> : IHasher
             }
 
             prevIx &= ringBufferMask;
-            nuint len = FindMatchLength.WithLimit(data, prevIx, curIxMasked, maxLength);
+            nuint len = FindMatchLength.WithLimit(data + prevIx, data + curIxMasked, maxLength);
             if (len >= 2)
             {
                 nuint score = HasherCommon.BackwardReferenceScoreUsingLastDistance(len);
@@ -208,7 +208,7 @@ internal struct HashForgetfulChain<TParams> : IHasher
 
         {
             nuint bank = key & (nuint)(TParams.NumBanks - 1);
-            Span<uint> slots = _banks.AsSpan((int)(bank << TParams.BankBits), BankSize);
+            uint* slots = _banks + (bank << TParams.BankBits);
             nuint backward = 0;
             nuint hops = _maxHops;
             nuint delta = curIx - _addr[key];
@@ -223,15 +223,15 @@ internal struct HashForgetfulChain<TParams> : IHasher
                 }
 
                 nuint prevIx = (curIx - backward) & ringBufferMask;
-                uint node = slots[(int)last];
+                uint node = slots[last];
                 slot = node >> 16;
                 delta = node & 0xFFFF;
-                if (curIxMasked + bestLen > ringBufferMask || prevIx + bestLen > ringBufferMask || data[(int)(curIxMasked + bestLen)] != data[(int)(prevIx + bestLen)])
+                if (curIxMasked + bestLen > ringBufferMask || prevIx + bestLen > ringBufferMask || data[curIxMasked + bestLen] != data[prevIx + bestLen])
                 {
                     continue;
                 }
 
-                nuint len = FindMatchLength.WithLimit(data, prevIx, curIxMasked, maxLength);
+                nuint len = FindMatchLength.WithLimit(data + prevIx, data + curIxMasked, maxLength);
                 if (len >= 4)
                 {
                     nuint score = HasherCommon.BackwardReferenceScore(len, backward);
@@ -251,7 +251,7 @@ internal struct HashForgetfulChain<TParams> : IHasher
 
         if (result.Score == minScore)
         {
-            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data.Slice((int)curIxMasked), maxLength, dictionaryDistance, maxDistance, ref result, shallow: false);
+            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data + curIxMasked, maxLength, dictionaryDistance, maxDistance, ref result, shallow: false);
         }
     }
 }

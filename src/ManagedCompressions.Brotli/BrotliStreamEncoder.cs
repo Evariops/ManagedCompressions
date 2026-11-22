@@ -24,21 +24,20 @@ namespace ManagedCompressions.Brotli;
 /// not thread-safe: use one per thread.
 /// </para>
 /// </remarks>
-public sealed class BrotliStreamEncoder
+public sealed unsafe class BrotliStreamEncoder
 {
     private const int OperationProcess = 0;
     private const int OperationFlush = 1;
     private const int OperationFinish = 2;
 
-    private readonly byte[] _tinyArray = new byte[16];
+    private readonly byte[] _tinyArray = GC.AllocateArray<byte>(16, pinned: true);
     private EncoderState? _state;
     private FastEncoder? _fast;
     private bool _initialized;
     private StreamState _streamState;
 
     /// <summary>The output written and not taken yet: brotli's <c>next_out_</c> and <c>available_out_</c>.</summary>
-    private byte[]? _nextOut;
-    private int _nextOutPos;
+    private byte* _nextOut;
     private nuint _availableOut;
 
     /// <summary>The last byte's bits at qualities 0 and 1, which keep no <see cref="EncoderState"/>.</summary>
@@ -162,28 +161,32 @@ public sealed class BrotliStreamEncoder
         bytesWritten = 0;
         nuint availableOut = (nuint)destination.Length;
         nuint availableIn = (nuint)source.Length;
-        int nextIn = 0;
-        int nextOut = 0;
-        while ((int)availableOut > 0)
+        fixed (byte* src = &MemoryMarshal.GetReference(source))
+        fixed (byte* dst = &MemoryMarshal.GetReference(destination))
         {
-            nuint inBefore = availableIn;
-            nuint outBefore = availableOut;
-            if (!CompressStream(operation, ref availableIn, source, ref nextIn, ref availableOut, destination, ref nextOut))
+            byte* nextIn = src;
+            byte* nextOut = dst;
+            while ((int)availableOut > 0)
             {
-                return OperationStatus.InvalidData;
+                nuint inBefore = availableIn;
+                nuint outBefore = availableOut;
+                if (!CompressStream(operation, ref availableIn, ref nextIn, ref availableOut, ref nextOut))
+                {
+                    return OperationStatus.InvalidData;
+                }
+
+                bytesConsumed += (int)(inBefore - availableIn);
+                bytesWritten += (int)(outBefore - availableOut);
+
+                // Nothing written, no input left and no output pending: done.
+                if (availableOut == outBefore && _availableOut == 0 && availableIn == 0)
+                {
+                    return OperationStatus.Done;
+                }
             }
 
-            bytesConsumed += (int)(inBefore - availableIn);
-            bytesWritten += (int)(outBefore - availableOut);
-
-            // Nothing written, no input left and no output pending: done.
-            if (availableOut == outBefore && _availableOut == 0 && availableIn == 0)
-            {
-                return OperationStatus.Done;
-            }
+            return OperationStatus.DestinationTooSmall;
         }
-
-        return OperationStatus.DestinationTooSmall;
     }
 
     /// <summary>brotli's <c>EnsureInitialized</c>.</summary>
@@ -206,13 +209,12 @@ public sealed class BrotliStreamEncoder
 
         _streamState = StreamState.Processing;
         _nextOut = null;
-        _nextOutPos = 0;
         _availableOut = 0;
         _initialized = true;
     }
 
     /// <summary>brotli's <c>BrotliEncoderCompressStream</c>, without metadata: false where brotli fails.</summary>
-    private bool CompressStream(int operation, ref nuint availableIn, ReadOnlySpan<byte> src, ref int nextIn, ref nuint availableOut, Span<byte> dst, ref int nextOut)
+    private bool CompressStream(int operation, ref nuint availableIn, ref byte* nextIn, ref nuint availableOut, ref byte* nextOut)
     {
         if (_streamState != StreamState.Processing && availableIn != 0)
         {
@@ -221,7 +223,7 @@ public sealed class BrotliStreamEncoder
 
         if (Quality <= 1)
         {
-            return CompressStreamFast(operation, ref availableIn, src, ref nextIn, ref availableOut, dst, ref nextOut);
+            return CompressStreamFast(operation, ref availableIn, ref nextIn, ref availableOut, ref nextOut);
         }
 
         EncoderState state = _state!;
@@ -231,13 +233,13 @@ public sealed class BrotliStreamEncoder
             if (remainingBlockSize != 0 && availableIn != 0)
             {
                 nuint copy = Math.Min(remainingBlockSize, availableIn);
-                state.CopyInputToRingBuffer(src.Slice(nextIn, (int)copy));
-                nextIn += (int)copy;
+                state.CopyInputToRingBuffer(nextIn, copy);
+                nextIn += copy;
                 availableIn -= copy;
                 continue;
             }
 
-            if (InjectFlushOrPushOutput(ref availableOut, dst, ref nextOut))
+            if (InjectFlushOrPushOutput(ref availableOut, ref nextOut))
             {
                 continue;
             }
@@ -249,7 +251,6 @@ public sealed class BrotliStreamEncoder
                 bool forceFlush = availableIn == 0 && operation == OperationFlush;
                 state.UpdateSizeHint(availableIn);
                 _availableOut = state.EncodeData(isLast, forceFlush, out _nextOut);
-                _nextOutPos = 0;
                 if (forceFlush)
                 {
                     _streamState = StreamState.FlushRequested;
@@ -274,13 +275,13 @@ public sealed class BrotliStreamEncoder
     /// brotli's <c>BrotliEncoderCompressStreamFast</c>, qualities 0 and 1: each piece of input, up to the
     /// window, compressed at once, into the destination when it has room for the worst case.
     /// </summary>
-    private bool CompressStreamFast(int operation, ref nuint availableIn, ReadOnlySpan<byte> src, ref int nextIn, ref nuint availableOut, Span<byte> dst, ref int nextOut)
+    private bool CompressStreamFast(int operation, ref nuint availableIn, ref byte* nextIn, ref nuint availableOut, ref byte* nextOut)
     {
         FastEncoder fast = _fast!;
         nuint blockSizeLimit = (nuint)1 << WindowLog;
         while (true)
         {
-            if (InjectFlushOrPushOutput(ref availableOut, dst, ref nextOut))
+            if (InjectFlushOrPushOutput(ref availableOut, ref nextOut))
             {
                 continue;
             }
@@ -298,24 +299,22 @@ public sealed class BrotliStreamEncoder
                 }
 
                 bool inPlace = maxOutSize <= availableOut;
-                byte[]? storageArray = inPlace ? null : fast.Storage(maxOutSize);
-                Span<byte> storage = inPlace ? dst.Slice(nextOut) : storageArray;
+                byte* storage = inPlace ? nextOut : fast.Storage(maxOutSize);
                 storage[0] = (byte)_fastLastBytes;
                 storage[1] = (byte)(_fastLastBytes >> 8);
                 int storageIx = _fastLastBytesBits;
-                fast.CompressFragment(src.Slice(nextIn, (int)blockSize), isLast, ref storageIx, storage);
-                nextIn += (int)blockSize;
+                fast.CompressFragment(nextIn, (int)blockSize, isLast, ref storageIx, storage);
+                nextIn += blockSize;
                 availableIn -= blockSize;
                 nuint outBytes = (nuint)(storageIx >> 3);
                 if (inPlace)
                 {
-                    nextOut += (int)outBytes;
+                    nextOut += outBytes;
                     availableOut -= outBytes;
                 }
                 else
                 {
-                    _nextOut = storageArray;
-                    _nextOutPos = 0;
+                    _nextOut = storage;
                     _availableOut = outBytes;
                 }
 
@@ -342,7 +341,7 @@ public sealed class BrotliStreamEncoder
     }
 
     /// <summary>brotli's <c>InjectFlushOrPushOutput</c>: false when it does nothing.</summary>
-    private bool InjectFlushOrPushOutput(ref nuint availableOut, Span<byte> dst, ref int nextOut)
+    private bool InjectFlushOrPushOutput(ref nuint availableOut, ref byte* nextOut)
     {
         if (_streamState == StreamState.FlushRequested && LastBytesBits != 0)
         {
@@ -353,10 +352,10 @@ public sealed class BrotliStreamEncoder
         if (_availableOut != 0 && availableOut != 0)
         {
             nuint copy = Math.Min(_availableOut, availableOut);
-            _nextOut.AsSpan(_nextOutPos, (int)copy).CopyTo(dst.Slice(nextOut));
-            nextOut += (int)copy;
+            Buffer.MemoryCopy(_nextOut, nextOut, copy, copy);
+            nextOut += copy;
             availableOut -= copy;
-            _nextOutPos += (int)copy;
+            _nextOut += copy;
             _availableOut -= copy;
             return true;
         }
@@ -378,16 +377,15 @@ public sealed class BrotliStreamEncoder
         // ISLAST 0, MNIBBLES 11 (metadata), reserved 0, MSKIPBYTES 00.
         seal |= 0x6u << sealBits;
         sealBits += 6;
-        Span<byte> destination;
+        byte* destination;
         if (_nextOut != null)
         {
-            destination = _nextOut.AsSpan(_nextOutPos + (int)_availableOut);
+            destination = _nextOut + _availableOut;
         }
         else
         {
-            destination = _tinyArray;
-            _nextOut = _tinyArray;
-            _nextOutPos = 0;
+            destination = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_tinyArray));
+            _nextOut = destination;
         }
 
         destination[0] = (byte)seal;
@@ -411,7 +409,6 @@ public sealed class BrotliStreamEncoder
         {
             _streamState = StreamState.Processing;
             _nextOut = null;
-            _nextOutPos = 0;
         }
     }
 }

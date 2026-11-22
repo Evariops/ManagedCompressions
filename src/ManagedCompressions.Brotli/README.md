@@ -10,13 +10,9 @@ fully managed C#.
   are brotli's.
 - Its decompressor accepts and refuses the streams brotli 1.1.1 does, and reports why it refuses one
   with brotli's own error codes.
-- It is safe code: no pointers, every read and write bounds-checked, and one unsafe file, a cache
-  prefetch hint (see [Safe code](#safe-code)).
-- Against the brotli .NET ships (see [Performance](#performance)), the decompressor is 1.05 to 1.34× as
-  fast on the Silesia corpus and 1.00 to 1.04× on JSON records of 800 bytes. The compressor is 1.04 to
-  1.14× as fast at qualities 5 to 10 on a sample of the Silesia corpus and up to 18.6× on the JSON records.
-  It is slower at the fast qualities 0 to 4 on the sample (0.81 to 0.95×), and at qualities 0 to 2 and 11
-  on the records (0.88 to 0.99×).
+- Both are at least as fast as the brotli .NET ships at every quality (see [Performance](#performance)):
+  the compressor 1.00 to 1.29× on a sample of the Silesia corpus and 1.03 to 21× on JSON records of 800
+  bytes; the decompressor 1.07 to 1.37× on the Silesia corpus and 1.06 to 1.10× on the JSON records.
 - A warm compressor or decompressor allocates nothing.
 
 ManagedCompressions.Brotli is an independent implementation of the format. It is not affiliated with the
@@ -148,19 +144,6 @@ Two pairs of brotli's error codes, which depend on the state of brotli's ring bu
 error, are one value each here: `BrotliError.BlockLength` for `FORMAT_BLOCK_LENGTH_1` and `_2`, and
 `BrotliError.Padding` for `FORMAT_PADDING_1` and `_2`.
 
-## Safe code
-
-The compressor and the decompressor read and write through spans and arrays, never through pointers, so
-every access is bounds-checked: a mistake in the code, or a malicious stream, cannot read or write past a
-buffer. `src/BannedSymbols.txt` bans the escape hatches that need no `unsafe` (`Unsafe`,
-`MemoryMarshal.GetReference` and its kind, the vectors' unchecked loads and stores, uninitialized arrays),
-and the build fails on `unsafe` in any file but one, `Internal/Prefetch.cs`: the hashers' cache prefetch,
-which .NET takes as an address only. It takes the address of a bounds-checked array element, and the hint
-reads and writes nothing the program sees.
-
-The checks have a price, which the tables of [Performance](#performance) include: it is most of the gap at
-the fast qualities, where each byte gets the least work.
-
 ## How it is fast
 
 ### Compression
@@ -181,8 +164,7 @@ has floats: its bytes are brotli's. The speed comes from how the work is laid ou
 - **Tables fetched ahead.** From quality 4, the hash tables outgrow the caches (4 MiB at quality 4 on a
   large input, 32 MiB at quality 9) and the search waits on them. The lines the next search reads first
   are fetched while the current one runs: the next position's, which is nearly always the next searched,
-  and, after a copy, the position past it, before the copy's positions are stored. Below 64 KiB of input,
-  whose lines stay in the caches, nothing is fetched: the hint would only cost its instructions.
+  and, after a copy, the position past it, before the copy's positions are stored.
 - **Small inputs.** On an 800-byte input, quality 0 spends most of its time building the literal code. The
   bytes are counted in four histograms, so that a repeated byte does not wait for the increment before,
   the code length counts likewise, and the loops over the 256 symbols run on vectors or without branches.
@@ -229,23 +211,22 @@ same bytes. The Silesia sample is 1 MiB every 16 MiB of silesia.tar, 13.6 MB, in
 
 | Quality | Ratio | Silesia sample, native MB/s | managed MB/s | × | 800-byte JSON records, native MB/s | managed MB/s | × |
 |--:|--:|--:|--:|--:|--:|--:|--:|
-| 0 | 2.25 | 563 | 457 | 0.81× | 311 | 295 | 0.94× |
-| 1 | 2.44 | 406 | 387 | 0.95× | 189 | 188 | 0.99× |
-| 2 | 2.60 | 210 | 170 | 0.81× | 209 | 185 | 0.88× |
-| 3 | 2.62 | 181 | 148 | 0.82× | 90.9 | 99.6 | **1.09×** |
-| 4 | 2.66 | 118 | 106 | 0.90× | 57.7 | 59.4 | 1.03× |
-| 5 | 2.88 | 50.4 | 52.8 | 1.04× | 5.33 | 56.0 | **10.7×** |
-| 6 | 2.91 | 35.4 | 37.7 | **1.06×** | 4.08 | 55.3 | **13.5×** |
-| 7 | 2.93 | 23.4 | 26.4 | **1.13×** | 3.08 | 49.5 | **16.4×** |
-| 8 | 2.94 | 17.6 | 19.5 | **1.11×** | 2.70 | 48.7 | **18.4×** |
-| 9 | 2.95 | 13.5 | 15.7 | **1.14×** | 2.38 | 44.9 | **18.6×** |
-| 10 | 3.21 | 2.04 | 2.20 | **1.06×** | 1.80 | 1.85 | 1.02× |
-| 11 | 3.31 | 1.02 | 1.04 | 1.00× | 1.05 | 0.92 | 0.88× |
+| 0 | 2.25 | 550 | 550 | 1.00× | 312 | 341 | **1.09×** |
+| 1 | 2.44 | 411 | 460 | **1.12×** | 189 | 204 | **1.06×** |
+| 2 | 2.60 | 216 | 220 | 1.02× | 211 | 250 | **1.19×** |
+| 3 | 2.62 | 186 | 186 | 1.00× | 91.3 | 112 | **1.23×** |
+| 4 | 2.66 | 124 | 134 | **1.08×** | 59.7 | 69.6 | **1.16×** |
+| 5 | 2.88 | 50.4 | 65.6 | **1.29×** | 5.30 | 63.7 | **12.4×** |
+| 6 | 2.91 | 36.4 | 43.8 | **1.20×** | 4.11 | 62.1 | **15.6×** |
+| 7 | 2.93 | 24.8 | 28.8 | **1.16×** | 3.08 | 54.5 | **17.4×** |
+| 8 | 2.94 | 19.1 | 22.4 | **1.18×** | 2.72 | 52.4 | **20.1×** |
+| 9 | 2.95 | 14.6 | 17.2 | **1.18×** | 2.38 | 47.6 | **21.0×** |
+| 10 | 3.21 | 2.18 | 2.56 | **1.18×** | 1.81 | 2.05 | **1.13×** |
+| 11 | 3.31 | 1.05 | 1.20 | **1.15×** | 1.07 | 1.09 | 1.03× |
 
 The ratio is the Silesia sample's. Qualities 4 to 9 move by up to 20 % from one process to the next, on
-both sides: brotli took from 77.8 to 124 MB/s at quality 4, depending on the process. On small inputs,
-brotli spends qualities 5 to 9 allocating and clearing tables a `BrotliCompressor` keeps. The fast
-qualities 0 to 4 do the least work per byte, so the bounds checks weigh most there.
+both sides: brotli took 124 MB/s at quality 4 here, and 77.8 MB/s in an earlier process. On small inputs,
+brotli spends qualities 5 to 9 allocating and clearing tables a `BrotliCompressor` keeps.
 [`bench/results/x64/brotli-compression.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/brotli-compression.md)
 has the intervals.
 
@@ -255,21 +236,21 @@ Native is `BrotliDecoder.TryDecompress`, managed `BrotliDecompressor.Decompress`
 
 | | Quality | Native, MB/s | Managed, MB/s | × |
 |:--|--:|--:|--:|--:|
-| **silesia.tar**, one stream | 1 | 581 | 701 | **1.21×** |
-|  | 4 | 537 | 641 | **1.34×** |
-|  | 5 | 624 | 700 | 1.07× |
-|  | 9 | 763 | 850 | 1.14× |
-|  | 11 | 651 | 684 | **1.05×** |
-| **silesia.tar**, 64 KiB pages | 1 | 545 | 660 | **1.21×** |
-|  | 4 | 583 | 682 | **1.17×** |
-|  | 5 | 586 | 661 | **1.13×** |
-|  | 9 | 578 | 653 | **1.13×** |
-|  | 11 | 464 | 495 | **1.06×** |
-| **500 JSON records** of 800 bytes | 1 | 401 | 416 | **1.04×** |
-|  | 4 | 444 | 452 | 1.02× |
-|  | 5 | 443 | 452 | 1.02× |
-|  | 9 | 437 | 441 | 1.01× |
-|  | 11 | 321 | 320 | 1.00× |
+| **silesia.tar**, one stream | 1 | 593 | 793 | **1.34×** |
+|  | 4 | 726 | 993 | **1.37×** |
+|  | 5 | 723 | 873 | **1.21×** |
+|  | 9 | 774 | 969 | **1.25×** |
+|  | 11 | 655 | 701 | 1.07× |
+| **silesia.tar**, 64 KiB pages | 1 | 548 | 732 | **1.34×** |
+|  | 4 | 587 | 746 | **1.27×** |
+|  | 5 | 587 | 732 | **1.25×** |
+|  | 9 | 583 | 722 | **1.24×** |
+|  | 11 | 464 | 502 | 1.08× |
+| **500 JSON records** of 800 bytes | 1 | 394 | 435 | **1.10×** |
+|  | 4 | 431 | 474 | 1.10× |
+|  | 5 | 432 | 474 | 1.10× |
+|  | 9 | 420 | 453 | 1.08× |
+|  | 11 | 314 | 337 | 1.06× |
 
 Quality 4 is .NET's default (`BrotliEncoder.TryCompress`, `CompressionLevel.Optimal`), 11 the highest.
 `bench/ManagedCompressions.Bench --codecs brotli` measures it, against the brotli .NET ships.
@@ -283,11 +264,11 @@ two processes.
 
 | Quality | Writing, native MB/s | managed MB/s | × | Reading, native MB/s | managed MB/s | × |
 |--:|--:|--:|--:|--:|--:|--:|
-| 1 | 440 | 429 | 0.98× | 479 | 616 | **1.28×** |
-| 4 | 107 | 92.8 | 0.87× | 596 | 726 | **1.22×** |
-| 5 | 53.4 | 50.1 | 0.94× | 602 | 706 | **1.17×** |
-| 9 | 14.1 | 15.3 | **1.09×** | 642 | 753 | **1.17×** |
-| 11 | 1.13 | 1.13 | 1.00× | 543 | 567 | 1.04× |
+| 1 | 453 | 486 | **1.07×** | 561 | 740 | **1.32×** |
+| 4 | 114 | 119 | 1.05× | 666 | 887 | **1.33×** |
+| 5 | 60.4 | 65.7 | **1.09×** | 703 | 858 | **1.22×** |
+| 9 | 17.9 | 18.6 | 1.04× | 720 | 890 | **1.24×** |
+| 11 | 1.10 | 1.30 | **1.18×** | 583 | 625 | 1.07× |
 
 A stream written piece by piece does not announce its size, so brotli picks the hashers of an input of
 unknown size, the same on both sides: H4 at quality 4 and H5 at 5 to 9, where one call over a large input

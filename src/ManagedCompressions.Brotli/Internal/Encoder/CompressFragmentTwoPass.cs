@@ -1,36 +1,65 @@
 using System;
-using System.Buffers.Binary;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
 /// <summary>The scratch of quality 1, brotli's <c>BrotliTwoPassArena</c>, and its command and literal buffers.</summary>
-internal sealed class TwoPassArena
+internal sealed unsafe class TwoPassArena
 {
     /// <summary>The size of the blocks quality 1 cuts its fragments into, brotli's <c>kCompressFragmentTwoPassBlockSize</c>.</summary>
     public const int BlockSize = 1 << 17;
 
-    public readonly uint[] LitHisto = new uint[256];
-    public readonly byte[] LitDepth = new byte[256];
-    public readonly ushort[] LitBits = new ushort[256];
-    public readonly uint[] CmdHisto = new uint[128];
-    public readonly byte[] CmdDepth = new byte[128];
-    public readonly ushort[] CmdBits = new ushort[128];
-    public readonly HuffmanTree[] TmpTree = new HuffmanTree[(2 * 256) + 1];
-    public readonly byte[] TmpDepth = new byte[Prefix.NumCommandSymbols];
-    public readonly ushort[] TmpBits = new ushort[64 + 8];
-    public readonly uint[] Commands = new uint[BlockSize];
-    public readonly byte[] Literals = new byte[BlockSize];
-}
+    private const int LitHistoOffset = 0;
+    private const int LitDepthOffset = LitHistoOffset + (256 * 4);
+    private const int LitBitsOffset = LitDepthOffset + 256;
+    private const int CmdHistoOffset = LitBitsOffset + (256 * 2);
+    private const int CmdDepthOffset = CmdHistoOffset + (128 * 4);
+    private const int CmdBitsOffset = CmdDepthOffset + 128;
+    private const int TmpTreeOffset = CmdBitsOffset + (128 * 2);
+    private const int TmpDepthOffset = TmpTreeOffset + (((2 * 256) + 1) * 8);
+    private const int TmpBitsOffset = TmpDepthOffset + Prefix.NumCommandSymbols;
+    private const int Size = TmpBitsOffset + (64 * 2) + 16;
 
+    public readonly byte[] Buffer = GC.AllocateArray<byte>(Size, pinned: true);
+    public readonly uint[] CommandArray = GC.AllocateUninitializedArray<uint>(BlockSize, pinned: true);
+    public readonly byte[] LiteralArray = GC.AllocateUninitializedArray<byte>(BlockSize, pinned: true);
+
+    public TwoPassArena()
+    {
+        byte* b = (byte*)Unsafe.AsPointer(ref Buffer[0]);
+        LitHisto = (uint*)(b + LitHistoOffset);
+        LitDepth = b + LitDepthOffset;
+        LitBits = (ushort*)(b + LitBitsOffset);
+        CmdHisto = (uint*)(b + CmdHistoOffset);
+        CmdDepth = b + CmdDepthOffset;
+        CmdBits = (ushort*)(b + CmdBitsOffset);
+        TmpTree = (HuffmanTree*)(b + TmpTreeOffset);
+        TmpDepth = b + TmpDepthOffset;
+        TmpBits = (ushort*)(b + TmpBitsOffset);
+        Commands = (uint*)Unsafe.AsPointer(ref CommandArray[0]);
+        Literals = (byte*)Unsafe.AsPointer(ref LiteralArray[0]);
+    }
+
+    public readonly uint* LitHisto;
+    public readonly byte* LitDepth;
+    public readonly ushort* LitBits;
+    public readonly uint* CmdHisto;
+    public readonly byte* CmdDepth;
+    public readonly ushort* CmdBits;
+    public readonly HuffmanTree* TmpTree;
+    public readonly byte* TmpDepth;
+    public readonly ushort* TmpBits;
+    public readonly uint* Commands;
+    public readonly byte* Literals;
+}
 
 /// <summary>
 /// Quality 1, brotli's <c>BrotliCompressFragmentTwoPass</c> (<c>c/enc/compress_fragment_two_pass.c</c>):
 /// a first pass gathers the commands and literals of a block, a second stores them with codes built
 /// from their histograms.
 /// </summary>
-internal static class CompressFragmentTwoPass
+internal static unsafe class CompressFragmentTwoPass
 {
     private const long MaxDistance = (1L << 18) - Prefix.WindowGap;
     private const uint HashMul32 = 0x1E35A7BD;
@@ -57,67 +86,59 @@ internal static class CompressFragmentTwoPass
         0, 1, 2, 3, 4, 5, 6, 8, 10, 14, 18, 26, 34, 50, 66, 98, 130, 194, 322, 578, 1090, 2114, 6210, 22594,
     ];
 
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint Hash(ReadOnlySpan<byte> data, int p, int shift, int length) =>
-        (uint)(((BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(p, 8)) << ((8 - length) * 8)) * HashMul32) >> shift);
+    private static uint Hash(byte* p, int shift, int length) =>
+        (uint)(((Unsafe.ReadUnaligned<ulong>(p) << ((8 - length) * 8)) * HashMul32) >> shift);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint HashBytesAtOffset(ulong v, int offset, int shift, int length) =>
         (uint)((((v >> (8 * offset)) << ((8 - length) * 8)) * HashMul32) >> shift);
 
-    /// <summary>Whether the <paramref name="length"/> bytes at <paramref name="p"/> are the low ones of <paramref name="bytes"/>: one read of 8, the rest shifted out.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool MatchesFirst(ulong bytes, ReadOnlySpan<byte> data, int p, int length) =>
-        ((BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(p, 8)) ^ bytes) << ((8 - length) * 8)) == 0;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsMatch(ReadOnlySpan<byte> data, int p1, int p2, int length)
+    private static bool IsMatch(byte* p1, byte* p2, int length)
     {
-        ReadOnlySpan<byte> a = data.Slice(p1, length);
-        ReadOnlySpan<byte> b = data.Slice(p2, length);
-        if (BinaryPrimitives.ReadUInt32LittleEndian(a) == BinaryPrimitives.ReadUInt32LittleEndian(b))
+        if (Unsafe.ReadUnaligned<uint>(p1) == Unsafe.ReadUnaligned<uint>(p2))
         {
-            return length == 4 || (a[4] == b[4] && a[5] == b[5]);
+            return length == 4 || (p1[4] == p2[4] && p1[5] == p2[5]);
         }
 
         return false;
     }
 
     /// <summary>brotli's <c>BuildAndStoreCommandPrefixCode</c> of quality 1.</summary>
-    private static void BuildAndStoreCommandPrefixCode(TwoPassArena s, ref int storageIx, Span<byte> storage)
+    private static void BuildAndStoreCommandPrefixCode(TwoPassArena s, ref int storageIx, byte* storage)
     {
-        Span<byte> depth = s.CmdDepth;
-        Span<ushort> bits = s.CmdBits;
-        Span<byte> tmpDepth = s.TmpDepth;
-        Span<ushort> tmpBits = s.TmpBits;
-        tmpDepth.Clear();
-        EntropyEncode.CreateHuffmanTree(s.CmdHisto.AsSpan(0, 64), 15, s.TmpTree, depth);
-        EntropyEncode.CreateHuffmanTree(s.CmdHisto.AsSpan(64, 64), 14, s.TmpTree, depth.Slice(64));
+        byte* depth = s.CmdDepth;
+        ushort* bits = s.CmdBits;
+        byte* tmpDepth = s.TmpDepth;
+        ushort* tmpBits = s.TmpBits;
+        new Span<byte>(tmpDepth, Prefix.NumCommandSymbols).Clear();
+        EntropyEncode.CreateHuffmanTree(s.CmdHisto, 64, 15, s.TmpTree, depth);
+        EntropyEncode.CreateHuffmanTree(s.CmdHisto + 64, 64, 14, s.TmpTree, depth + 64);
 
         // The command codes' bits, through the full alphabet's order.
-        depth.Slice(24, 24).CopyTo(tmpDepth);
-        depth.Slice(0, 8).CopyTo(tmpDepth.Slice(24));
-        depth.Slice(48, 8).CopyTo(tmpDepth.Slice(32));
-        depth.Slice(8, 8).CopyTo(tmpDepth.Slice(40));
-        depth.Slice(56, 8).CopyTo(tmpDepth.Slice(48));
-        depth.Slice(16, 8).CopyTo(tmpDepth.Slice(56));
-        EntropyEncode.ConvertBitDepthsToSymbols(tmpDepth.Slice(0, 64), tmpBits);
-        tmpBits.Slice(24, 8).CopyTo(bits);
-        tmpBits.Slice(40, 8).CopyTo(bits.Slice(8));
-        tmpBits.Slice(56, 8).CopyTo(bits.Slice(16));
-        tmpBits.Slice(0, 24).CopyTo(bits.Slice(24));
-        tmpBits.Slice(32, 8).CopyTo(bits.Slice(48));
-        tmpBits.Slice(48, 8).CopyTo(bits.Slice(56));
-        EntropyEncode.ConvertBitDepthsToSymbols(depth.Slice(64, 64), bits.Slice(64));
+        Buffer.MemoryCopy(depth + 24, tmpDepth, 24, 24);
+        Buffer.MemoryCopy(depth, tmpDepth + 24, 8, 8);
+        Buffer.MemoryCopy(depth + 48, tmpDepth + 32, 8, 8);
+        Buffer.MemoryCopy(depth + 8, tmpDepth + 40, 8, 8);
+        Buffer.MemoryCopy(depth + 56, tmpDepth + 48, 8, 8);
+        Buffer.MemoryCopy(depth + 16, tmpDepth + 56, 8, 8);
+        EntropyEncode.ConvertBitDepthsToSymbols(tmpDepth, 64, tmpBits);
+        Buffer.MemoryCopy(tmpBits + 24, bits, 16, 16);
+        Buffer.MemoryCopy(tmpBits + 40, bits + 8, 16, 16);
+        Buffer.MemoryCopy(tmpBits + 56, bits + 16, 16, 16);
+        Buffer.MemoryCopy(tmpBits, bits + 24, 48, 48);
+        Buffer.MemoryCopy(tmpBits + 32, bits + 48, 16, 16);
+        Buffer.MemoryCopy(tmpBits + 48, bits + 56, 16, 16);
+        EntropyEncode.ConvertBitDepthsToSymbols(depth + 64, 64, bits + 64);
 
         // The depths over the full command alphabet.
-        tmpDepth.Slice(0, 64).Clear();
-        depth.Slice(24, 8).CopyTo(tmpDepth);
-        depth.Slice(32, 8).CopyTo(tmpDepth.Slice(64));
-        depth.Slice(40, 8).CopyTo(tmpDepth.Slice(128));
-        depth.Slice(48, 8).CopyTo(tmpDepth.Slice(192));
-        depth.Slice(56, 8).CopyTo(tmpDepth.Slice(384));
+        new Span<byte>(tmpDepth, 64).Clear();
+        Buffer.MemoryCopy(depth + 24, tmpDepth, 8, 8);
+        Buffer.MemoryCopy(depth + 32, tmpDepth + 64, 8, 8);
+        Buffer.MemoryCopy(depth + 40, tmpDepth + 128, 8, 8);
+        Buffer.MemoryCopy(depth + 48, tmpDepth + 192, 8, 8);
+        Buffer.MemoryCopy(depth + 56, tmpDepth + 384, 8, 8);
         for (int i = 0; i < 8; ++i)
         {
             tmpDepth[128 + (8 * i)] = depth[i];
@@ -125,16 +146,16 @@ internal static class CompressFragmentTwoPass
             tmpDepth[448 + (8 * i)] = depth[16 + i];
         }
 
-        BitStream.StoreHuffmanTree(tmpDepth.Slice(0, Prefix.NumCommandSymbols), s.TmpTree, ref storageIx, storage);
-        BitStream.StoreHuffmanTree(depth.Slice(64, 64), s.TmpTree, ref storageIx, storage);
+        BitStream.StoreHuffmanTree(tmpDepth, Prefix.NumCommandSymbols, s.TmpTree, ref storageIx, storage);
+        BitStream.StoreHuffmanTree(depth + 64, 64, s.TmpTree, ref storageIx, storage);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitInsertLen(uint insertLen, Span<uint> commands, ref int n)
+    private static void EmitInsertLen(uint insertLen, ref uint* commands)
     {
         if (insertLen < 6)
         {
-            commands[n] = insertLen;
+            *commands = insertLen;
         }
         else if (insertLen < 130)
         {
@@ -143,7 +164,7 @@ internal static class CompressFragmentTwoPass
             uint prefix = tail >> nbits;
             uint code = ((uint)nbits << 1) + prefix + 2;
             uint extra = tail - (prefix << nbits);
-            commands[n] = code | (extra << 8);
+            *commands = code | (extra << 8);
         }
         else if (insertLen < 2114)
         {
@@ -151,30 +172,30 @@ internal static class CompressFragmentTwoPass
             int nbits = BitOperations.Log2(tail);
             uint code = (uint)nbits + 10;
             uint extra = tail - (1u << nbits);
-            commands[n] = code | (extra << 8);
+            *commands = code | (extra << 8);
         }
         else if (insertLen < 6210)
         {
-            commands[n] = 21 | ((insertLen - 2114) << 8);
+            *commands = 21 | ((insertLen - 2114) << 8);
         }
         else if (insertLen < 22594)
         {
-            commands[n] = 22 | ((insertLen - 6210) << 8);
+            *commands = 22 | ((insertLen - 6210) << 8);
         }
         else
         {
-            commands[n] = 23 | ((insertLen - 22594) << 8);
+            *commands = 23 | ((insertLen - 22594) << 8);
         }
 
-        ++n;
+        ++commands;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitCopyLen(nuint copyLen, Span<uint> commands, ref int n)
+    private static void EmitCopyLen(nuint copyLen, ref uint* commands)
     {
         if (copyLen < 10)
         {
-            commands[n] = (uint)(copyLen + 38);
+            *commands = (uint)(copyLen + 38);
         }
         else if (copyLen < 134)
         {
@@ -183,7 +204,7 @@ internal static class CompressFragmentTwoPass
             nuint prefix = tail >> nbits;
             nuint code = ((nuint)nbits << 1) + prefix + 44;
             nuint extra = tail - (prefix << nbits);
-            commands[n] = (uint)(code | (extra << 8));
+            *commands = (uint)(code | (extra << 8));
         }
         else if (copyLen < 2118)
         {
@@ -191,22 +212,22 @@ internal static class CompressFragmentTwoPass
             int nbits = FastLog.Log2FloorNonZero(tail);
             nuint code = (nuint)nbits + 52;
             nuint extra = tail - ((nuint)1 << nbits);
-            commands[n] = (uint)(code | (extra << 8));
+            *commands = (uint)(code | (extra << 8));
         }
         else
         {
-            commands[n] = (uint)(63 | ((copyLen - 2118) << 8));
+            *commands = (uint)(63 | ((copyLen - 2118) << 8));
         }
 
-        ++n;
+        ++commands;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitCopyLenLastDistance(nuint copyLen, Span<uint> commands, ref int n)
+    private static void EmitCopyLenLastDistance(nuint copyLen, ref uint* commands)
     {
         if (copyLen < 12)
         {
-            commands[n++] = (uint)(copyLen + 20);
+            *commands++ = (uint)(copyLen + 20);
         }
         else if (copyLen < 72)
         {
@@ -215,15 +236,15 @@ internal static class CompressFragmentTwoPass
             nuint prefix = tail >> nbits;
             nuint code = ((nuint)nbits << 1) + prefix + 28;
             nuint extra = tail - (prefix << nbits);
-            commands[n++] = (uint)(code | (extra << 8));
+            *commands++ = (uint)(code | (extra << 8));
         }
         else if (copyLen < 136)
         {
             nuint tail = copyLen - 8;
             nuint code = (tail >> 5) + 54;
             nuint extra = tail & 31;
-            commands[n++] = (uint)(code | (extra << 8));
-            commands[n++] = 64;
+            *commands++ = (uint)(code | (extra << 8));
+            *commands++ = 64;
         }
         else if (copyLen < 2120)
         {
@@ -231,18 +252,18 @@ internal static class CompressFragmentTwoPass
             int nbits = FastLog.Log2FloorNonZero(tail);
             nuint code = (nuint)nbits + 52;
             nuint extra = tail - ((nuint)1 << nbits);
-            commands[n++] = (uint)(code | (extra << 8));
-            commands[n++] = 64;
+            *commands++ = (uint)(code | (extra << 8));
+            *commands++ = 64;
         }
         else
         {
-            commands[n++] = (uint)(63 | ((copyLen - 2120) << 8));
-            commands[n++] = 64;
+            *commands++ = (uint)(63 | ((copyLen - 2120) << 8));
+            *commands++ = 64;
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitDistance(uint distance, Span<uint> commands, ref int n)
+    private static void EmitDistance(uint distance, ref uint* commands)
     {
         uint d = distance + 3;
         int nbits = BitOperations.Log2(d) - 1;
@@ -250,190 +271,186 @@ internal static class CompressFragmentTwoPass
         uint offset = (2 + prefix) << nbits;
         uint distCode = (2 * ((uint)nbits - 1)) + prefix + 80;
         uint extra = d - offset;
-        commands[n++] = distCode | (extra << 8);
+        *commands++ = distCode | (extra << 8);
     }
 
     /// <summary>The table's hashes of the positions within the copy that ends at <paramref name="ip"/>, then its candidate.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int HashCopyTail(ReadOnlySpan<byte> data, int ip, Span<int> table, int shift, int minMatch, int lastOffset)
+    private static byte* HashCopyTail(byte* ip, byte* baseIp, int* table, int shift, int minMatch, int lastOffset)
     {
         ulong inputBytes;
         uint curHash;
         uint prevHash;
         if (minMatch == 4)
         {
-            inputBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(ip - 3, 8));
+            inputBytes = Unsafe.ReadUnaligned<ulong>(ip - 3);
             curHash = HashBytesAtOffset(inputBytes, 3, shift, minMatch);
             prevHash = HashBytesAtOffset(inputBytes, 0, shift, minMatch);
-            table[(int)prevHash] = ip - 3;
+            table[prevHash] = (int)(ip - baseIp - 3);
             prevHash = HashBytesAtOffset(inputBytes, 1, shift, minMatch);
-            table[(int)prevHash] = ip - 2;
+            table[prevHash] = (int)(ip - baseIp - 2);
 
             // brotli hashes ip - 1 at offset 0 again, as if it were ip - 3, after a match with literals
             // (lastOffset 0), and at offset 2 after a match without (lastOffset 2).
             prevHash = HashBytesAtOffset(inputBytes, lastOffset, shift, minMatch);
-            table[(int)prevHash] = ip - 1;
+            table[prevHash] = (int)(ip - baseIp - 1);
         }
         else
         {
-            inputBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(ip - 5, 8));
+            inputBytes = Unsafe.ReadUnaligned<ulong>(ip - 5);
             prevHash = HashBytesAtOffset(inputBytes, 0, shift, minMatch);
-            table[(int)prevHash] = ip - 5;
+            table[prevHash] = (int)(ip - baseIp - 5);
             prevHash = HashBytesAtOffset(inputBytes, 1, shift, minMatch);
-            table[(int)prevHash] = ip - 4;
+            table[prevHash] = (int)(ip - baseIp - 4);
             prevHash = HashBytesAtOffset(inputBytes, 2, shift, minMatch);
-            table[(int)prevHash] = ip - 3;
-            inputBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(ip - 2, 8));
+            table[prevHash] = (int)(ip - baseIp - 3);
+            inputBytes = Unsafe.ReadUnaligned<ulong>(ip - 2);
             curHash = HashBytesAtOffset(inputBytes, 2, shift, minMatch);
             prevHash = HashBytesAtOffset(inputBytes, 0, shift, minMatch);
-            table[(int)prevHash] = ip - 2;
+            table[prevHash] = (int)(ip - baseIp - 2);
             prevHash = HashBytesAtOffset(inputBytes, 1, shift, minMatch);
-            table[(int)prevHash] = ip - 1;
+            table[prevHash] = (int)(ip - baseIp - 1);
         }
 
-        int candidate = table[(int)curHash];
-        table[(int)curHash] = ip;
+        byte* candidate = baseIp + table[curHash];
+        table[curHash] = (int)(ip - baseIp);
         return candidate;
     }
 
-    /// <summary>
-    /// brotli's <c>CreateCommands</c>: the commands and literals of the block at <paramref name="input"/>,
-    /// the first pass, appended to <paramref name="literals"/> and <paramref name="commands"/>.
-    /// </summary>
+    /// <summary>brotli's <c>CreateCommands</c>: the commands and literals of a block, the first pass.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void CreateCommands<TMinMatch>(ReadOnlySpan<byte> data, int input, int blockSize, int inputSize, Span<int> table, int tableBits, Span<byte> literals, ref int numLiteralsRef, Span<uint> commands, ref int numCommandsRef)
+    private static void CreateCommands<TMinMatch>(byte* input, int blockSize, int inputSize, byte* baseIp, int* table, int tableBits, ref byte* literalsRef, ref uint* commandsRef)
         where TMinMatch : struct, IMinMatch
     {
-        // The output positions in locals, which the JIT keeps in registers; the minimal match a constant.
+        // The output pointers in locals, which the JIT keeps in registers; the minimal match a constant.
         int minMatch = TMinMatch.Value;
-        int numLiterals = numLiteralsRef;
-        int numCommands = numCommandsRef;
-        int ip = input;
+        byte* literals = literalsRef;
+        uint* commands = commandsRef;
+        byte* ip = input;
         int shift = 64 - tableBits;
-        int ipEnd = input + blockSize;
-        int nextEmit = input;
+        byte* ipEnd = input + blockSize;
+        byte* nextEmit = input;
         int lastDistance = -1;
         if (blockSize >= InputMarginBytes)
         {
             // The last block keeps a margin of 16 bytes, so that every distance stays within the window
             // less 16; the others the minimal match, so that no copy goes past the block.
             int lenLimit = Math.Min(blockSize - minMatch, inputSize - InputMarginBytes);
-            int ipLimit = input + lenLimit;
-            uint nextHash = Hash(data, ++ip, shift, minMatch);
+            byte* ipLimit = input + lenLimit;
+            uint nextHash = Hash(++ip, shift, minMatch);
             while (true)
             {
-                ip = FindMatch<TMinMatch>(data, ip, ipLimit, ref nextHash, table, shift, lastDistance, out int candidate);
-                if (ip < 0)
+                ip = FindMatch<TMinMatch>(ip, ipLimit, ref nextHash, table, baseIp, shift, lastDistance, out byte* candidate);
+                if (ip == null)
                 {
                     goto EmitRemainder;
                 }
 
                 {
-                    int baseMatch = ip;
-                    nuint matched = (nuint)minMatch + FindMatchLength.WithLimit(data, (nuint)(candidate + minMatch), (nuint)(ip + minMatch), (nuint)(ipEnd - ip) - (nuint)minMatch);
-                    int distance = baseMatch - candidate;
-                    int insert = baseMatch - nextEmit;
-                    ip += (int)matched;
-                    EmitInsertLen((uint)insert, commands, ref numCommands);
-                    data.Slice(nextEmit, insert).CopyTo(literals.Slice(numLiterals));
-                    numLiterals += insert;
+                    byte* baseMatch = ip;
+                    nuint matched = (nuint)minMatch + FindMatchLength.WithLimit(candidate + minMatch, ip + minMatch, (nuint)(ipEnd - ip) - (nuint)minMatch);
+                    int distance = (int)(baseMatch - candidate);
+                    int insert = (int)(baseMatch - nextEmit);
+                    ip += matched;
+                    EmitInsertLen((uint)insert, ref commands);
+                    Buffer.MemoryCopy(nextEmit, literals, insert, insert);
+                    literals += insert;
                     if (distance == lastDistance)
                     {
-                        commands[numCommands++] = 64;
+                        *commands++ = 64;
                     }
                     else
                     {
-                        EmitDistance((uint)distance, commands, ref numCommands);
+                        EmitDistance((uint)distance, ref commands);
                         lastDistance = distance;
                     }
 
-                    EmitCopyLenLastDistance(matched, commands, ref numCommands);
+                    EmitCopyLenLastDistance(matched, ref commands);
                     nextEmit = ip;
                     if (ip >= ipLimit)
                     {
                         goto EmitRemainder;
                     }
 
-                    candidate = HashCopyTail(data, ip, table, shift, minMatch, 0);
+                    candidate = HashCopyTail(ip, baseIp, table, shift, minMatch, 0);
                 }
 
-                while (ip - candidate <= MaxDistance && IsMatch(data, ip, candidate, minMatch))
+                while (ip - candidate <= MaxDistance && IsMatch(ip, candidate, minMatch))
                 {
-                    int baseMatch = ip;
-                    nuint matched = (nuint)minMatch + FindMatchLength.WithLimit(data, (nuint)(candidate + minMatch), (nuint)(ip + minMatch), (nuint)(ipEnd - ip) - (nuint)minMatch);
-                    ip += (int)matched;
-                    lastDistance = baseMatch - candidate;
-                    EmitCopyLen(matched, commands, ref numCommands);
-                    EmitDistance((uint)lastDistance, commands, ref numCommands);
+                    byte* baseMatch = ip;
+                    nuint matched = (nuint)minMatch + FindMatchLength.WithLimit(candidate + minMatch, ip + minMatch, (nuint)(ipEnd - ip) - (nuint)minMatch);
+                    ip += matched;
+                    lastDistance = (int)(baseMatch - candidate);
+                    EmitCopyLen(matched, ref commands);
+                    EmitDistance((uint)lastDistance, ref commands);
                     nextEmit = ip;
                     if (ip >= ipLimit)
                     {
                         goto EmitRemainder;
                     }
 
-                    candidate = HashCopyTail(data, ip, table, shift, minMatch, 2);
+                    candidate = HashCopyTail(ip, baseIp, table, shift, minMatch, 2);
                 }
 
-                nextHash = Hash(data, ++ip, shift, minMatch);
+                nextHash = Hash(++ip, shift, minMatch);
             }
         }
 
     EmitRemainder:
         if (nextEmit < ipEnd)
         {
-            int insert = ipEnd - nextEmit;
-            EmitInsertLen((uint)insert, commands, ref numCommands);
-            data.Slice(nextEmit, insert).CopyTo(literals.Slice(numLiterals));
-            numLiterals += insert;
+            uint insert = (uint)(ipEnd - nextEmit);
+            EmitInsertLen(insert, ref commands);
+            Buffer.MemoryCopy(nextEmit, literals, insert, insert);
+            literals += insert;
         }
 
-        numLiteralsRef = numLiterals;
-        numCommandsRef = numCommands;
+        literalsRef = literals;
+        commandsRef = commands;
     }
 
     /// <summary>brotli's <c>StoreCommands</c>: the codes from the histograms, then the commands and literals.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void StoreCommands(TwoPassArena s, ReadOnlySpan<byte> literals, ReadOnlySpan<uint> commands, ref int storageIx, Span<byte> storage)
+    private static void StoreCommands(TwoPassArena s, byte* literals, int numLiterals, uint* commands, int numCommands, ref int storageIx, byte* storage)
     {
-        s.CmdDepth.AsSpan().Clear();
-        s.CmdBits.AsSpan().Clear();
-        s.CmdHisto.AsSpan().Clear();
+        new Span<byte>(s.CmdDepth, 128).Clear();
+        new Span<ushort>(s.CmdBits, 128).Clear();
+        new Span<uint>(s.CmdHisto, 128).Clear();
 
         // The literals counted in four histograms interleaved, so that repeated bytes do not wait on one
         // another's increments, then summed.
-        Span<uint> parts = stackalloc uint[4 * 256];
+        uint* parts = stackalloc uint[4 * 256];
+        new Span<uint>(parts, 4 * 256).Clear();
         int at = 0;
-        for (; at + 4 <= literals.Length; at += 4)
+        for (; at + 4 <= numLiterals; at += 4)
         {
-            ReadOnlySpan<byte> four = literals.Slice(at, 4);
-            ++parts[four[0]];
-            ++parts[256 + four[1]];
-            ++parts[512 + four[2]];
-            ++parts[768 + four[3]];
+            ++parts[literals[at]];
+            ++parts[256 + literals[at + 1]];
+            ++parts[512 + literals[at + 2]];
+            ++parts[768 + literals[at + 3]];
         }
 
-        for (; at < literals.Length; ++at)
+        for (; at < numLiterals; ++at)
         {
             ++parts[literals[at]];
         }
 
-        Span<uint> litHisto = s.LitHisto.AsSpan(0, 256);
+        uint* litHisto = s.LitHisto;
         for (int i = 0; i < 256; ++i)
         {
             litHisto[i] = parts[i] + parts[256 + i] + parts[512 + i] + parts[768 + i];
         }
 
-        BitStream.BuildAndStoreHuffmanTreeFast(s.TmpTree, litHisto, (nuint)literals.Length, 8, s.LitDepth, s.LitBits, ref storageIx, storage);
-        Span<uint> cmdHisto = s.CmdHisto.AsSpan(0, 128);
-        for (int i = 0; i < commands.Length; ++i)
+        BitStream.BuildAndStoreHuffmanTreeFast(s.TmpTree, s.LitHisto, (nuint)numLiterals, 8, s.LitDepth, s.LitBits, ref storageIx, storage);
+        for (int i = 0; i < numCommands; ++i)
         {
-            ++cmdHisto[(int)(commands[i] & 0xFF)];
+            ++s.CmdHisto[commands[i] & 0xFF];
         }
 
-        cmdHisto[1] += 1;
-        cmdHisto[2] += 1;
-        cmdHisto[64] += 1;
-        cmdHisto[84] += 1;
+        s.CmdHisto[1] += 1;
+        s.CmdHisto[2] += 1;
+        s.CmdHisto[64] += 1;
+        s.CmdHisto[84] += 1;
         BuildAndStoreCommandPrefixCode(s, ref storageIx, storage);
 
         // The codes combined: a literal's bits with its depth from bit 16; a command's bits, its depth from
@@ -441,8 +458,8 @@ internal static class CompressFragmentTwoPass
         // its extra bits, and four literals, of 14 bits at most each, one write.
         ReadOnlySpan<byte> numExtraBits = NumExtraBits;
         ReadOnlySpan<uint> insertOffset = InsertOffset;
-        Span<uint> litCodes = stackalloc uint[256];
-        Span<uint> cmdCodes = stackalloc uint[128];
+        uint* litCodes = stackalloc uint[256];
+        uint* cmdCodes = stackalloc uint[128];
         BitWriter.CombineCodes(s.LitDepth, s.LitBits, litCodes, 256);
         BitWriter.CombineCodes(s.CmdDepth, s.CmdBits, cmdCodes, 128);
         for (int i = 0; i < 128; ++i)
@@ -451,115 +468,113 @@ internal static class CompressFragmentTwoPass
         }
 
         var sink = new BitSink(storageIx, storage);
-        int literal = 0;
-        for (int i = 0; i < commands.Length; ++i)
+        for (int i = 0; i < numCommands; ++i)
         {
             uint cmd = commands[i];
             uint code = cmd & 0xFF;
             uint extra = cmd >> 8;
-            uint combined = cmdCodes[(int)code];
+            uint combined = cmdCodes[code];
             int depth = (int)((combined >> 16) & 0xFF);
             sink.Write(depth + (int)(combined >> 24), (combined & 0xFFFF) | ((ulong)extra << depth));
             if (code < 24)
             {
-                int end = literal + (int)(insertOffset[(int)code] + extra);
-                for (; literal + 4 <= end; literal += 4)
+                byte* end = literals + insertOffset[(int)code] + extra;
+                for (; literals + 4 <= end; literals += 4)
                 {
-                    ReadOnlySpan<byte> four = literals.Slice(literal, 4);
-                    uint lit = litCodes[four[0]];
+                    uint lit = litCodes[literals[0]];
                     ulong bits = lit & 0xFFFF;
                     int count = (int)(lit >> 16);
-                    lit = litCodes[four[1]];
+                    lit = litCodes[literals[1]];
                     bits |= (ulong)(lit & 0xFFFF) << count;
                     count += (int)(lit >> 16);
-                    lit = litCodes[four[2]];
+                    lit = litCodes[literals[2]];
                     bits |= (ulong)(lit & 0xFFFF) << count;
                     count += (int)(lit >> 16);
-                    lit = litCodes[four[3]];
+                    lit = litCodes[literals[3]];
                     bits |= (ulong)(lit & 0xFFFF) << count;
                     count += (int)(lit >> 16);
                     sink.Write(count, bits);
                 }
 
-                for (; literal < end; literal++)
+                for (; literals < end; literals++)
                 {
-                    uint lit = litCodes[literals[literal]];
+                    uint lit = litCodes[*literals];
                     sink.Write((int)(lit >> 16), lit & 0xFFFF);
                 }
             }
         }
 
-        storageIx = sink.Finish();
+        storageIx = sink.Finish(storage);
     }
 
-    private static bool ShouldCompress(TwoPassArena s, ReadOnlySpan<byte> input, int numLiterals)
+    private static bool ShouldCompress(TwoPassArena s, byte* input, int inputSize, int numLiterals)
     {
-        double corpusSize = input.Length;
+        double corpusSize = inputSize;
         if (numLiterals < MinRatio * corpusSize)
         {
             return true;
         }
 
         double maxTotalBitCost = corpusSize * 8 * MinRatio / SampleRate;
-        Span<uint> histo = s.LitHisto.AsSpan(0, 256);
-        histo.Clear();
-        for (int i = 0; i < input.Length; i += SampleRate)
+        new Span<uint>(s.LitHisto, 256).Clear();
+        for (int i = 0; i < inputSize; i += SampleRate)
         {
-            ++histo[input[i]];
+            ++s.LitHisto[input[i]];
         }
 
-        return FastLog.BitsEntropy(histo) < maxTotalBitCost;
+        return FastLog.BitsEntropy(s.LitHisto, 256) < maxTotalBitCost;
     }
 
-    private static void EmitUncompressedMetaBlock(ReadOnlySpan<byte> input, ref int storageIx, Span<byte> storage)
+    private static void EmitUncompressedMetaBlock(byte* input, int inputSize, ref int storageIx, byte* storage)
     {
-        CompressFragment.StoreMetaBlockHeader(input.Length, true, ref storageIx, storage);
+        CompressFragment.StoreMetaBlockHeader(inputSize, true, ref storageIx, storage);
         storageIx = (storageIx + 7) & ~7;
-        input.CopyTo(storage.Slice(storageIx >> 3));
-        storageIx += input.Length << 3;
+        Buffer.MemoryCopy(input, storage + (storageIx >> 3), inputSize, inputSize);
+        storageIx += inputSize << 3;
         storage[storageIx >> 3] = 0;
     }
 
     /// <summary>
-    /// brotli's <c>BrotliCompressFragmentTwoPass</c>: <paramref name="input"/> in blocks of
+    /// brotli's <c>BrotliCompressFragmentTwoPass</c>: <paramref name="inputSize"/> bytes in blocks of
     /// <see cref="TwoPassArena.BlockSize"/>, then, if it is the last fragment, the empty last meta-block.
     /// <paramref name="table"/> holds <paramref name="tableSize"/> zeros, a power of two from 2^8 to 2^17.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static void Compress(TwoPassArena s, ReadOnlySpan<byte> input, bool isLast, Span<int> table, int tableSize, ref int storageIx, Span<byte> storage)
+    public static void Compress(TwoPassArena s, byte* input, int inputSize, bool isLast, int* table, int tableSize, ref int storageIx, byte* storage)
     {
         int initialStorageIx = storageIx;
         int tableBits = BitOperations.Log2((uint)tableSize);
         int minMatch = tableBits <= 15 ? 4 : 6;
-        table = table.Slice(0, tableSize);
-        int block = 0;
-        int remaining = input.Length;
+        byte* baseIp = input;
+        byte* block = input;
+        int remaining = inputSize;
         while (remaining > 0)
         {
             int blockSize = Math.Min(remaining, TwoPassArena.BlockSize);
-            int numLiterals = 0;
-            int numCommands = 0;
+            uint* commands = s.Commands;
+            byte* literals = s.Literals;
             if (minMatch == 4)
             {
-                CreateCommands<MinMatch4>(input, block, blockSize, remaining, table, tableBits, s.Literals, ref numLiterals, s.Commands, ref numCommands);
+                CreateCommands<MinMatch4>(block, blockSize, remaining, baseIp, table, tableBits, ref literals, ref commands);
             }
             else
             {
-                CreateCommands<MinMatch6>(input, block, blockSize, remaining, table, tableBits, s.Literals, ref numLiterals, s.Commands, ref numCommands);
+                CreateCommands<MinMatch6>(block, blockSize, remaining, baseIp, table, tableBits, ref literals, ref commands);
             }
-
-            if (ShouldCompress(s, input.Slice(block, blockSize), numLiterals))
+            int numLiterals = (int)(literals - s.Literals);
+            if (ShouldCompress(s, block, blockSize, numLiterals))
             {
+                int numCommands = (int)(commands - s.Commands);
                 CompressFragment.StoreMetaBlockHeader(blockSize, false, ref storageIx, storage);
 
                 // No block splits, no contexts.
                 BitWriter.Write(13, 0, ref storageIx, storage);
-                StoreCommands(s, s.Literals.AsSpan(0, numLiterals), s.Commands.AsSpan(0, numCommands), ref storageIx, storage);
+                StoreCommands(s, s.Literals, numLiterals, s.Commands, numCommands, ref storageIx, storage);
             }
             else
             {
                 // Few matches and nearly 8 bits a byte: stored as it is, some 3 times faster.
-                EmitUncompressedMetaBlock(input.Slice(block, blockSize), ref storageIx, storage);
+                EmitUncompressedMetaBlock(block, blockSize, ref storageIx, storage);
             }
 
             block += blockSize;
@@ -567,10 +582,10 @@ internal static class CompressFragmentTwoPass
         }
 
         // Larger than the fragment stored as it is: stored as it is.
-        if (storageIx - initialStorageIx > 31 + (input.Length << 3))
+        if (storageIx - initialStorageIx > 31 + (inputSize << 3))
         {
             BitWriter.Rewind(initialStorageIx, ref storageIx, storage);
-            EmitUncompressedMetaBlock(input, ref storageIx, storage);
+            EmitUncompressedMetaBlock(input, inputSize, ref storageIx, storage);
         }
 
         if (isLast)
@@ -584,54 +599,49 @@ internal static class CompressFragmentTwoPass
     /// <summary>
     /// The trawl of brotli's <c>CreateCommands</c>: the next position from <paramref name="ip"/> on whose
     /// bytes match those at the last distance or at the table's position, looking further apart after
-    /// every 32 bytes without one; -1 past <paramref name="ipLimit"/>.
+    /// every 32 bytes without one; null past <paramref name="ipLimit"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int FindMatch<TMinMatch>(ReadOnlySpan<byte> data, int ip, int ipLimit, ref uint nextHashRef, Span<int> table, int shift, int lastDistance, out int candidateOut)
+    private static byte* FindMatch<TMinMatch>(byte* ip, byte* ipLimit, ref uint nextHashRef, int* table, byte* baseIp, int shift, int lastDistance, out byte* candidateOut)
         where TMinMatch : struct, IMinMatch
     {
         int minMatch = TMinMatch.Value;
         uint nextHash = nextHashRef;
-        // The 8 bytes at the next position, hashed for it and then compared as the current position's: one
-        // checked read a position, and one a candidate.
-        ulong nextBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(ip, 8));
         uint skip = 32;
-        int nextIp = ip;
-        int candidate;
+        byte* nextIp = ip;
+        byte* candidate;
         do
         {
-            ulong bytes;
             do
             {
                 uint hash = nextHash;
                 uint bytesBetweenHashLookups = skip++ >> 5;
                 ip = nextIp;
-                bytes = nextBytes;
-                nextIp = ip + (int)bytesBetweenHashLookups;
+                nextIp = ip + bytesBetweenHashLookups;
                 if (nextIp > ipLimit)
                 {
                     nextHashRef = nextHash;
-                    candidateOut = -1;
-                    return -1;
+                    candidateOut = null;
+                    return null;
                 }
 
-                nextBytes = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(nextIp, 8));
-                nextHash = HashBytesAtOffset(nextBytes, 0, shift, minMatch);
+                nextHash = Hash(nextIp, shift, minMatch);
                 candidate = ip - lastDistance;
-                if (MatchesFirst(bytes, data, candidate, minMatch) && candidate < ip)
+                if (IsMatch(ip, candidate, minMatch) && candidate < ip)
                 {
-                    table[(int)hash] = ip;
+                    table[hash] = (int)(ip - baseIp);
                     break;
                 }
 
-                candidate = table[(int)hash];
-                table[(int)hash] = ip;
+                candidate = baseIp + table[hash];
+                table[hash] = (int)(ip - baseIp);
             }
-            while (!MatchesFirst(bytes, data, candidate, minMatch));
+            while (!IsMatch(ip, candidate, minMatch));
         }
 
         // A candidate too far is no match: search on.
         while (ip - candidate > MaxDistance);
+
         nextHashRef = nextHash;
         candidateOut = candidate;
         return ip;

@@ -23,7 +23,7 @@ internal struct HuffmanTree
 /// brotli's Huffman code construction (<c>c/enc/entropy_encode.c</c>), step for step: the same depths
 /// from the same counts, and the same RLE of the depths, hence the same bytes.
 /// </summary>
-internal static class EntropyEncode
+internal static unsafe class EntropyEncode
 {
     /// <summary>The order of a sort of Huffman tree nodes.</summary>
     public interface IComparer
@@ -52,7 +52,7 @@ internal static class EntropyEncode
     /// brotli's <c>SortHuffmanTreeItems</c>: an insertion sort below 13 items, a Shell sort over its gaps
     /// above. With <see cref="ByCount"/>, ties end where this very algorithm puts them, so it is kept as is.
     /// </summary>
-    public static void Sort<TComparer>(Span<HuffmanTree> items, int n)
+    public static void Sort<TComparer>(HuffmanTree* items, int n)
         where TComparer : struct, IComparer
     {
         if (n < 13)
@@ -96,9 +96,9 @@ internal static class EntropyEncode
     }
 
     /// <summary>The depth of each leaf under <paramref name="p0"/>; false when one exceeds <paramref name="maxDepth"/>.</summary>
-    public static bool SetDepth(int p0, Span<HuffmanTree> pool, Span<byte> depth, int maxDepth)
+    public static bool SetDepth(int p0, HuffmanTree* pool, byte* depth, int maxDepth)
     {
-        Span<int> stack = stackalloc int[16];
+        int* stack = stackalloc int[16];
         int level = 0;
         int p = p0;
         stack[0] = -1;
@@ -136,11 +136,10 @@ internal static class EntropyEncode
     /// <summary>
     /// brotli's <c>BrotliCreateHuffmanTree</c>: the depths of a Huffman code of at most
     /// <paramref name="treeLimit"/> bits over <paramref name="data"/>'s counts, the smallest counts raised
-    /// until it fits. <paramref name="tree"/> holds 2 * <paramref name="data"/>.Length + 1 nodes.
+    /// until it fits. <paramref name="tree"/> holds 2 * <paramref name="length"/> + 1 nodes.
     /// </summary>
-    public static void CreateHuffmanTree(ReadOnlySpan<uint> data, int treeLimit, Span<HuffmanTree> tree, Span<byte> depth)
+    public static void CreateHuffmanTree(uint* data, int length, int treeLimit, HuffmanTree* tree, byte* depth)
     {
-        int length = data.Length;
         var sentinel = new HuffmanTree(uint.MaxValue, -1, -1);
         for (uint countLimit = 1; ; countLimit *= 2)
         {
@@ -205,7 +204,7 @@ internal static class EntropyEncode
         }
     }
 
-    private static void Reverse(Span<byte> v, int start, int end)
+    private static void Reverse(byte* v, int start, int end)
     {
         --end;
         while (start < end)
@@ -216,7 +215,7 @@ internal static class EntropyEncode
         }
     }
 
-    private static void WriteHuffmanTreeRepetitions(byte previousValue, byte value, int repetitions, ref int treeSize, Span<byte> tree, Span<byte> extraBitsData)
+    private static void WriteHuffmanTreeRepetitions(byte previousValue, byte value, int repetitions, ref int treeSize, byte* tree, byte* extraBitsData)
     {
         if (previousValue != value)
         {
@@ -266,7 +265,7 @@ internal static class EntropyEncode
         Reverse(extraBitsData, start, treeSize);
     }
 
-    private static void WriteHuffmanTreeRepetitionsZeros(int repetitions, ref int treeSize, Span<byte> tree, Span<byte> extraBitsData)
+    private static void WriteHuffmanTreeRepetitionsZeros(int repetitions, ref int treeSize, byte* tree, byte* extraBitsData)
     {
         if (repetitions == 11)
         {
@@ -313,7 +312,7 @@ internal static class EntropyEncode
     /// compress better with the RLE of the code length code. <paramref name="goodForRle"/> is scratch of
     /// <paramref name="length"/> bytes.
     /// </summary>
-    public static void OptimizeHuffmanCountsForRle(int length, Span<uint> counts, Span<byte> goodForRle)
+    public static void OptimizeHuffmanCountsForRle(int length, uint* counts, byte* goodForRle)
     {
         int nonzeroCount = 0;
         const int StreakLimit = 1240;
@@ -382,7 +381,7 @@ internal static class EntropyEncode
         }
 
         // The counts that RLE codes already cover: runs of 5 zeros or more, of 7 other values or more.
-        goodForRle.Slice(0, length).Clear();
+        new Span<byte>(goodForRle, length).Clear();
         {
             uint symbol = counts[0];
             int step = 0;
@@ -475,7 +474,7 @@ internal static class EntropyEncode
         }
     }
 
-    private static void DecideOverRleUse(ReadOnlySpan<byte> depth, int length, out bool useRleForNonZero, out bool useRleForZero)
+    private static void DecideOverRleUse(byte* depth, int length, out bool useRleForNonZero, out bool useRleForZero)
     {
         int totalRepsZero = 0;
         int totalRepsNonZero = 0;
@@ -513,7 +512,7 @@ internal static class EntropyEncode
     /// brotli's <c>BrotliWriteHuffmanTree</c>: the depths as code length code symbols, with the repeat
     /// codes 16 and 17 and their extra bits.
     /// </summary>
-    public static void WriteHuffmanTree(ReadOnlySpan<byte> depth, int length, ref int treeSize, Span<byte> tree, Span<byte> extraBitsData)
+    public static void WriteHuffmanTree(byte* depth, int length, ref int treeSize, byte* tree, byte* extraBitsData)
     {
         byte previousValue = Prefix.InitialRepeatedCodeLength;
         bool useRleForNonZero = false;
@@ -598,16 +597,16 @@ internal static class EntropyEncode
     }
 
     /// <summary>brotli's <c>BrotliConvertBitDepthsToSymbols</c>: the canonical codes of the depths, bit-reversed.</summary>
-    public static void ConvertBitDepthsToSymbols(ReadOnlySpan<byte> depth, Span<ushort> bits)
+    public static void ConvertBitDepthsToSymbols(byte* depth, int length, ushort* bits)
     {
-        int length = depth.Length;
         const int MaxHuffmanBits = 16;
-        Span<ushort> blCount = stackalloc ushort[MaxHuffmanBits];
-        Span<ushort> nextCode = stackalloc ushort[MaxHuffmanBits];
+        ushort* blCount = stackalloc ushort[MaxHuffmanBits];
+        ushort* nextCode = stackalloc ushort[MaxHuffmanBits];
 
         // Four counts interleaved: most depths are equal, zeros mostly, and one count would make each
         // increment wait for the one before.
-        Span<ushort> counts = stackalloc ushort[4 * MaxHuffmanBits];
+        ushort* counts = stackalloc ushort[4 * MaxHuffmanBits];
+        new Span<ushort>(counts, 4 * MaxHuffmanBits).Clear();
         int at = 0;
         for (; at + 4 <= length; at += 4)
         {

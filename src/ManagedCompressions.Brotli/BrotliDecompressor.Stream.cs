@@ -9,7 +9,7 @@ namespace ManagedCompressions.Brotli;
 /// destination: the whole content is there, so the window is the content written so far, and nothing
 /// goes through a ring buffer.
 /// </summary>
-public sealed partial class BrotliDecompressor
+public sealed unsafe partial class BrotliDecompressor
 {
     /// <summary>The bit reader, between the methods that are not inlined into the command loop.</summary>
     private BitReader _br;
@@ -29,47 +29,23 @@ public sealed partial class BrotliDecompressor
     /// <summary>The four last distances, and the index of the next one to write.</summary>
     private Fixed _s;
 
-    /// <summary>The small arrays of the state, inline.</summary>
+    /// <summary>The small arrays of the state, which only a struct can hold inline.</summary>
     private struct Fixed
     {
-        public Array4<int> DistRb;
-        public Array3<int> NumBlockTypes;
-        public Array3<int> BlockLength;
-        public Array6<int> BlockTypeRb;
-        public Array8<uint> TrivialLiteralContexts;
-    }
-
-    [InlineArray(3)]
-    private struct Array3<T>
-    {
-        private T _element;
-    }
-
-    [InlineArray(4)]
-    private struct Array4<T>
-    {
-        private T _element;
-    }
-
-    [InlineArray(6)]
-    private struct Array6<T>
-    {
-        private T _element;
-    }
-
-    [InlineArray(8)]
-    private struct Array8<T>
-    {
-        private T _element;
+        public fixed int DistRb[4];
+        public fixed int NumBlockTypes[3];
+        public fixed int BlockLength[3];
+        public fixed int BlockTypeRb[6];
+        public fixed uint TrivialLiteralContexts[8];
     }
 
     private int _distRbIndex;
 
-    private BrotliError DecodeStream(ReadOnlySpan<byte> src, Span<byte> dst, out int consumed, out int written)
+    private BrotliError DecodeStream(byte* src, int srcLength, byte* dst, int dstLength, out int consumed, out int written)
     {
         consumed = 0;
         written = 0;
-        _br = new BitReader(0, src.Length);
+        _br = new BitReader(src, srcLength);
         _pos = 0;
         _s.DistRb[0] = 16;
         _s.DistRb[1] = 15;
@@ -77,7 +53,7 @@ public sealed partial class BrotliDecompressor
         _s.DistRb[3] = 4;
         _distRbIndex = 0;
 
-        BrotliError error = DecodeWindowBits(src);
+        BrotliError error = DecodeWindowBits();
         if (error != BrotliError.None)
         {
             return error;
@@ -87,7 +63,7 @@ public sealed partial class BrotliDecompressor
         bool last;
         do
         {
-            error = DecodeMetaBlockHeader(src, out last, out bool uncompressed, out bool metadata);
+            error = DecodeMetaBlockHeader(out last, out bool uncompressed, out bool metadata);
             if (error != BrotliError.None)
             {
                 return error;
@@ -117,12 +93,12 @@ public sealed partial class BrotliDecompressor
                 continue;
             }
 
-            if (_metaBlockRemaining > dst.Length - _pos)
+            if (_metaBlockRemaining > dstLength - _pos)
             {
                 return _br.Overrun ? BrotliError.Truncated : BrotliError.DestinationTooSmall;
             }
 
-            error = uncompressed ? CopyUncompressed(src, dst) : DecodeCompressedMetaBlock(src, dst);
+            error = uncompressed ? CopyUncompressed(dst) : DecodeCompressedMetaBlock(dst, dstLength);
             if (error != BrotliError.None)
             {
                 return error;
@@ -154,22 +130,22 @@ public sealed partial class BrotliDecompressor
     private BrotliError Fail(BrotliError error) => _br.Overrun ? BrotliError.Truncated : error;
 
     /// <summary>WBITS (RFC 7932, section 9.1): 1 to 7 bits.</summary>
-    private BrotliError DecodeWindowBits(ReadOnlySpan<byte> src)
+    private BrotliError DecodeWindowBits()
     {
-        if (_br.Read(src, 1) == 0)
+        if (_br.Read(1) == 0)
         {
             _windowBits = 16;
             return BrotliError.None;
         }
 
-        uint n = _br.Read(src, 3);
+        uint n = _br.Read(3);
         if (n != 0)
         {
             _windowBits = 17 + (int)n;
             return BrotliError.None;
         }
 
-        n = _br.Read(src, 3);
+        n = _br.Read(3);
         if (n == 1)
         {
             // 0x11: the large window extension, which brotli refuses unless asked for it.
@@ -184,28 +160,28 @@ public sealed partial class BrotliDecompressor
     /// ISLAST, ISLASTEMPTY, MNIBBLES, MLEN and ISUNCOMPRESSED, or a metadata block's MSKIPBYTES and
     /// MSKIPLEN (RFC 7932, section 9.2), into <see cref="_metaBlockRemaining"/>.
     /// </summary>
-    private BrotliError DecodeMetaBlockHeader(ReadOnlySpan<byte> src, out bool last, out bool uncompressed, out bool metadata)
+    private BrotliError DecodeMetaBlockHeader(out bool last, out bool uncompressed, out bool metadata)
     {
         uncompressed = false;
         metadata = false;
         _metaBlockRemaining = 0;
-        last = _br.Read(src, 1) != 0;
-        if (last && _br.Read(src, 1) != 0)
+        last = _br.Read(1) != 0;
+        if (last && _br.Read(1) != 0)
         {
             // ISLASTEMPTY.
             return BrotliError.None;
         }
 
-        int nibbles = (int)_br.Read(src, 2) + 4;
+        int nibbles = (int)_br.Read(2) + 4;
         if (nibbles == 7)
         {
             metadata = true;
-            if (_br.Read(src, 1) != 0)
+            if (_br.Read(1) != 0)
             {
                 return Fail(BrotliError.Reserved);
             }
 
-            int bytes = (int)_br.Read(src, 2);
+            int bytes = (int)_br.Read(2);
             if (bytes == 0)
             {
                 return BrotliError.None;
@@ -214,7 +190,7 @@ public sealed partial class BrotliDecompressor
             int length = 0;
             for (int i = 0; i < bytes; i++)
             {
-                uint b = _br.Read(src, 8);
+                uint b = _br.Read(8);
                 if (i + 1 == bytes && bytes > 1 && b == 0)
                 {
                     return Fail(BrotliError.ExuberantMetaNibble);
@@ -230,7 +206,7 @@ public sealed partial class BrotliDecompressor
         int mlen = 0;
         for (int i = 0; i < nibbles; i++)
         {
-            uint nibble = _br.Read(src, 4);
+            uint nibble = _br.Read(4);
             if (i + 1 == nibbles && nibbles > 4 && nibble == 0)
             {
                 return Fail(BrotliError.ExuberantNibble);
@@ -241,7 +217,7 @@ public sealed partial class BrotliDecompressor
 
         if (!last)
         {
-            uncompressed = _br.Read(src, 1) != 0;
+            uncompressed = _br.Read(1) != 0;
         }
 
         _metaBlockRemaining = mlen + 1;
@@ -267,7 +243,7 @@ public sealed partial class BrotliDecompressor
     }
 
     /// <summary>An uncompressed meta-block's bytes, once at a byte boundary, copied to the destination.</summary>
-    private BrotliError CopyUncompressed(ReadOnlySpan<byte> src, Span<byte> dst)
+    private BrotliError CopyUncompressed(byte* dst)
     {
         if (_br.Overrun)
         {
@@ -281,7 +257,7 @@ public sealed partial class BrotliDecompressor
             return BrotliError.Truncated;
         }
 
-        src.Slice(_br.Next, length).CopyTo(dst.Slice(_pos));
+        Buffer.MemoryCopy(_br.Next, dst + _pos, length, length);
         _br.Next += length;
         _pos += length;
         _metaBlockRemaining = 0;

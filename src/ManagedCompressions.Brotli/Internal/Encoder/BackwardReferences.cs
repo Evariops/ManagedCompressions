@@ -7,11 +7,11 @@ namespace ManagedCompressions.Brotli.Internal;
 /// brotli's <c>BrotliCreateBackwardReferences</c> (<c>c/enc/backward_references_inc.h</c>): the greedy
 /// search of qualities 2 to 9, with a lazy look one byte ahead, compiled for each hasher.
 /// </summary>
-internal static class BackwardReferences
+internal static unsafe class BackwardReferences
 {
     /// <summary>brotli's <c>ComputeDistanceCode</c>: a short code when the distance cache has the distance.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static nuint ComputeDistanceCode(nuint distance, nuint maxDistance, ReadOnlySpan<int> distCache)
+    public static nuint ComputeDistanceCode(nuint distance, nuint maxDistance, int* distCache)
     {
         if (distance <= maxDistance)
         {
@@ -61,14 +61,14 @@ internal static class BackwardReferences
         ref THasher hasherRef,
         nuint numBytes,
         nuint position,
-        ReadOnlySpan<byte> ringBuffer,
+        byte* ringBuffer,
         nuint ringBufferMask,
         int quality,
         int lgwin,
         in DistanceParams dist,
-        Span<int> distCache,
+        int* distCache,
         ref nuint lastInsertLen,
-        Span<Command> commands,
+        Command* commands,
         ref nuint numCommands,
         ref nuint numLiteralsRef)
         where THasher : struct, IHasher
@@ -77,7 +77,7 @@ internal static class BackwardReferences
         THasher hasher = hasherRef;
         nuint numLiterals = numLiteralsRef;
         nuint maxBackwardLimit = ((nuint)1 << lgwin) - Prefix.WindowGap;
-        int numNew = 0;
+        Command* origCommands = commands;
         nuint insertLength = lastInsertLen;
         nuint posEnd = position + numBytes;
         nuint storeEnd = numBytes >= (nuint)THasher.StoreLookahead ? position + numBytes - (nuint)THasher.StoreLookahead + 1 : position;
@@ -86,8 +86,6 @@ internal static class BackwardReferences
         nuint minScore = HasherCommon.ScoreBase + 100;
         nuint maxDistanceParam = dist.MaxDistance;
 
-        // The cache at its constant length, brotli's 4 distances and their 12 neighbours: no check for its first.
-        distCache = distCache.Slice(0, 16);
         hasher.PrepareDistanceCache(distCache);
         HasherSearchResult sr;
         HasherSearchResult sr2;
@@ -146,7 +144,7 @@ internal static class BackwardReferences
                         hasher.PrepareDistanceCache(distCache);
                     }
 
-                    Commands.Init(ref commands[numNew++], dist, insertLength, sr.Len, sr.LenCodeDelta, distanceCode);
+                    Commands.Init(commands++, dist, insertLength, sr.Len, sr.LenCodeDelta, distanceCode);
                 }
 
                 numLiterals += insertLength;
@@ -200,7 +198,7 @@ internal static class BackwardReferences
 
         insertLength += posEnd - position;
         lastInsertLen = insertLength;
-        numCommands += (nuint)numNew;
+        numCommands += (nuint)(commands - origCommands);
         numLiteralsRef = numLiterals;
         hasherRef = hasher;
     }
