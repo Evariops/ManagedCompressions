@@ -3,12 +3,13 @@
 **Zstandard, LZ4 and Brotli written entirely in C#.** No native library and no P/Invoke: the code runs
 wherever .NET runs on a little-endian processor, trims, and compiles with Native AOT.
 
-- **Brotli decompression faster than the brotli .NET ships**, 1.07 to 1.37× on x64, with brotli 1.1.1's
-  verdict and error code for every stream ([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md)).
-  Its compressor is under way.
+- **Brotli faster than the brotli .NET ships**, on x64: compression 1.00 to 1.60× at qualities 1 to 11,
+  with brotli 1.1.1's bytes at every quality, and up to 21× on small inputs; decompression 1.07 to 1.37×,
+  with brotli's verdict and error code for every stream ([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md)).
 
-- **Same bytes as the native libraries.** Every frame and block is byte-for-byte what libzstd 1.5.7 and
-  lz4 1.10.0 write, at every level, so the compression ratios are theirs. The tests check this.
+- **Same bytes as the native libraries.** Every frame, block and stream is byte-for-byte what libzstd
+  1.5.7, lz4 1.10.0 and brotli 1.1.1 write, at every level, so the compression ratios are theirs. The
+  tests check this.
 - **Faster where it counts.** Zstandard decompresses **1.3 to 1.5× faster** than native libzstd on arm64,
   and 1.0 to 1.2× on x64, where native libzstd has hand-written assembly. LZ4 decompresses 2 to 4 % faster
   than native lz4 on arm64. On x64 it is within 2 % of it on large blocks, and on 64 KiB pages at its
@@ -151,9 +152,13 @@ Lz4Block.Decompress(block.AsSpan(0, blockLength), content);
 ```csharp
 using ManagedCompressions.Brotli;
 
+var compressor = new BrotliCompressor(quality: 4);   // .NET's default quality; reuse it, it keeps its tables
+byte[] stream = new byte[BrotliCompressor.GetMaxCompressedLength(input.Length)];
+compressor.Compress(input, stream, out _, out int size);     // the bytes BrotliEncoder.TryCompress writes
+
 var decompressor = new BrotliDecompressor();         // reuse it, it keeps its tables
 byte[] content = new byte[contentSize];              // a stream does not record its size: store it beside
-OperationStatus status = decompressor.Decompress(stream, content, out int consumed, out int written);
+OperationStatus status = decompressor.Decompress(stream.AsSpan(0, size), content, out int consumed, out int written);
 ```
 
 `decompressor.LastError` names the check that refused a stream, as brotli does. The names do not clash
@@ -239,10 +244,22 @@ and the table shows one of those
 
 ### Brotli
 
-On x64 (AMD Ryzen 9 7950X), against the brotli 1.1.1 .NET ships, through `BrotliDecoder.TryDecompress`.
-The managed decoder writes straight into the destination where brotli goes through a ring buffer, decodes
-literals in runs between its checks, and looks literals up in tables of 10 bits where brotli's have 8
+On x64 (AMD Ryzen 9 7950X), against the brotli 1.1.1 .NET ships, through `BrotliEncoder.TryCompress`
+and `BrotliDecoder.TryDecompress`. The managed compressor writes brotli's bytes; it keeps its tables from
+one stream to the next where brotli allocates and clears them at every call, writes its bits through a
+64-bit accumulator, and runs the block splitter of qualities 10 and 11 on vectors. The decoder writes
+straight into the destination where brotli goes through a ring buffer, decodes literals in runs between
+its checks, and looks literals up in tables of 10 bits where brotli's have 8
 ([`src/ManagedCompressions.Brotli/README.md`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md#how-it-is-fast)).
+
+| Compression | 0 | 1 | 4 | 5 | 9 | 10 | 11 |
+|:--|--:|--:|--:|--:|--:|--:|--:|
+| silesia.tar sample, one stream | 0.95× | **1.06×** | **1.60×** | **1.16×** | 1.05× | **1.20×** | **1.14×** |
+| JSON records | 0.90× | **1.07×** | **1.10×** | **11.9×** | **21.0×** | **1.13×** | 1.03× |
+
+Qualities 4 to 9 move by up to 20 % from one process to the next, on both sides
+([`bench/results/x64/brotli-compression.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/brotli-compression.md)
+has every quality).
 
 | Decompression | 1 | 4 | 5 | 9 | 11 |
 |:--|--:|--:|--:|--:|--:|
@@ -264,24 +281,30 @@ x64 alike.
 |:--|--:|--:|--:|--:|--:|--:|
 | silesia.tar | 2.10 | 2.38 | 2.61 | 2.70 | 2.72 | 2.74 |
 
+| Brotli quality | 0 | 1 | 2 | 4 | 5 | 9 | 10 | 11 |
+|:--|--:|--:|--:|--:|--:|--:|--:|--:|
+| silesia.tar, 1 MiB every 16 MiB | 2.25 | 2.44 | 2.60 | 2.66 | 2.88 | 2.95 | 3.21 | 3.31 |
+| JSON records | 2.43 | 2.78 | 2.86 | 3.05 | 3.31 | 3.33 | 3.33 | 3.47 |
+
 ## What it supports
 
 | | Zstandard (`ManagedCompressions.Zstd`) | LZ4 (`ManagedCompressions.Lz4`) | Brotli (`ManagedCompressions.Brotli`) |
 |:--|:--|:--|:--|
 | Format | RFC 8878 frames, skippable frames | the LZ4 block format (Parquet's `LZ4_RAW`) | RFC 7932 streams, metadata blocks |
-| Compression levels | -131072 to 22, libzstd's bytes at each | acceleration 65537 to level 12, lz4's bytes at each | not yet: decompression only |
+| Compression levels | -131072 to 22, libzstd's bytes at each | acceleration 65537 to level 12, lz4's bytes at each | qualities 0 to 11, brotli's bytes at each |
 | Dictionaries | yes, at compression and decompression | no | the static dictionary; no shared dictionaries (RFC 9841) |
-| Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level | – |
+| Parameters | the level, the window, the long-distance matcher, the header's flags (`ZstdCompressionOptions`) | the level | the quality, the window (10 to 24 bits), the mode (generic, text, font) |
 | Checksums | XXH64, written on request, always verified | not in the block format | not in the format |
 | Parallel compression | `CompressAsync`, libzstd's multithreaded frames | no | – |
-| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames; `ZstdStream`, both ways | no | no: a stream is decoded in one call, from and into memory |
+| Streaming | decompression (`ZstdDecoder`), any size, its memory bounded by the window; compression (`ZstdEncoder`), libzstd's streamed frames; `ZstdStream`, both ways | no | no: a stream is compressed or decoded in one call, from and into memory |
 | Validation | accepts and refuses what libzstd does | refuses any literal or match past either end | accepts and refuses what brotli 1.1.1 does, with its error codes; refuses the large window |
 | Processors | little-endian: x64 and arm64; 32-bit x86, checked by hand; big-endian refused | the same | the same |
 
-Not supported: LZ4 streaming (a block is compressed in one call, from and into memory), one-shot
-inputs over 2 GiB (`ZstdEncoder` streams them), the LZ4 frame format, libzstd's finer parameters
-(strategy, hash and chain logs, target block size), and big-endian processors (IBM Z), where the
-constructors throw `PlatformNotSupportedException`. WebAssembly has not been tried.
+Not supported: LZ4 and Brotli streaming (a block or a stream is compressed in one call, from and into
+memory), Brotli's large window and shared dictionaries, one-shot inputs over 2 GiB (`ZstdEncoder`
+streams them), the LZ4 frame format, libzstd's finer parameters (strategy, hash and chain logs, target
+block size), and big-endian processors (IBM Z), where the constructors throw
+`PlatformNotSupportedException`. WebAssembly has not been tried.
 
 ## How it was measured
 
@@ -360,7 +383,7 @@ then pushes the packages to nuget.org.
 |:--|:--|
 | `src/ManagedCompressions.Zstd` | Zstandard: decompressor, compressor, dictionaries, parallel compression |
 | `src/ManagedCompressions.Lz4` | LZ4 block format: `Lz4Block` (decoder, default compressor), `Lz4Compressor` (every level) |
-| `src/ManagedCompressions.Brotli` | Brotli: `BrotliDecompressor` |
+| `src/ManagedCompressions.Brotli` | Brotli: `BrotliCompressor` (every quality), `BrotliDecompressor` |
 | `tests/` | differential tests against the native libraries, golden files, fuzzing |
 | `bench/ManagedCompressions.Bench` | level-by-level comparison with NativeCompressions |
 | `bench/ManagedCompressions.Benchmarks` | BenchmarkDotNet on silesia.tar, JIT and Native AOT (`--check` verifies every case once) |
