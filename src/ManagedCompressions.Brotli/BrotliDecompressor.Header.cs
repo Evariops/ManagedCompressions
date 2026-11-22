@@ -49,39 +49,85 @@ public sealed unsafe partial class BrotliDecompressor
     private int _numDirectDistanceCodes;
     private int _distanceAlphabetSize;
 
-    private readonly TreeGroup _literalGroup = new(Prefix.NumLiteralSymbols);
-    private readonly TreeGroup _commandGroup = new(Prefix.NumCommandSymbols);
-    private readonly TreeGroup _distanceGroup = new(MaxDistanceAlphabet);
+    private readonly TreeGroup _literalGroup = new(LiteralRootBits);
+    private readonly TreeGroup _commandGroup = new(CommandRootBits);
+    private readonly TreeGroup _distanceGroup = new(DistanceRootBits);
 
-    /// <summary>A group of prefix codes over one alphabet, in a table that grows as streams need, never shrinks.</summary>
+    /// <summary>
+    /// The width of the literal codes' root tables. Wider than brotli's 8 bits: a literal of 9 or 10
+    /// bits then takes one lookup instead of two.
+    /// </summary>
+    internal const int LiteralRootBits = 10;
+
+    /// <summary>The width of the insert-and-copy codes' root tables.</summary>
+    internal const int CommandRootBits = 8;
+
+    /// <summary>The width of the distance codes' root tables.</summary>
+    internal const int DistanceRootBits = 8;
+
+    /// <summary>
+    /// A group of prefix codes over one alphabet, built one after the other into a table that grows as
+    /// streams need, never shrinks.
+    /// </summary>
     private sealed class TreeGroup
     {
         private uint[] _codes = [];
         private nint[] _trees = [];
 
-        public TreeGroup(int alphabetSize) => AlphabetSize = alphabetSize;
+        public TreeGroup(int rootBits) => RootBits = rootBits;
 
-        public int AlphabetSize { get; }
+        /// <summary>The width of each code's root table.</summary>
+        public int RootBits { get; }
 
         public uint* Codes;
+
+        public int Capacity;
 
         /// <summary>The root of each code: a pointer into <see cref="Codes"/>.</summary>
         public nint* Trees;
 
-        public void Reserve(int count, int maxTableSize)
-        {
-            int size = checked(count * maxTableSize);
-            if (_codes.Length < size)
-            {
-                _codes = Pinned<uint>(size);
-                Codes = Pointer(_codes);
-            }
+        /// <summary>
+        /// The largest table of a code of <paramref name="alphabetSize"/> symbols: brotli's bound for its
+        /// 8-bit root tables; for wider ones, the root table plus, for each symbol, the half of the widest
+        /// second-level table its code could take at most.
+        /// </summary>
+        public int MaxTableSize(int alphabetSize) =>
+            RootBits == Huffman.RootBits
+                ? Huffman.MaxTableSize(alphabetSize)
+                : (1 << RootBits) + (alphabetSize << (Huffman.MaxCodeLength - 1 - RootBits));
 
+        public void ReserveTrees(int count)
+        {
             if (_trees.Length < count)
             {
                 _trees = Pinned<nint>(Math.Max(count, 8));
                 Trees = Pointer(_trees);
             }
+        }
+
+        /// <summary>
+        /// Room for <paramref name="size"/> entries past the <paramref name="used"/> first, which are kept,
+        /// as are the roots of the <paramref name="built"/> codes built in them.
+        /// </summary>
+        public void Ensure(int used, int size, int built)
+        {
+            if (used + size <= Capacity)
+            {
+                return;
+            }
+
+            int capacity = Math.Max(used + size, Capacity * 2);
+            uint[] codes = Pinned<uint>(capacity);
+            uint* moved = Pointer(codes);
+            Buffer.MemoryCopy(Codes, moved, (long)used * sizeof(uint), (long)used * sizeof(uint));
+            for (int i = 0; i < built; i++)
+            {
+                Trees[i] = (nint)(moved + ((uint*)Trees[i] - Codes));
+            }
+
+            _codes = codes;
+            Codes = moved;
+            Capacity = capacity;
         }
     }
 
@@ -210,19 +256,21 @@ public sealed unsafe partial class BrotliDecompressor
 
     private BrotliError DecodeTreeGroup(TreeGroup group, int alphabetSizeMax, int alphabetSizeLimit, int count)
     {
-        int maxTableSize = Huffman.MaxTableSize(alphabetSizeLimit);
-        group.Reserve(count, maxTableSize);
-        uint* next = group.Codes;
+        int maxTableSize = group.MaxTableSize(alphabetSizeLimit);
+        group.ReserveTrees(count);
+        int used = 0;
         for (int i = 0; i < count; i++)
         {
-            BrotliError error = ReadHuffmanCode(alphabetSizeMax, alphabetSizeLimit, next, out int tableSize);
+            group.Ensure(used, maxTableSize, i);
+            uint* table = group.Codes + used;
+            BrotliError error = ReadHuffmanCode(alphabetSizeMax, alphabetSizeLimit, table, out int tableSize, group.RootBits);
             if (error != BrotliError.None)
             {
                 return error;
             }
 
-            group.Trees[i] = (nint)next;
-            next += tableSize;
+            group.Trees[i] = (nint)table;
+            used += tableSize;
         }
 
         return BrotliError.None;
@@ -232,13 +280,13 @@ public sealed unsafe partial class BrotliDecompressor
     /// A prefix code (RFC 7932, section 3.4 and 3.5), into <paramref name="table"/>: a simple code of 1 to
     /// 4 symbols, or the lengths of every symbol through the code length code.
     /// </summary>
-    private BrotliError ReadHuffmanCode(int alphabetSizeMax, int alphabetSizeLimit, uint* table, out int tableSize)
+    private BrotliError ReadHuffmanCode(int alphabetSizeMax, int alphabetSizeLimit, uint* table, out int tableSize, int rootBits = Huffman.RootBits)
     {
         tableSize = 0;
         int kind = (int)_br.Read(2);
         if (kind == 1)
         {
-            return ReadSimpleHuffmanCode(alphabetSizeMax, alphabetSizeLimit, table, out tableSize);
+            return ReadSimpleHuffmanCode(alphabetSizeMax, alphabetSizeLimit, table, out tableSize, rootBits);
         }
 
         // The code length code: kind is how many of its first lengths are skipped (0, 2 or 3).
@@ -383,11 +431,13 @@ public sealed unsafe partial class BrotliDecompressor
             return Fail(BrotliError.HuffmanSpace);
         }
 
-        tableSize = Huffman.BuildTable(table, Huffman.RootBits, symbolLists, histogram);
+        tableSize = rootBits == Huffman.RootBits
+            ? Huffman.BuildTable<Huffman.Keys8>(table, rootBits, symbolLists, histogram)
+            : Huffman.BuildTable<Huffman.Keys16>(table, rootBits, symbolLists, histogram);
         return BrotliError.None;
     }
 
-    private BrotliError ReadSimpleHuffmanCode(int alphabetSizeMax, int alphabetSizeLimit, uint* table, out int tableSize)
+    private BrotliError ReadSimpleHuffmanCode(int alphabetSizeMax, int alphabetSizeLimit, uint* table, out int tableSize, int rootBits)
     {
         tableSize = 0;
         int numSymbols = (int)_br.Read(2);
@@ -420,7 +470,7 @@ public sealed unsafe partial class BrotliDecompressor
             numSymbols += (int)_br.Read(1);
         }
 
-        tableSize = Huffman.BuildSimpleTable(table, Huffman.RootBits, symbols, numSymbols);
+        tableSize = Huffman.BuildSimpleTable(table, rootBits, symbols, numSymbols);
         return BrotliError.None;
     }
 

@@ -164,12 +164,49 @@ internal static unsafe class Huffman
     }
 
     /// <summary>
+    /// The space of the reversed keys of <see cref="BuildTable{TKeys}"/>: brotli's 8 bits, for root tables
+    /// of at most 8 bits, or 16, for wider ones.
+    /// </summary>
+    public interface IKeys
+    {
+        /// <summary>The lowest bit of the reversed key, brotli's <c>BROTLI_REVERSE_BITS_LOWEST</c>.</summary>
+        static abstract uint Lowest { get; }
+
+        /// <summary>The key, bit-reversed over the width of the space.</summary>
+        static abstract uint Reverse(uint key);
+    }
+
+    /// <summary>Brotli's keys of 8 bits, for root tables of at most 8 bits.</summary>
+    public struct Keys8 : IKeys
+    {
+        public static uint Lowest => ReverseBitsLowest;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static uint Reverse(uint key) => Unsafe.Add(ref Unsafe.AsRef(in ReverseBits[0]), (int)key);
+    }
+
+    /// <summary>Keys of 16 bits, for root tables of up to 15 bits.</summary>
+    public struct Keys16 : IKeys
+    {
+        public static uint Lowest => 1u << 15;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static uint Reverse(uint key)
+        {
+            ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
+            return ((uint)Unsafe.Add(ref reverse, (int)(key & 0xFF)) << 8) | Unsafe.Add(ref reverse, (int)(key >> 8));
+        }
+    }
+
+    /// <summary>
     /// The table of a code given by its lengths: <paramref name="symbolLists"/> holds, for each length,
     /// a list of the symbols of that length in increasing order (heads at <c>length - 16</c>, links at
     /// the symbols, empty heads 0xFFFF), and <paramref name="count"/> the number of symbols of each
-    /// length, which this clears. Returns the number of entries written.
+    /// length, which this clears. Returns the number of entries written. Brotli's algorithm, over keys
+    /// of <typeparamref name="TKeys"/>'s width.
     /// </summary>
-    public static int BuildTable(uint* rootTable, int rootBits, ushort* symbolLists, ushort* count)
+    public static int BuildTable<TKeys>(uint* rootTable, int rootBits, ushort* symbolLists, ushort* count)
+        where TKeys : struct, IKeys
     {
         int maxLength = -1;
         while (symbolLists[maxLength] == 0xFFFF)
@@ -179,7 +216,6 @@ internal static unsafe class Huffman
 
         maxLength += MaxCodeLength + 1;
 
-        ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
         uint* table = rootTable;
         int tableBits = rootBits;
         int tableSize = 1 << tableBits;
@@ -193,7 +229,7 @@ internal static unsafe class Huffman
         }
 
         uint key = 0;
-        uint keyStep = ReverseBitsLowest;
+        uint keyStep = TKeys.Lowest;
         int symbol;
         int step = 2;
         int bits = 1;
@@ -204,7 +240,7 @@ internal static unsafe class Huffman
             {
                 symbol = symbolLists[symbol];
                 uint code = Entry(bits, symbol);
-                Replicate(table + Unsafe.Add(ref reverse, (int)key), step, tableSize, code);
+                Replicate(table + TKeys.Reverse(key), step, tableSize, code);
                 key += keyStep;
             }
 
@@ -220,22 +256,22 @@ internal static unsafe class Huffman
         }
 
         // The second-level tables, each pointed at by a root entry.
-        keyStep = ReverseBitsLowest >> (rootBits - 1);
-        uint subKey = ReverseBitsLowest << 1;
-        uint subKeyStep = ReverseBitsLowest;
+        keyStep = TKeys.Lowest >> (rootBits - 1);
+        uint subKey = TKeys.Lowest << 1;
+        uint subKeyStep = TKeys.Lowest;
         step = 2;
         for (int length = rootBits + 1; length <= maxLength; ++length)
         {
             symbol = length - (MaxCodeLength + 1);
             for (; count[length] != 0; --count[length])
             {
-                if (subKey == ReverseBitsLowest << 1)
+                if (subKey == TKeys.Lowest << 1)
                 {
                     table += tableSize;
                     tableBits = NextTableBitSize(count, length, rootBits);
                     tableSize = 1 << tableBits;
                     totalSize += tableSize;
-                    subKey = Unsafe.Add(ref reverse, (int)key);
+                    subKey = TKeys.Reverse(key);
                     key += keyStep;
                     rootTable[subKey] = Entry(tableBits + rootBits, (int)(table - rootTable));
                     subKey = 0;
@@ -243,7 +279,7 @@ internal static unsafe class Huffman
 
                 symbol = symbolLists[symbol];
                 uint code = Entry(length - rootBits, symbol);
-                Replicate(table + Unsafe.Add(ref reverse, (int)subKey), step, tableSize, code);
+                Replicate(table + TKeys.Reverse(subKey), step, tableSize, code);
                 subKey += subKeyStep;
             }
 

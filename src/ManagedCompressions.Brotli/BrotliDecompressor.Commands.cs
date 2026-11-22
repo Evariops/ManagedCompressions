@@ -201,7 +201,7 @@ public sealed unsafe partial class BrotliDecompressor
                 Refill<TMode>(ref bits, ref count, ref next, end);
             }
 
-            int command = DecodeSymbol(commandTree, ref bits, ref count);
+            int command = DecodeSymbol(commandTree, ref bits, ref count, CommandRootBits);
             ulong code = Unsafe.Add(ref commandCodes, command);
             int insertExtraBits = (int)(code & 0xFF);
             int copyExtraBits = (int)((code >> 8) & 0xFF);
@@ -273,27 +273,63 @@ public sealed unsafe partial class BrotliDecompressor
             if (trivial)
             {
                 uint* tree = literalTree;
-                do
+                if (!careful)
+                {
+                    // Three literals of at most 15 bits each per refill of at least 56.
+                    for (; n >= 3; n -= 3)
+                    {
+                        if (count < 3 * Huffman.MaxCodeLength)
+                        {
+                            Refill<TMode>(ref bits, ref count, ref next, end);
+                        }
+
+                        op[0] = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
+                        op[1] = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
+                        op[2] = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
+                        op += 3;
+                    }
+                }
+
+                for (; n != 0; n--)
                 {
                     if (count < Huffman.MaxCodeLength)
                     {
                         Refill<TMode>(ref bits, ref count, ref next, end);
                     }
 
-                    *op++ = (byte)DecodeSymbol(tree, ref bits, ref count);
+                    *op++ = (byte)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
                     if (careful && Overrun(next, end, count))
                     {
                         goto Truncated;
                     }
                 }
-                while (--n != 0);
             }
             else
             {
                 long written = op - dst;
                 uint p1 = written > 0 ? op[-1] : 0u;
                 uint p2 = written > 1 ? op[-2] : 0u;
-                do
+                if (!careful)
+                {
+                    for (; n >= 3; n -= 3)
+                    {
+                        if (count < 3 * Huffman.MaxCodeLength)
+                        {
+                            Refill<TMode>(ref bits, ref count, ref next, end);
+                        }
+
+                        p2 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p1] | lookup[256 + p2]], ref bits, ref count, LiteralRootBits);
+                        op[0] = (byte)p2;
+                        p1 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p2] | lookup[256 + p1]], ref bits, ref count, LiteralRootBits);
+                        op[1] = (byte)p1;
+                        p2 = (uint)DecodeSymbol((uint*)contextTrees[lookup[p1] | lookup[256 + p2]], ref bits, ref count, LiteralRootBits);
+                        op[2] = (byte)p2;
+                        op += 3;
+                        (p1, p2) = (p2, p1);
+                    }
+                }
+
+                for (; n != 0; n--)
                 {
                     if (count < Huffman.MaxCodeLength)
                     {
@@ -302,14 +338,13 @@ public sealed unsafe partial class BrotliDecompressor
 
                     uint* tree = (uint*)contextTrees[lookup[p1] | lookup[256 + p2]];
                     p2 = p1;
-                    p1 = (uint)DecodeSymbol(tree, ref bits, ref count);
+                    p1 = (uint)DecodeSymbol(tree, ref bits, ref count, LiteralRootBits);
                     *op++ = (byte)p1;
                     if (careful && Overrun(next, end, count))
                     {
                         goto Truncated;
                     }
                 }
-                while (--n != 0);
             }
 
             if (insert == 0)
@@ -358,7 +393,7 @@ public sealed unsafe partial class BrotliDecompressor
                 Refill<TMode>(ref bits, ref count, ref next, end);
             }
 
-            int code = DecodeSymbol((uint*)distanceTrees[distanceTreeIndex], ref bits, ref count);
+            int code = DecodeSymbol((uint*)distanceTrees[distanceTreeIndex], ref bits, ref count, DistanceRootBits);
             blockLength2--;
             distanceContext = 0;
             if ((code & ~0xF) == 0)
@@ -521,14 +556,14 @@ public sealed unsafe partial class BrotliDecompressor
 
     /// <summary>Decodes a symbol of the code whose table is <paramref name="table"/>; at least 15 bits must be there.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int DecodeSymbol(uint* table, ref ulong bits, ref int count)
+    private static int DecodeSymbol(uint* table, ref ulong bits, ref int count, int rootBits = Huffman.RootBits)
     {
-        uint entry = table[(nint)(bits & 0xFF)];
-        if ((entry & 0xFF) > Huffman.RootBits)
+        uint entry = table[(nint)(bits & ((1UL << rootBits) - 1))];
+        if ((entry & 0xFF) > (uint)rootBits)
         {
-            int extra = (int)(entry & 0xFF) - Huffman.RootBits;
-            bits >>= Huffman.RootBits;
-            count -= Huffman.RootBits;
+            int extra = (int)(entry & 0xFF) - rootBits;
+            bits >>= rootBits;
+            count -= rootBits;
             entry = table[(nint)(entry >> 16) + (nint)(bits & ((1UL << extra) - 1))];
         }
 
