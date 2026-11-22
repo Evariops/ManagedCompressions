@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.IO;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -126,6 +127,36 @@ internal static class Program
             byte[] content = new byte[input.Length];
             OperationStatus status = new BrotliDecompressor().Decompress(stream.AsSpan(0, size), content, out _, out int written);
             Expect(failures, $"brotli compression q{quality}", input, status == OperationStatus.Done && written == input.Length ? content : []);
+        }
+
+        // Brotli streams written through BrotliCompressionStream, as BrotliStream writes them, and read back.
+        foreach (int quality in (int[])[1, 5, 11])
+        {
+            byte[] input = quality >= 10 ? text.AsSpan(0, 128 << 10).ToArray() : text;
+            var expected = new MemoryStream();
+            var actual = new MemoryStream();
+            using (var native = new BrotliStream(expected, new BrotliCompressionOptions { Quality = quality }, leaveOpen: true))
+            using (var managed = new BrotliCompressionStream(actual, quality, leaveOpen: true))
+            {
+                for (int at = 0; at < input.Length; at += 70_000)
+                {
+                    native.Write(input, at, Math.Min(70_000, input.Length - at));
+                    managed.Write(input, at, Math.Min(70_000, input.Length - at));
+                }
+            }
+
+            if (!expected.ToArray().AsSpan().SequenceEqual(actual.ToArray()))
+            {
+                failures.Add($"brotli stream q{quality}: other bytes than BrotliStream's");
+            }
+
+            var content = new MemoryStream();
+            using (var reader = new BrotliCompressionStream(new MemoryStream(actual.ToArray()), CompressionMode.Decompress))
+            {
+                reader.CopyTo(content, 5000);
+            }
+
+            Expect(failures, $"brotli stream q{quality}", input, content.ToArray());
         }
 
         string where = $"{RuntimeInformation.ProcessArchitecture}, {RuntimeInformation.FrameworkDescription}";
