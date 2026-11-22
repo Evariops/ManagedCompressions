@@ -140,12 +140,12 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
         uint key = HashBytes(data, ix & mask);
         if (BucketSweep == 1)
         {
-            _buckets[(int)key] = (uint)ix;
+            _buckets.AsSpan(0, BucketSize)[(int)key] = (uint)ix;
         }
         else
         {
             uint off = (uint)ix & BucketSweepMask;
-            _buckets[(key + off) & BucketMask] = (uint)ix;
+            _buckets.AsSpan(0, BucketSize)[(int)((key + off) & BucketMask)] = (uint)ix;
         }
     }
 
@@ -191,7 +191,8 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void FindLongestMatch(ReadOnlySpan<byte> data, nuint ringBufferMask, ReadOnlySpan<int> distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
-        Span<uint> buckets = _buckets;
+        // The table at its constant length: a key, shifted down to the table's bits, needs no bounds check.
+        Span<uint> buckets = _buckets.AsSpan(0, BucketSize);
         nuint bestLenIn = result.Len;
         nuint curIxMasked = curIx & ringBufferMask;
         Prefetch(data, ringBufferMask, curIx + 1);
