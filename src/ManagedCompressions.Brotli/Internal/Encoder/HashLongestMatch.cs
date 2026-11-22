@@ -224,11 +224,10 @@ internal struct HashLongestMatch : IHasher
         result.Score = bestScore;
         if (minScore == bestScore && _dictNumMatches >= (_dictNumLookups >> 7))
         {
-            // On a copy: the search is out of line, and the result must not be exposed by its address.
-            HasherSearchResult dictionaryMatch = result;
+            // Into the result itself: a copy of it, just written field by field, would be read whole before
+            // the stores reach the cache.
             _dictNumLookups += 2;
-            _dictNumMatches += HasherCommon.SearchInStaticDictionaryDeep(cur, maxLength, dictionaryDistance, maxDistance, ref dictionaryMatch);
-            result = dictionaryMatch;
+            _dictNumMatches += HasherCommon.SearchInStaticDictionaryDeep(cur, maxLength, dictionaryDistance, maxDistance, ref result);
         }
     }
 }
@@ -450,11 +449,10 @@ internal struct HashLongestMatch64 : IHasher
         result.Score = bestScore;
         if (minScore == bestScore && _dictNumMatches >= (_dictNumLookups >> 7))
         {
-            // On a copy: the search is out of line, and the result must not be exposed by its address.
-            HasherSearchResult dictionaryMatch = result;
+            // Into the result itself: a copy of it, just written field by field, would be read whole before
+            // the stores reach the cache.
             _dictNumLookups += 2;
-            _dictNumMatches += HasherCommon.SearchInStaticDictionaryDeep(cur, maxLength, dictionaryDistance, maxDistance, ref dictionaryMatch);
-            result = dictionaryMatch;
+            _dictNumMatches += HasherCommon.SearchInStaticDictionaryDeep(cur, maxLength, dictionaryDistance, maxDistance, ref result);
         }
     }
 }
