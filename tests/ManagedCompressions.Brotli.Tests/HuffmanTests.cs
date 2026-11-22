@@ -11,7 +11,7 @@ namespace ManagedCompressions.Brotli.Tests;
 /// canonical codeword and followed by random bits, decodes to that symbol with its length, at every
 /// width of the root table the decoder uses.
 /// </summary>
-public sealed unsafe class HuffmanTests
+public sealed class HuffmanTests
 {
     public static IEnumerable<TheoryDataRow<int, int, int>> Codes()
     {
@@ -138,13 +138,7 @@ public sealed unsafe class HuffmanTests
         }
 
         uint[] table = new uint[(1 << rootBits) + (alphabet << Math.Max(0, 14 - rootBits)) + 512];
-        int size;
-        fixed (uint* t = table)
-        fixed (ushort* l = lists)
-        fixed (ushort* c = count)
-        {
-            size = Huffman.BuildTable(t, rootBits, l + 16, c);
-        }
+        int size = Huffman.BuildTable(table, rootBits, lists, count);
 
         Assert.True(size <= table.Length - 512);
         for (int symbol = 0; symbol < alphabet; symbol++)

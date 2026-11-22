@@ -1,7 +1,5 @@
 using System;
 using System.Buffers;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using ManagedCompressions.Brotli.Internal;
 
 namespace ManagedCompressions.Brotli;
@@ -27,14 +25,13 @@ namespace ManagedCompressions.Brotli;
 /// not part of RFC 7932.
 /// </para>
 /// </remarks>
-public sealed unsafe partial class BrotliDecompressor
+public sealed partial class BrotliDecompressor
 {
     /// <summary>Creates a decoder.</summary>
     /// <exception cref="PlatformNotSupportedException">The processor is big-endian: see the README.</exception>
     public BrotliDecompressor()
     {
         LittleEndian.Require();
-        AllocateHeaderTables();
     }
 
     /// <summary>
@@ -62,14 +59,7 @@ public sealed unsafe partial class BrotliDecompressor
     {
         bytesConsumed = 0;
         bytesWritten = 0;
-        BrotliError error;
-        int consumed;
-        int written;
-        fixed (byte* src = &MemoryMarshal.GetReference(source))
-        fixed (byte* dst = &MemoryMarshal.GetReference(destination))
-        {
-            error = DecodeStream(src, source.Length, dst, destination.Length, out consumed, out written);
-        }
+        BrotliError error = DecodeStream(source, destination, out int consumed, out int written);
 
         LastError = error;
         switch (error)
@@ -97,14 +87,4 @@ public sealed unsafe partial class BrotliDecompressor
 
     /// <summary>Clears <see cref="LastError"/>; the decoder holds no other state between calls.</summary>
     public void Reset() => LastError = BrotliError.None;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static T* Pointer<T>(T[] array)
-        where T : unmanaged =>
-        (T*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(array));
-
-    /// <summary>An array on the pinned heap, so that the pointers taken to it hold for its life.</summary>
-    private static T[] Pinned<T>(int length)
-        where T : unmanaged =>
-        GC.AllocateUninitializedArray<T>(length, pinned: true);
 }

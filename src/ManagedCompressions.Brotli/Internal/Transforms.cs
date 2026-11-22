@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 
@@ -8,7 +9,7 @@ namespace ManagedCompressions.Brotli.Internal;
 /// The word transforms of RFC 7932's static dictionary (appendix B), as brotli applies them
 /// (<c>BrotliTransformDictionaryWord</c> in <c>c/common/transform.c</c>).
 /// </summary>
-internal static unsafe partial class Transforms
+internal static partial class Transforms
 {
     /// <summary>The number of transforms of the format.</summary>
     public const int Count = 121;
@@ -34,57 +35,57 @@ internal static unsafe partial class Transforms
     /// <see cref="MaxLength"/> bytes; returns the length of the result. Uppercasing may change up to
     /// two bytes past the result, as brotli's does in its ring buffer's slack.
     /// </summary>
-    public static int Apply(byte* destination, byte* word, int length, int transform)
+    public static int Apply(Span<byte> destination, ReadOnlySpan<byte> word, int length, int transform)
     {
-        ref byte prefixSuffix = ref Unsafe.AsRef(in PrefixSuffix[0]);
-        ref byte map = ref Unsafe.AsRef(in PrefixSuffixMap[0]);
-        ref byte triplet = ref Unsafe.Add(ref Unsafe.AsRef(in Triplets[0]), transform * 3);
-        int type = Unsafe.Add(ref triplet, 1);
+        ReadOnlySpan<byte> prefixSuffix = PrefixSuffix;
+        ReadOnlySpan<byte> map = PrefixSuffixMap;
+        ReadOnlySpan<byte> triplet = Triplets.Slice(transform * 3, 3);
+        int type = triplet[1];
 
         int index = 0;
-        ref byte prefix = ref Unsafe.Add(ref prefixSuffix, Unsafe.Add(ref map, triplet));
-        int prefixLength = prefix;
+        int prefix = map[triplet[0]];
+        int prefixLength = prefixSuffix[prefix];
         for (int i = 1; i <= prefixLength; i++)
         {
-            destination[index++] = Unsafe.Add(ref prefix, i);
+            destination[index++] = prefixSuffix[prefix + i];
         }
 
+        int start = 0;
         if (type <= OmitLast9)
         {
             length -= type;
         }
         else if (type >= OmitFirst1 && type <= OmitFirst9)
         {
-            int skip = type - (OmitFirst1 - 1);
-            word += skip;
-            length -= skip;
+            start = type - (OmitFirst1 - 1);
+            length -= start;
         }
 
         for (int i = 0; i < length; i++)
         {
-            destination[index++] = word[i];
+            destination[index++] = word[start + i];
         }
 
         if (type == UppercaseFirst)
         {
-            ToUpperCase(destination + index - length);
+            ToUpperCase(destination, index - length);
         }
         else if (type == UppercaseAll)
         {
-            byte* uppercase = destination + index - length;
+            int at = index - length;
             while (length > 0)
             {
-                int step = ToUpperCase(uppercase);
-                uppercase += step;
+                int step = ToUpperCase(destination, at);
+                at += step;
                 length -= step;
             }
         }
 
-        ref byte suffix = ref Unsafe.Add(ref prefixSuffix, Unsafe.Add(ref map, Unsafe.Add(ref triplet, 2)));
-        int suffixLength = suffix;
+        int suffix = map[triplet[2]];
+        int suffixLength = prefixSuffix[suffix];
         for (int i = 1; i <= suffixLength; i++)
         {
-            destination[index++] = Unsafe.Add(ref suffix, i);
+            destination[index++] = prefixSuffix[suffix + i];
         }
 
         return index;
@@ -164,13 +165,13 @@ internal static unsafe partial class Transforms
     /// zeros past the dictionary guarantee. The bytes past the result are left undefined.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int ApplyFast(byte* destination, byte* word, int length, ref Info info)
+    public static int ApplyFast(Span<byte> destination, ReadOnlySpan<byte> word, int length, in Info info)
     {
-        Unsafe.WriteUnaligned(destination, info.Prefix);
-        byte* body = destination + info.PrefixLength;
+        BinaryPrimitives.WriteUInt64LittleEndian(destination, info.Prefix);
+        Span<byte> body = destination.Slice(info.PrefixLength);
         int skip = info.OmitFirst;
-        Unsafe.WriteUnaligned(body, Unsafe.ReadUnaligned<Vector128<byte>>(word + skip));
-        Unsafe.WriteUnaligned(body + 16, Unsafe.ReadUnaligned<Vector128<byte>>(word + skip + 16));
+        Vector128.Create(word.Slice(skip, 16)).CopyTo(body);
+        Vector128.Create(word.Slice(skip + 16, 16)).CopyTo(body.Slice(16));
         int bodyLength = length - skip - info.OmitLast;
         if (bodyLength < 0)
         {
@@ -182,49 +183,50 @@ internal static unsafe partial class Transforms
             Uppercase(body, bodyLength, info.Uppercase);
         }
 
-        Unsafe.WriteUnaligned(body + bodyLength, info.Suffix);
+        BinaryPrimitives.WriteUInt64LittleEndian(body.Slice(bodyLength), info.Suffix);
         return info.PrefixLength + bodyLength + info.SuffixLength;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void Uppercase(byte* body, int length, int type)
+    private static void Uppercase(Span<byte> body, int length, int type)
     {
         if (type == UppercaseFirst)
         {
-            ToUpperCase(body);
+            ToUpperCase(body, 0);
             return;
         }
 
+        int at = 0;
         while (length > 0)
         {
-            int step = ToUpperCase(body);
-            body += step;
+            int step = ToUpperCase(body, at);
+            at += step;
             length -= step;
         }
     }
 
-    /// <summary>Brotli's simplified uppercasing of the character at <paramref name="p"/>; returns its length.</summary>
-    private static int ToUpperCase(byte* p)
+    /// <summary>Brotli's simplified uppercasing of the character at <paramref name="at"/> in <paramref name="p"/>; returns its length.</summary>
+    private static int ToUpperCase(Span<byte> p, int at)
     {
-        if (p[0] < 0xC0)
+        if (p[at] < 0xC0)
         {
-            if (p[0] >= 'a' && p[0] <= 'z')
+            if (p[at] >= 'a' && p[at] <= 'z')
             {
-                p[0] ^= 32;
+                p[at] ^= 32;
             }
 
             return 1;
         }
 
         // An overly simplified uppercasing model for UTF-8.
-        if (p[0] < 0xE0)
+        if (p[at] < 0xE0)
         {
-            p[1] ^= 32;
+            p[at + 1] ^= 32;
             return 2;
         }
 
         // An arbitrary transform for three byte characters.
-        p[2] ^= 5;
+        p[at + 2] ^= 5;
         return 3;
     }
 }

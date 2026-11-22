@@ -11,7 +11,7 @@ namespace ManagedCompressions.Brotli;
 /// codes, the distance parameters, the context modes and maps, and the three groups of prefix codes.
 /// The validation is brotli's (<c>c/dec/decode.c</c>), check for check.
 /// </summary>
-public sealed unsafe partial class BrotliDecompressor
+public sealed partial class BrotliDecompressor
 {
     /// <summary>The size of a block type code's table: brotli's <c>BROTLI_HUFFMAN_MAX_SIZE_258</c>.</summary>
     private const int BlockTypeTableSize = 632;
@@ -25,23 +25,23 @@ public sealed unsafe partial class BrotliDecompressor
     /// <summary>The largest distance alphabet outside the large window: 16 + 120 + (24 &lt;&lt; 4).</summary>
     private const int MaxDistanceAlphabet = 16 + 120 + (Prefix.MaxDistanceBits << 4);
 
-    private uint* _blockTypeTrees;
-    private uint* _blockLengthTrees;
-    private uint* _contextMapTree;
-    private byte* _contextModes;
-    private byte* _contextMap;
-    private byte* _distContextMap;
-    private byte* _distExtraBits;
-    private int* _distOffset;
+    /// <summary>The offsets of the header's codes in <see cref="_headerTables"/>.</summary>
+    private const int BlockTypeTrees = 0;
+    private const int BlockLengthTrees = BlockTypeTrees + (3 * BlockTypeTableSize);
+    private const int ContextMapTree = BlockLengthTrees + (3 * BlockLengthTableSize);
+    private const int CodeLengthTable = ContextMapTree + ContextMapTableSize;
 
-    /// <summary>The scratch of a code's reading: the lists of symbols by length, heads 16 entries before.</summary>
-    private ushort* _symbolLists;
+    /// <summary>The codes of the block types, of the block lengths, of the context maps, and the code length code.</summary>
+    private readonly uint[] _headerTables = new uint[CodeLengthTable + (1 << Huffman.MaxCodeLengthCodeLength)];
 
-    private byte[] _headerBytes = [];
-    private uint[] _headerTables = [];
-    private int[] _distOffsetArray = [];
-    private ushort[] _symbolListsArray = [];
+    private readonly byte[] _contextModes = new byte[Prefix.MaxBlockTypes];
+    private readonly byte[] _contextMap = new byte[Prefix.MaxBlockTypes << Prefix.LiteralContextBits];
+    private readonly byte[] _distContextMap = new byte[Prefix.MaxBlockTypes << Prefix.DistanceContextBits];
+    private readonly byte[] _distExtraBits = new byte[MaxDistanceAlphabet];
+    private readonly int[] _distOffset = new int[MaxDistanceAlphabet];
 
+    /// <summary>The scratch of a code's reading: the lists of symbols by length, heads first (<see cref="Huffman.ListHeads"/>).</summary>
+    private readonly ushort[] _symbolLists = new ushort[Huffman.ListHeads + Prefix.NumCommandSymbols];
 
     private int _numLiteralTrees;
     private int _numDistanceTrees;
@@ -78,20 +78,16 @@ public sealed unsafe partial class BrotliDecompressor
     /// </summary>
     private sealed class TreeGroup
     {
-        private uint[] _codes = [];
-        private nint[] _trees = [];
-
         public TreeGroup(int rootBits) => RootBits = rootBits;
 
         /// <summary>The width of each code's root table.</summary>
         public int RootBits { get; set; }
 
-        public uint* Codes;
+        /// <summary>The codes' tables, one after the other.</summary>
+        public uint[] Codes = [];
 
-        public int Capacity;
-
-        /// <summary>The root of each code: a pointer into <see cref="Codes"/>.</summary>
-        public nint* Trees;
+        /// <summary>The root of each code: its offset in <see cref="Codes"/>.</summary>
+        public int[] Trees = [];
 
         /// <summary>
         /// The largest table of a code of <paramref name="alphabetSize"/> symbols: brotli's bound for its
@@ -105,103 +101,66 @@ public sealed unsafe partial class BrotliDecompressor
 
         public void ReserveTrees(int count)
         {
-            if (_trees.Length < count)
+            if (Trees.Length < count)
             {
-                _trees = Pinned<nint>(Math.Max(count, 8));
-                Trees = Pointer(_trees);
+                Trees = new int[Math.Max(count, 8)];
             }
         }
 
-        /// <summary>
-        /// Room for <paramref name="size"/> entries past the <paramref name="used"/> first, which are kept,
-        /// as are the roots of the <paramref name="built"/> codes built in them.
-        /// </summary>
-        public void Ensure(int used, int size, int built)
+        /// <summary>Room for <paramref name="size"/> entries past the <paramref name="used"/> first, which are kept.</summary>
+        public void Ensure(int used, int size)
         {
-            if (used + size <= Capacity)
+            if (used + size <= Codes.Length)
             {
                 return;
             }
 
-            int capacity = Math.Max(used + size, Capacity * 2);
-            uint[] codes = Pinned<uint>(capacity);
-            uint* moved = Pointer(codes);
-            Buffer.MemoryCopy(Codes, moved, (long)used * sizeof(uint), (long)used * sizeof(uint));
-            for (int i = 0; i < built; i++)
-            {
-                Trees[i] = (nint)(moved + ((uint*)Trees[i] - Codes));
-            }
-
-            _codes = codes;
-            Codes = moved;
-            Capacity = capacity;
+            uint[] codes = new uint[Math.Max(used + size, Codes.Length * 2)];
+            Codes.AsSpan(0, used).CopyTo(codes);
+            Codes = codes;
         }
     }
 
-    private void AllocateHeaderTables()
-    {
-        _headerTables = Pinned<uint>((3 * BlockTypeTableSize) + (3 * BlockLengthTableSize) + ContextMapTableSize + 32);
-        uint* tables = Pointer(_headerTables);
-        _blockTypeTrees = tables;
-        _blockLengthTrees = tables + (3 * BlockTypeTableSize);
-        _contextMapTree = _blockLengthTrees + (3 * BlockLengthTableSize);
-
-        const int ContextMapSize = Prefix.MaxBlockTypes << Prefix.LiteralContextBits;
-        const int DistContextMapSize = Prefix.MaxBlockTypes << Prefix.DistanceContextBits;
-        _headerBytes = Pinned<byte>(Prefix.MaxBlockTypes + ContextMapSize + DistContextMapSize + MaxDistanceAlphabet);
-        byte* bytes = Pointer(_headerBytes);
-        _contextModes = bytes;
-        _contextMap = bytes + Prefix.MaxBlockTypes;
-        _distContextMap = _contextMap + ContextMapSize;
-        _distExtraBits = _distContextMap + DistContextMapSize;
-
-        _distOffsetArray = Pinned<int>(MaxDistanceAlphabet);
-        _distOffset = Pointer(_distOffsetArray);
-
-        _symbolListsArray = Pinned<ushort>(Huffman.MaxCodeLength + 1 + Prefix.NumCommandSymbols);
-        _symbolLists = Pointer(_symbolListsArray) + Huffman.MaxCodeLength + 1;
-    }
-
     /// <summary>The header of a compressed meta-block, up to its first command.</summary>
-    private BrotliError DecodeCompressedHeader()
+    private BrotliError DecodeCompressedHeader(ReadOnlySpan<byte> src)
     {
         for (int i = 0; i < 3; i++)
         {
             _s.BlockLength[i] = Prefix.BlockSizeCap;
             _s.BlockTypeRb[(i * 2) + 0] = 1;
             _s.BlockTypeRb[(i * 2) + 1] = 0;
-            int types = DecodeVarLenUint8() + 1;
+            int types = DecodeVarLenUint8(src) + 1;
             _s.NumBlockTypes[i] = types;
             if (types < 2)
             {
                 continue;
             }
 
-            BrotliError error = ReadHuffmanCode(types + 2, types + 2, _blockTypeTrees + (i * BlockTypeTableSize), out _);
+            BrotliError error = ReadHuffmanCode(src, types + 2, types + 2, _headerTables.AsSpan(BlockTypeTrees + (i * BlockTypeTableSize), BlockTypeTableSize), out _);
             if (error != BrotliError.None)
             {
                 return error;
             }
 
-            error = ReadHuffmanCode(Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, _blockLengthTrees + (i * BlockLengthTableSize), out _);
+            error = ReadHuffmanCode(src, Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, _headerTables.AsSpan(BlockLengthTrees + (i * BlockLengthTableSize), BlockLengthTableSize), out _);
             if (error != BrotliError.None)
             {
                 return error;
             }
 
-            _s.BlockLength[i] = ReadBlockLength(_blockLengthTrees + (i * BlockLengthTableSize));
+            _s.BlockLength[i] = ReadBlockLength(src, BlockLengthTrees + (i * BlockLengthTableSize));
         }
 
-        uint bits = _br.Read(6);
+        uint bits = _br.Read(src, 6);
         _distancePostfixBits = (int)(bits & 3);
         _numDirectDistanceCodes = (int)(bits >> 2) << _distancePostfixBits;
 
         for (int i = 0; i < _s.NumBlockTypes[0]; i++)
         {
-            _contextModes[i] = (byte)_br.Read(2);
+            _contextModes[i] = (byte)_br.Read(src, 2);
         }
 
-        BrotliError result = DecodeContextMap(_s.NumBlockTypes[0] << Prefix.LiteralContextBits, out _numLiteralTrees, _contextMap);
+        BrotliError result = DecodeContextMap(src, _s.NumBlockTypes[0] << Prefix.LiteralContextBits, out _numLiteralTrees, _contextMap);
         if (result != BrotliError.None)
         {
             return result;
@@ -211,25 +170,25 @@ public sealed unsafe partial class BrotliDecompressor
         _literalGroup.RootBits = _metaBlockRemaining / WideRootContentPerCode >= _numLiteralTrees ? WideLiteralRootBits : Huffman.RootBits;
 
         _distanceAlphabetSize = Prefix.DistanceAlphabetSize(_distancePostfixBits, _numDirectDistanceCodes, Prefix.MaxDistanceBits);
-        result = DecodeContextMap(_s.NumBlockTypes[2] << Prefix.DistanceContextBits, out _numDistanceTrees, _distContextMap);
+        result = DecodeContextMap(src, _s.NumBlockTypes[2] << Prefix.DistanceContextBits, out _numDistanceTrees, _distContextMap);
         if (result != BrotliError.None)
         {
             return result;
         }
 
-        result = DecodeTreeGroup(_literalGroup, Prefix.NumLiteralSymbols, Prefix.NumLiteralSymbols, _numLiteralTrees);
+        result = DecodeTreeGroup(src, _literalGroup, Prefix.NumLiteralSymbols, Prefix.NumLiteralSymbols, _numLiteralTrees);
         if (result != BrotliError.None)
         {
             return result;
         }
 
-        result = DecodeTreeGroup(_commandGroup, Prefix.NumCommandSymbols, Prefix.NumCommandSymbols, _s.NumBlockTypes[1]);
+        result = DecodeTreeGroup(src, _commandGroup, Prefix.NumCommandSymbols, Prefix.NumCommandSymbols, _s.NumBlockTypes[1]);
         if (result != BrotliError.None)
         {
             return result;
         }
 
-        result = DecodeTreeGroup(_distanceGroup, _distanceAlphabetSize, _distanceAlphabetSize, _numDistanceTrees);
+        result = DecodeTreeGroup(src, _distanceGroup, _distanceAlphabetSize, _distanceAlphabetSize, _numDistanceTrees);
         if (result != BrotliError.None)
         {
             return result;
@@ -240,44 +199,44 @@ public sealed unsafe partial class BrotliDecompressor
     }
 
     /// <summary>A number of 0 to 255 in 1 to 11 bits (RFC 7932, section 9.2).</summary>
-    private int DecodeVarLenUint8()
+    private int DecodeVarLenUint8(ReadOnlySpan<byte> src)
     {
-        if (_br.Read(1) == 0)
+        if (_br.Read(src, 1) == 0)
         {
             return 0;
         }
 
-        int n = (int)_br.Read(3);
+        int n = (int)_br.Read(src, 3);
         if (n == 0)
         {
             return 1;
         }
 
-        return (1 << n) + (int)_br.Read(n);
+        return (1 << n) + (int)_br.Read(src, n);
     }
 
-    private int ReadBlockLength(uint* table)
+    /// <summary>A block length, through the code whose table is at <paramref name="tree"/> in <see cref="_headerTables"/>.</summary>
+    private int ReadBlockLength(ReadOnlySpan<byte> src, int tree)
     {
-        int code = _br.ReadSymbol(table);
-        return Prefix.BlockLengthOffset[code] + (int)_br.Read(Prefix.BlockLengthBits[code]);
+        int code = _br.ReadSymbol(src, _headerTables, tree);
+        return Prefix.BlockLengthOffset[code] + (int)_br.Read(src, Prefix.BlockLengthBits[code]);
     }
 
-    private BrotliError DecodeTreeGroup(TreeGroup group, int alphabetSizeMax, int alphabetSizeLimit, int count)
+    private BrotliError DecodeTreeGroup(ReadOnlySpan<byte> src, TreeGroup group, int alphabetSizeMax, int alphabetSizeLimit, int count)
     {
         int maxTableSize = group.MaxTableSize(alphabetSizeLimit);
         group.ReserveTrees(count);
         int used = 0;
         for (int i = 0; i < count; i++)
         {
-            group.Ensure(used, maxTableSize, i);
-            uint* table = group.Codes + used;
-            BrotliError error = ReadHuffmanCode(alphabetSizeMax, alphabetSizeLimit, table, out int tableSize, group.RootBits);
+            group.Ensure(used, maxTableSize);
+            BrotliError error = ReadHuffmanCode(src, alphabetSizeMax, alphabetSizeLimit, group.Codes.AsSpan(used, maxTableSize), out int tableSize, group.RootBits);
             if (error != BrotliError.None)
             {
                 return error;
             }
 
-            group.Trees[i] = (nint)table;
+            group.Trees[i] = used;
             used += tableSize;
         }
 
@@ -288,38 +247,38 @@ public sealed unsafe partial class BrotliDecompressor
     /// A prefix code (RFC 7932, section 3.4 and 3.5), into <paramref name="table"/>: a simple code of 1 to
     /// 4 symbols, or the lengths of every symbol through the code length code.
     /// </summary>
-    private BrotliError ReadHuffmanCode(int alphabetSizeMax, int alphabetSizeLimit, uint* table, out int tableSize, int rootBits = Huffman.RootBits)
+    private BrotliError ReadHuffmanCode(ReadOnlySpan<byte> src, int alphabetSizeMax, int alphabetSizeLimit, Span<uint> table, out int tableSize, int rootBits = Huffman.RootBits)
     {
         tableSize = 0;
-        int kind = (int)_br.Read(2);
+        int kind = (int)_br.Read(src, 2);
         if (kind == 1)
         {
-            return ReadSimpleHuffmanCode(alphabetSizeMax, alphabetSizeLimit, table, out tableSize, rootBits);
+            return ReadSimpleHuffmanCode(src, alphabetSizeMax, alphabetSizeLimit, table, out tableSize, rootBits);
         }
 
         // The code length code: kind is how many of its first lengths are skipped (0, 2 or 3).
-        byte* codeLengthCodeLengths = stackalloc byte[Prefix.NumCodeLengthCodes];
-        ushort* histogram = stackalloc ushort[Huffman.MaxCodeLength + 1];
-        new Span<byte>(codeLengthCodeLengths, Prefix.NumCodeLengthCodes).Clear();
-        new Span<ushort>(histogram, Huffman.MaxCodeLength + 1).Clear();
+        Span<byte> codeLengthCodeLengths = stackalloc byte[Prefix.NumCodeLengthCodes];
+        Span<ushort> histogram = stackalloc ushort[Huffman.MaxCodeLength + 1];
+        codeLengthCodeLengths.Clear();
+        histogram.Clear();
         uint space = 32;
         int numCodes = 0;
-        ref byte order = ref MemoryMarshal.GetReference(Prefix.CodeLengthCodeOrder);
-        ref byte prefixLength = ref MemoryMarshal.GetReference(Prefix.CodeLengthPrefixLength);
-        ref byte prefixValue = ref MemoryMarshal.GetReference(Prefix.CodeLengthPrefixValue);
+        ReadOnlySpan<byte> order = Prefix.CodeLengthCodeOrder;
+        ReadOnlySpan<byte> prefixLength = Prefix.CodeLengthPrefixLength;
+        ReadOnlySpan<byte> prefixValue = Prefix.CodeLengthPrefixValue;
         for (int i = kind; i < Prefix.NumCodeLengthCodes; i++)
         {
             if (_br.Count < 4)
             {
-                _br.Refill();
+                _br.Refill(src);
             }
 
             int ix = (int)(_br.Bits & 0xF);
-            int v = Unsafe.Add(ref prefixValue, ix);
-            int drop = Unsafe.Add(ref prefixLength, ix);
+            int v = prefixValue[ix];
+            int drop = prefixLength[ix];
             _br.Bits >>= drop;
             _br.Count -= drop;
-            codeLengthCodeLengths[Unsafe.Add(ref order, i)] = (byte)v;
+            codeLengthCodeLengths[order[i]] = (byte)v;
             if (v != 0)
             {
                 space -= 32u >> v;
@@ -338,17 +297,17 @@ public sealed unsafe partial class BrotliDecompressor
             return Fail(BrotliError.CodeLengthSpace);
         }
 
-        uint* codeLengthTable = _contextMapTree + ContextMapTableSize;
+        Span<uint> codeLengthTable = _headerTables.AsSpan(CodeLengthTable, 1 << Huffman.MaxCodeLengthCodeLength);
         Huffman.BuildCodeLengthsTable(codeLengthTable, codeLengthCodeLengths, histogram);
-        new Span<ushort>(histogram, Huffman.MaxCodeLength + 1).Clear();
+        histogram.Clear();
 
-        // The lists of symbols of each length, through their heads at length - 16.
-        ushort* symbolLists = _symbolLists;
-        int* nextSymbol = stackalloc int[Huffman.MaxCodeLength + 1];
+        // The lists of symbols of each length, through their heads, which come first.
+        Span<ushort> symbolLists = _symbolLists;
+        Span<int> nextSymbol = stackalloc int[Huffman.MaxCodeLength + 1];
         for (int i = 0; i <= Huffman.MaxCodeLength; i++)
         {
-            nextSymbol[i] = i - (Huffman.MaxCodeLength + 1);
-            symbolLists[nextSymbol[i]] = 0xFFFF;
+            nextSymbol[i] = i - Huffman.ListHeads;
+            symbolLists[i] = 0xFFFF;
         }
 
         int symbol = 0;
@@ -360,7 +319,7 @@ public sealed unsafe partial class BrotliDecompressor
         {
             if (_br.Count < 8)
             {
-                _br.Refill();
+                _br.Refill(src);
             }
 
             uint entry = codeLengthTable[(int)(_br.Bits & 31)];
@@ -374,7 +333,7 @@ public sealed unsafe partial class BrotliDecompressor
                 repeat = 0;
                 if (codeLength != 0)
                 {
-                    symbolLists[nextSymbol[codeLength]] = (ushort)symbol;
+                    symbolLists[Huffman.ListHeads + nextSymbol[codeLength]] = (ushort)symbol;
                     nextSymbol[codeLength] = symbol;
                     prevCodeLength = codeLength;
                     space -= 32768u >> codeLength;
@@ -419,7 +378,7 @@ public sealed unsafe partial class BrotliDecompressor
                 int nextAt = nextSymbol[repeatCodeLength];
                 do
                 {
-                    symbolLists[nextAt] = (ushort)symbol;
+                    symbolLists[Huffman.ListHeads + nextAt] = (ushort)symbol;
                     nextAt = symbol;
                 }
                 while (++symbol != lastSymbol);
@@ -443,15 +402,15 @@ public sealed unsafe partial class BrotliDecompressor
         return BrotliError.None;
     }
 
-    private BrotliError ReadSimpleHuffmanCode(int alphabetSizeMax, int alphabetSizeLimit, uint* table, out int tableSize, int rootBits)
+    private BrotliError ReadSimpleHuffmanCode(ReadOnlySpan<byte> src, int alphabetSizeMax, int alphabetSizeLimit, Span<uint> table, out int tableSize, int rootBits)
     {
         tableSize = 0;
-        int numSymbols = (int)_br.Read(2);
+        int numSymbols = (int)_br.Read(src, 2);
         int maxBits = 32 - BitOperations.LeadingZeroCount((uint)(alphabetSizeMax - 1));
-        ushort* symbols = stackalloc ushort[4];
+        Span<ushort> symbols = stackalloc ushort[4];
         for (int i = 0; i <= numSymbols; i++)
         {
-            uint v = _br.Read(maxBits);
+            uint v = _br.Read(src, maxBits);
             if (v >= (uint)alphabetSizeLimit)
             {
                 return Fail(BrotliError.SimpleHuffmanAlphabet);
@@ -473,7 +432,7 @@ public sealed unsafe partial class BrotliDecompressor
 
         if (numSymbols == 3)
         {
-            numSymbols += (int)_br.Read(1);
+            numSymbols += (int)_br.Read(src, 1);
         }
 
         tableSize = Huffman.BuildSimpleTable(table, rootBits, symbols, numSymbols);
@@ -481,19 +440,20 @@ public sealed unsafe partial class BrotliDecompressor
     }
 
     /// <summary>A context map (RFC 7932, section 7.3): its number of codes, then its runs and values.</summary>
-    private BrotliError DecodeContextMap(int contextMapSize, out int numTrees, byte* contextMap)
+    private BrotliError DecodeContextMap(ReadOnlySpan<byte> src, int contextMapSize, out int numTrees, Span<byte> contextMap)
     {
-        numTrees = DecodeVarLenUint8() + 1;
+        contextMap = contextMap.Slice(0, contextMapSize);
+        numTrees = DecodeVarLenUint8(src) + 1;
         if (numTrees <= 1)
         {
-            new Span<byte>(contextMap, contextMapSize).Clear();
+            contextMap.Clear();
             return BrotliError.None;
         }
 
         int maxRunLengthPrefix = 0;
         if (_br.Count < 5)
         {
-            _br.Refill();
+            _br.Refill(src);
         }
 
         uint bits = (uint)(_br.Bits & 31);
@@ -511,7 +471,7 @@ public sealed unsafe partial class BrotliDecompressor
         }
 
         int alphabetSize = numTrees + maxRunLengthPrefix;
-        BrotliError error = ReadHuffmanCode(alphabetSize, alphabetSize, _contextMapTree, out _);
+        BrotliError error = ReadHuffmanCode(src, alphabetSize, alphabetSize, _headerTables.AsSpan(ContextMapTree, ContextMapTableSize), out _);
         if (error != BrotliError.None)
         {
             return error;
@@ -520,7 +480,7 @@ public sealed unsafe partial class BrotliDecompressor
         int index = 0;
         while (index < contextMapSize)
         {
-            int code = _br.ReadSymbol(_contextMapTree);
+            int code = _br.ReadSymbol(src, _headerTables, ContextMapTree);
             if (code == 0)
             {
                 contextMap[index++] = 0;
@@ -533,34 +493,34 @@ public sealed unsafe partial class BrotliDecompressor
                 continue;
             }
 
-            int repeat = (int)_br.Read(code) + (1 << code);
+            int repeat = (int)_br.Read(src, code) + (1 << code);
             if (index + repeat > contextMapSize)
             {
                 return Fail(BrotliError.ContextMapRepeat);
             }
 
-            new Span<byte>(contextMap + index, repeat).Clear();
+            contextMap.Slice(index, repeat).Clear();
             index += repeat;
         }
 
-        if (_br.Read(1) != 0)
+        if (_br.Read(src, 1) != 0)
         {
-            InverseMoveToFront(contextMap, contextMapSize);
+            InverseMoveToFront(contextMap);
         }
 
         return BrotliError.None;
     }
 
     /// <summary>The inverse of the move-to-front transform (RFC 7932, section 7.3).</summary>
-    private static void InverseMoveToFront(byte* values, int length)
+    private static void InverseMoveToFront(Span<byte> values)
     {
-        byte* mtf = stackalloc byte[256];
+        Span<byte> mtf = stackalloc byte[256];
         for (int i = 0; i < 256; i++)
         {
             mtf[i] = (byte)i;
         }
 
-        for (int i = 0; i < length; i++)
+        for (int i = 0; i < values.Length; i++)
         {
             int index = values[i];
             byte value = mtf[index];
@@ -584,10 +544,10 @@ public sealed unsafe partial class BrotliDecompressor
 
         for (int i = 0; i < _s.NumBlockTypes[0]; i++)
         {
-            byte* map = _contextMap + (i << Prefix.LiteralContextBits);
+            ReadOnlySpan<byte> map = _contextMap.AsSpan(i << Prefix.LiteralContextBits, 1 << Prefix.LiteralContextBits);
             byte sample = map[0];
             int error = 0;
-            for (int j = 0; j < 1 << Prefix.LiteralContextBits; j++)
+            for (int j = 0; j < map.Length; j++)
             {
                 error |= map[j] ^ sample;
             }
