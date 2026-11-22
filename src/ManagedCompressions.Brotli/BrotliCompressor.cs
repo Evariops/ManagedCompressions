@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ManagedCompressions.Brotli.Internal;
 
@@ -172,39 +171,4 @@ public sealed unsafe partial class BrotliCompressor
 
         return -1;
     }
-
-    /// <summary>brotli's <c>EncodeWindowBits</c>, outside the large window.</summary>
-    private static void EncodeWindowBits(int lgwin, out ushort lastBytes, out int lastBytesBits)
-    {
-        if (lgwin == 16)
-        {
-            lastBytes = 0;
-            lastBytesBits = 1;
-        }
-        else if (lgwin == 17)
-        {
-            lastBytes = 1;
-            lastBytesBits = 7;
-        }
-        else if (lgwin > 17)
-        {
-            lastBytes = (ushort)(((lgwin - 17) << 1) | 0x01);
-            lastBytesBits = 4;
-        }
-        else
-        {
-            lastBytes = (ushort)(((lgwin - 8) << 4) | 0x01);
-            lastBytesBits = 7;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static T* Pointer<T>(T[] array)
-        where T : unmanaged =>
-        (T*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(array));
-
-    /// <summary>An array on the pinned heap, so that the pointers taken to it hold for its life.</summary>
-    private static T[] Pinned<T>(int length)
-        where T : unmanaged =>
-        GC.AllocateUninitializedArray<T>(length, pinned: true);
 }
