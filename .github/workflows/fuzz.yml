@@ -11,6 +11,11 @@ on:
       seconds:
         description: Seconds of fuzzing per target
         default: '600'
+      configuration:
+        description: The build fuzzed (Debug asserts the bounds of the unchecked accesses)
+        type: choice
+        options: [Release, Debug]
+        default: Release
 
 permissions:
   contents: read
@@ -64,8 +69,14 @@ jobs:
       - name: Build brotli
         run: bash tools/native-ref/build-brotli.sh
 
+      # Pull requests fuzz the Release build, the one that ships. The nightly runs fuzz the Debug build,
+      # optimized as the Release one is, in which each access the libraries make without a bounds check
+      # asserts its bounds: an input that takes one past them fails, where the Release build may read
+      # past its buffer without a fault.
       - name: Publish
-        run: dotnet publish fuzz/ManagedCompressions.Fuzz -c Release -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
+        env:
+          CONFIGURATION: ${{ github.event_name == 'schedule' && 'Debug' || inputs.configuration || 'Release' }}
+        run: dotnet publish fuzz/ManagedCompressions.Fuzz -c "$CONFIGURATION" -p:Optimize=true -f net11.0 -r linux-x64 --self-contained false -o "$RUNNER_TEMP/fuzz"
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

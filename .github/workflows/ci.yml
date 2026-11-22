@@ -224,6 +224,63 @@ jobs:
           fi
           dotnet test --solution ManagedCompressions.slnx --no-build -c Release
 
+  # The same tests, checking what the libraries' unsafe code relies on. In Debug, each access the
+  # libraries make without a bounds check asserts its bounds (src/Shared/Bounds.cs): one past them
+  # fails its test, where the Release build would read or write out of its buffer unnoticed. With the
+  # GC's heap verification, on the Release build, a write past an array that damages the heap fails
+  # the run, whether an assertion states the access or not.
+  checks:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debug assertions
+            configuration: Debug
+            heap-verify: false
+          - name: heap verification
+            configuration: Release
+            heap-verify: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+          dotnet-version: 10.0.x
+
+      - name: Build
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: dotnet build ManagedCompressions.slnx -c "$CONFIGURATION"
+
+      - name: Write the Zstandard test data
+        run: bash tools/native-ref/testdata.sh
+
+      - name: Write the Brotli test data
+        run: bash tools/native-ref/brotli-testdata.sh
+
+      - name: Build brotli
+        run: bash tools/native-ref/build-brotli.sh
+
+      - name: Build libzstd with threads
+        run: bash tools/native-ref/build.sh mt
+
+      # The heap is verified at each collection, for the tests alone, not for the build.
+      - name: Test
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+          HEAP_VERIFY: ${{ matrix.heap-verify }}
+        run: |
+          if [ "$HEAP_VERIFY" = true ]; then
+            export DOTNET_HeapVerify=1
+          fi
+          dotnet test --solution ManagedCompressions.slnx --no-build -c "$CONFIGURATION"
+
   # Both libraries in an application compiled with Native AOT, for each target and architecture:
   # trimming and ahead-of-time compilation would refuse what the JIT tolerates, and warnings are
   # errors. The application checks every frame and block against the hashes it carries, the same
@@ -265,7 +322,7 @@ jobs:
   # renaming either stops the push.
   publish:
     name: Publish to nuget.org
-    needs: [hooks, zizmor, test, instruction-sets, native-aot]
+    needs: [hooks, zizmor, test, instruction-sets, checks, native-aot]
     if: github.event_name == 'release'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
