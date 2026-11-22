@@ -3,7 +3,7 @@ using System;
 namespace ManagedCompressions.Brotli.Internal;
 
 /// <summary>brotli's <c>WriteMetaBlockInternal</c> and the choice of the literals' static context map.</summary>
-internal sealed unsafe partial class EncoderState
+internal sealed partial class EncoderState
 {
     /// <summary>brotli's <c>CONTEXT_UTF8</c>.</summary>
     private const int ContextModeUtf8 = 2;
@@ -44,7 +44,7 @@ internal sealed unsafe partial class EncoderState
     ];
 
     /// <summary>brotli's <c>ShouldCompress</c>: false for blocks of mostly literals that look random.</summary>
-    private static bool ShouldCompress(byte* data, nuint mask, ulong lastFlushPos, nuint bytes, nuint numLiterals, nuint numCommands)
+    private static bool ShouldCompress(ReadOnlySpan<byte> data, nuint mask, ulong lastFlushPos, nuint bytes, nuint numLiterals, nuint numCommands)
     {
         if (bytes <= 2)
         {
@@ -53,8 +53,7 @@ internal sealed unsafe partial class EncoderState
 
         if (numCommands < (bytes >> 8) + 2 && (double)numLiterals > 0.99 * bytes)
         {
-            uint* literalHisto = stackalloc uint[256];
-            new Span<uint>(literalHisto, 256).Clear();
+            Span<uint> literalHisto = stackalloc uint[256];
             const uint sampleRate = 13;
             const double minEntropy = 7.92;
             double bitCostThreshold = (double)bytes * minEntropy / sampleRate;
@@ -62,11 +61,11 @@ internal sealed unsafe partial class EncoderState
             uint pos = (uint)lastFlushPos;
             for (nuint i = 0; i < t; i++)
             {
-                ++literalHisto[data[pos & mask]];
+                ++literalHisto[data[(int)(pos & mask)]];
                 pos += sampleRate;
             }
 
-            if (FastLog.BitsEntropy(literalHisto, 256) > bitCostThreshold)
+            if (FastLog.BitsEntropy(literalHisto) > bitCostThreshold)
             {
                 return false;
             }
@@ -76,25 +75,23 @@ internal sealed unsafe partial class EncoderState
     }
 
     /// <summary>brotli's <c>ChooseContextMap</c>: 1, 2 or 3 contexts, from the bigrams of the bytes' top two bits.</summary>
-    private static void ChooseContextMap(int quality, uint* bigramHisto, out nuint numLiteralContexts, out ReadOnlySpan<uint> literalContextMap)
+    private static void ChooseContextMap(int quality, ReadOnlySpan<uint> bigramHisto, out nuint numLiteralContexts, out ReadOnlySpan<uint> literalContextMap)
     {
-        uint* monogramHisto = stackalloc uint[3];
-        uint* twoPrefixHisto = stackalloc uint[6];
-        new Span<uint>(monogramHisto, 3).Clear();
-        new Span<uint>(twoPrefixHisto, 6).Clear();
-        double* entropy = stackalloc double[4];
+        Span<uint> monogramHisto = stackalloc uint[3];
+        Span<uint> twoPrefixHisto = stackalloc uint[6];
+        Span<double> entropy = stackalloc double[4];
         for (int i = 0; i < 9; ++i)
         {
             monogramHisto[i % 3] += bigramHisto[i];
             twoPrefixHisto[i % 6] += bigramHisto[i];
         }
 
-        entropy[1] = FastLog.ShannonEntropy(monogramHisto, 3, out _);
-        entropy[2] = FastLog.ShannonEntropy(twoPrefixHisto, 3, out _) + FastLog.ShannonEntropy(twoPrefixHisto + 3, 3, out _);
+        entropy[1] = FastLog.ShannonEntropy(monogramHisto, out _);
+        entropy[2] = FastLog.ShannonEntropy(twoPrefixHisto.Slice(0, 3), out _) + FastLog.ShannonEntropy(twoPrefixHisto.Slice(3, 3), out _);
         entropy[3] = 0;
         for (int i = 0; i < 3; ++i)
         {
-            entropy[3] += FastLog.ShannonEntropy(bigramHisto + (3 * i), 3, out _);
+            entropy[3] += FastLog.ShannonEntropy(bigramHisto.Slice(3 * i, 3), out _);
         }
 
         nuint total = (nuint)monogramHisto[0] + monogramHisto[1] + monogramHisto[2];
@@ -130,7 +127,7 @@ internal sealed unsafe partial class EncoderState
     /// brotli's <c>ShouldUseComplexStaticContextMap</c>: 13 contexts for inputs of 1 MiB and more, when
     /// the entropy of the literals' top five bits drops enough under them.
     /// </summary>
-    private bool ShouldUseComplexStaticContextMap(byte* input, nuint startPos, nuint length, nuint mask, uint* arena, ref nuint numLiteralContexts, ref ReadOnlySpan<uint> literalContextMap)
+    private bool ShouldUseComplexStaticContextMap(ReadOnlySpan<byte> input, nuint startPos, nuint length, nuint mask, Span<uint> arena, ref nuint numLiteralContexts, ref ReadOnlySpan<uint> literalContextMap)
     {
         if (_sizeHint < (1 << 20))
         {
@@ -138,20 +135,20 @@ internal sealed unsafe partial class EncoderState
         }
 
         nuint endPos = startPos + length;
-        uint* combinedHisto = arena;
-        uint* contextHisto = arena + 32;
+        Span<uint> combinedHisto = arena.Slice(0, 32);
+        Span<uint> contextHisto = arena.Slice(32, 32 * 13);
         uint total = 0;
-        byte* utf8Lut = BitStream.ContextLut(ContextModeUtf8);
+        ReadOnlySpan<byte> utf8Lut = BitStream.ContextLut(ContextModeUtf8);
         ReadOnlySpan<uint> map = StaticContextMapComplexUtf8;
-        new Span<uint>(arena, 32 * 14).Clear();
+        arena.Slice(0, 32 * 14).Clear();
         for (; startPos + 64 <= endPos; startPos += 4096)
         {
             nuint strideEndPos = startPos + 64;
-            byte prev2 = input[startPos & mask];
-            byte prev1 = input[(startPos + 1) & mask];
+            byte prev2 = input[(int)(startPos & mask)];
+            byte prev1 = input[(int)((startPos + 1) & mask)];
             for (nuint pos = startPos + 2; pos < strideEndPos; ++pos)
             {
-                byte literal = input[pos & mask];
+                byte literal = input[(int)(pos & mask)];
                 byte context = (byte)map[utf8Lut[prev1] | utf8Lut[256 + prev2]];
                 ++total;
                 ++combinedHisto[literal >> 3];
@@ -161,11 +158,11 @@ internal sealed unsafe partial class EncoderState
             }
         }
 
-        double entropy1 = FastLog.ShannonEntropy(combinedHisto, 32, out _);
+        double entropy1 = FastLog.ShannonEntropy(combinedHisto, out _);
         double entropy2 = 0;
         for (int i = 0; i < 13; ++i)
         {
-            entropy2 += FastLog.ShannonEntropy(contextHisto + (i << 5), 32, out _);
+            entropy2 += FastLog.ShannonEntropy(contextHisto.Slice(i << 5, 32), out _);
         }
 
         double entropy0 = 1.0 / (double)total;
@@ -182,14 +179,14 @@ internal sealed unsafe partial class EncoderState
     }
 
     /// <summary>brotli's <c>DecideOverLiteralContextModeling</c>, from quality 5.</summary>
-    private void DecideOverLiteralContextModeling(byte* input, nuint startPos, nuint length, nuint mask, ref nuint numLiteralContexts, ref ReadOnlySpan<uint> literalContextMap)
+    private void DecideOverLiteralContextModeling(ReadOnlySpan<byte> input, nuint startPos, nuint length, nuint mask, ref nuint numLiteralContexts, ref ReadOnlySpan<uint> literalContextMap)
     {
         if (_quality < 5 || length < 64)
         {
             return;
         }
 
-        uint* arena = _contextArena.Ensure(14 * 32);
+        Span<uint> arena = _contextArena.Ensure(14 * 32);
         if (ShouldUseComplexStaticContextMap(input, startPos, length, mask, arena, ref numLiteralContexts, ref literalContextMap))
         {
             return;
@@ -197,16 +194,16 @@ internal sealed unsafe partial class EncoderState
 
         // The bigrams of the bytes' top two bits, in 64-byte strides every 4 KiB.
         nuint endPos = startPos + length;
-        uint* bigramPrefixHisto = arena;
-        new Span<uint>(bigramPrefixHisto, 9).Clear();
+        Span<uint> bigramPrefixHisto = arena.Slice(0, 9);
+        bigramPrefixHisto.Clear();
         ReadOnlySpan<int> lut = [0, 0, 1, 2];
         for (; startPos + 64 <= endPos; startPos += 4096)
         {
             nuint strideEndPos = startPos + 64;
-            int prev = lut[input[startPos & mask] >> 6] * 3;
+            int prev = lut[input[(int)(startPos & mask)] >> 6] * 3;
             for (nuint pos = startPos + 1; pos < strideEndPos; ++pos)
             {
-                byte literal = input[pos & mask];
+                byte literal = input[(int)(pos & mask)];
                 ++bigramPrefixHisto[prev + lut[literal >> 6]];
                 prev = lut[literal >> 6] * 3;
             }
@@ -219,11 +216,12 @@ internal sealed unsafe partial class EncoderState
     /// brotli's <c>WriteMetaBlockInternal</c>: the meta-block of <paramref name="bytes"/> bytes from
     /// <paramref name="lastFlushPos"/>, compressed, or stored when that is smaller or the data looks random.
     /// </summary>
-    private void WriteMetaBlockInternal(byte* data, nuint mask, ulong lastFlushPos, uint bytes, bool isLast, int literalContextMode, Command* commands, ref int storageIx, byte* storage)
+    private void WriteMetaBlockInternal(ReadOnlySpan<byte> data, nuint mask, ulong lastFlushPos, uint bytes, bool isLast, int literalContextMode, Command[] commandArray, ref int storageIx, Span<byte> storage)
     {
         uint wrappedLastFlushPos = WrapPosition(lastFlushPos);
         nuint numLiterals = _numLiterals;
         nuint numCommands = _numCommands;
+        Span<Command> commands = commandArray.AsSpan(0, (int)numCommands);
         if (bytes == 0)
         {
             // ISLAST and ISEMPTY.
@@ -235,7 +233,7 @@ internal sealed unsafe partial class EncoderState
         if (!ShouldCompress(data, mask, lastFlushPos, bytes, numLiterals, numCommands))
         {
             // The distance cache as it was, since the commands are dropped.
-            new Span<int>(_savedDistCache, 4).CopyTo(new Span<int>(_distCache, 4));
+            _savedDistCache.AsSpan().CopyTo(_distCache);
             BitStream.StoreUncompressedMetaBlock(isLast, data, wrappedLastFlushPos, mask, (int)bytes, ref storageIx, storage);
             return;
         }
@@ -244,11 +242,11 @@ internal sealed unsafe partial class EncoderState
         int lastBytesBits = storageIx;
         if (_quality <= 2)
         {
-            BitStream.StoreMetaBlockFast(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, isLast, _dist, commands, numCommands, ref storageIx, storage);
+            BitStream.StoreMetaBlockFast(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, isLast, _dist, commands, ref storageIx, storage);
         }
         else if (_quality < 4)
         {
-            BitStream.StoreMetaBlockTrivial(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, isLast, _dist, commands, numCommands, ref storageIx, storage);
+            BitStream.StoreMetaBlockTrivial(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, isLast, _dist, commands, ref storageIx, storage);
         }
         else
         {
@@ -262,24 +260,21 @@ internal sealed unsafe partial class EncoderState
                 nuint numLiteralContexts = 1;
                 ReadOnlySpan<uint> literalContextMap = default;
                 DecideOverLiteralContextModeling(data, wrappedLastFlushPos, bytes, mask, ref numLiteralContexts, ref literalContextMap);
-                fixed (uint* map = literalContextMap)
-                {
-                    _greedy.Build(data, wrappedLastFlushPos, mask, _prevByte, _prevByte2, BitStream.ContextLut(literalContextMode), numLiteralContexts, map, commands, numCommands, mb);
-                }
+                _greedy.Build(data, wrappedLastFlushPos, mask, _prevByte, _prevByte2, BitStream.ContextLut(literalContextMode), numLiteralContexts, literalContextMap, commands, mb);
             }
             else
             {
-                (_hqBuilder ??= new HqMetaBlockBuilder()).Build(data, wrappedLastFlushPos, mask, _quality, ref blockDist, _prevByte, _prevByte2, commands, numCommands, literalContextMode, mb);
+                (_hqBuilder ??= new HqMetaBlockBuilder()).Build(data, wrappedLastFlushPos, mask, _quality, ref blockDist, _prevByte, _prevByte2, commands, literalContextMode, mb);
             }
 
             _greedy.OptimizeHistograms(blockDist.AlphabetSizeLimit, mb);
-            BitStream.StoreMetaBlock(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, _prevByte, _prevByte2, isLast, blockDist, literalContextMode, commands, numCommands, mb, ref storageIx, storage);
+            BitStream.StoreMetaBlock(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, _prevByte, _prevByte2, isLast, blockDist, literalContextMode, commands, mb, ref storageIx, storage);
         }
 
         if (bytes + 4 < (uint)(storageIx >> 3))
         {
             // Stored is smaller: the distance cache and the last byte as they were.
-            new Span<int>(_savedDistCache, 4).CopyTo(new Span<int>(_distCache, 4));
+            _savedDistCache.AsSpan().CopyTo(_distCache);
             storage[0] = (byte)lastBytes;
             storage[1] = (byte)(lastBytes >> 8);
             storageIx = lastBytesBits;

@@ -1,6 +1,4 @@
 using System;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -8,9 +6,9 @@ namespace ManagedCompressions.Brotli.Internal;
 /// The state of qualities 0 and 1 (<c>c/enc/encode.c</c>): the arena of the quality, the hash table
 /// cleared for each fragment, and the storage of fragments that do not fit the destination.
 /// </summary>
-internal sealed unsafe class FastEncoder
+internal sealed class FastEncoder
 {
-    private readonly PinnedBuffer<byte> _storage = new();
+    private readonly GrowableBuffer<byte> _storage = new();
     private OnePassArena? _onePass;
     private TwoPassArena? _twoPass;
     private int[] _hashTableArray = [];
@@ -31,22 +29,22 @@ internal sealed unsafe class FastEncoder
     }
 
     /// <summary>brotli's <c>GetBrotliStorage</c>: at least <paramref name="size"/> bytes, kept.</summary>
-    public byte* Storage(nuint size) => _storage.Ensure(size);
+    public byte[] Storage(nuint size) => _storage.Ensure(size);
 
     /// <summary>
-    /// <c>BrotliCompressFragmentFast</c> or <c>BrotliCompressFragmentTwoPass</c>: <paramref name="blockSize"/>
-    /// bytes of <paramref name="input"/> appended at the bit <paramref name="storageIx"/>.
+    /// <c>BrotliCompressFragmentFast</c> or <c>BrotliCompressFragmentTwoPass</c>: <paramref name="input"/>
+    /// appended at the bit <paramref name="storageIx"/>.
     /// </summary>
-    public void CompressFragment(byte* input, int blockSize, bool isLast, ref int storageIx, byte* storage)
+    public void CompressFragment(ReadOnlySpan<byte> input, bool isLast, ref int storageIx, Span<byte> storage)
     {
-        int* table = HashTable(blockSize, out int tableSize);
+        Span<int> table = HashTable(input.Length, out int tableSize);
         if (_quality == 0)
         {
-            Internal.CompressFragment.Compress(_onePass!, input, blockSize, isLast, table, tableSize, ref storageIx, storage);
+            Internal.CompressFragment.Compress(_onePass!, input, isLast, table, tableSize, ref storageIx, storage);
         }
         else
         {
-            CompressFragmentTwoPass.Compress(_twoPass!, input, blockSize, isLast, table, tableSize, ref storageIx, storage);
+            CompressFragmentTwoPass.Compress(_twoPass!, input, isLast, table, tableSize, ref storageIx, storage);
         }
     }
 
@@ -54,7 +52,7 @@ internal sealed unsafe class FastEncoder
     /// brotli's <c>GetHashTable</c>: a table of zeros, the smallest power of two from 256 that holds the
     /// block or the quality's largest; at quality 0, an odd power.
     /// </summary>
-    private int* HashTable(int inputSize, out int tableSize)
+    private Span<int> HashTable(int inputSize, out int tableSize)
     {
         int maxTableSize = _quality == 0 ? 1 << 15 : 1 << 17;
         int size = 256;
@@ -70,11 +68,11 @@ internal sealed unsafe class FastEncoder
 
         if (_hashTableArray.Length < size)
         {
-            _hashTableArray = GC.AllocateUninitializedArray<int>(1 << 17, pinned: true);
+            _hashTableArray = new int[1 << 17];
         }
 
-        int* table = (int*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_hashTableArray));
-        new Span<int>(table, size).Clear();
+        Span<int> table = _hashTableArray.AsSpan(0, size);
+        table.Clear();
         tableSize = size;
         return table;
     }

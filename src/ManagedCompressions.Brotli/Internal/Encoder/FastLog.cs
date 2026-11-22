@@ -55,7 +55,7 @@ internal static class FastLog
     {
         if (v < 256)
         {
-            return Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(Table), (nint)v);
+            return Table[(int)v];
         }
 
         return Slow(v);
@@ -65,11 +65,11 @@ internal static class FastLog
     private static double Slow(nuint v) => LogTimesInverse ? Math.Log((double)v) * Log2Inverse : Math.Log2((double)v);
 
     /// <summary>brotli's <c>ShannonEntropy</c>: the entropy of a population in bits, and its total.</summary>
-    public static unsafe double ShannonEntropy(uint* population, int size, out nuint total)
+    public static double ShannonEntropy(ReadOnlySpan<uint> population, out nuint total)
     {
         nuint sum = 0;
         double result = 0;
-        for (int i = 0; i < size; i++)
+        for (int i = 0; i < population.Length; i++)
         {
             nuint p = population[i];
             sum += p;
@@ -86,9 +86,9 @@ internal static class FastLog
     }
 
     /// <summary>brotli's <c>BitsEntropy</c>: the Shannon entropy, but at least one bit a symbol.</summary>
-    public static unsafe double BitsEntropy(uint* population, int size)
+    public static double BitsEntropy(ReadOnlySpan<uint> population)
     {
-        double result = ShannonEntropy(population, size, out nuint sum);
+        double result = ShannonEntropy(population, out nuint sum);
         if (result < (double)sum)
         {
             result = sum;

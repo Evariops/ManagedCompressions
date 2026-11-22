@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -40,7 +41,7 @@ internal struct BackwardMatch
 /// a binary tree of the positions sorted by their next 128 bytes, a max-heap by position, which yields
 /// every match longer than the last, for qualities 10 and 11.
 /// </summary>
-internal unsafe struct HashToBinaryTree
+internal struct HashToBinaryTree
 {
     private const int BucketBits = 17;
     private const int BucketSize = 1 << BucketBits;
@@ -57,9 +58,9 @@ internal unsafe struct HashToBinaryTree
     public const int StoreLookahead = MaxTreeCompLength;
 
     private nuint _windowMask;
-    private uint* _buckets;
+    private uint[] _buckets;
     private uint _invalidPos;
-    private uint* _forest;
+    private uint[] _forest;
 
     /// <summary>brotli's <c>Initialize</c>, with the forest of <c>HashMemAllocInBytes</c>.</summary>
     public void Initialize(HasherMemory memory, int lgwin, bool oneShot, nuint inputSize)
@@ -70,16 +71,16 @@ internal unsafe struct HashToBinaryTree
             numNodes = inputSize;
         }
 
-        _buckets = (uint*)memory.Get(0, sizeof(uint) * BucketSize);
-        _forest = (uint*)memory.Get(1, Math.Max(2 * sizeof(uint) * numNodes, 8));
+        _buckets = memory.Get<uint>(0, BucketSize);
+        _forest = memory.Get<uint>(1, Math.Max(2 * numNodes, 2));
         _windowMask = ((nuint)1 << lgwin) - 1;
         _invalidPos = (uint)(0 - _windowMask);
     }
 
-    public void Prepare() => new Span<uint>(_buckets, BucketSize).Fill(_invalidPos);
+    public void Prepare() => _buckets.AsSpan(0, BucketSize).Fill(_invalidPos);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint HashBytes(byte* data) => (Unsafe.ReadUnaligned<uint>(data) * HasherCommon.HashMul32) >> (32 - BucketBits);
+    private static uint HashBytes(ReadOnlySpan<byte> data, nuint at) => (BinaryPrimitives.ReadUInt32LittleEndian(data.Slice((int)at, 4)) * HasherCommon.HashMul32) >> (32 - BucketBits);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private readonly nuint LeftChildIndex(nuint pos) => 2 * (pos & _windowMask);
@@ -92,14 +93,14 @@ internal unsafe struct HashToBinaryTree
     /// and the matches found on the way, each longer than the last; with fewer than 128 bytes left, the
     /// tree is searched and kept as it is.
     /// </summary>
-    private BackwardMatch* StoreAndFindMatches(byte* data, nuint curIx, nuint ringBufferMask, nuint maxLength, nuint maxBackward, nuint* bestLen, BackwardMatch* matches)
+    private int StoreAndFindMatches(ReadOnlySpan<byte> data, nuint curIx, nuint ringBufferMask, nuint maxLength, nuint maxBackward, ref nuint bestLen, Span<BackwardMatch> matches, int found)
     {
         nuint curIxMasked = curIx & ringBufferMask;
         nuint maxCompLen = Math.Min(maxLength, MaxTreeCompLength);
         bool shouldRerootTree = maxLength >= MaxTreeCompLength;
-        uint key = HashBytes(data + curIxMasked);
-        uint* buckets = _buckets;
-        uint* forest = _forest;
+        uint key = HashBytes(data, curIxMasked);
+        uint[] buckets = _buckets;
+        uint[] forest = _forest;
         nuint prevIx = buckets[key];
         nuint nodeLeft = LeftChildIndex(curIx);
         nuint nodeRight = RightChildIndex(curIx);
@@ -126,11 +127,11 @@ internal unsafe struct HashToBinaryTree
             }
 
             nuint curLen = Math.Min(bestLenLeft, bestLenRight);
-            nuint len = curLen + FindMatchLength.WithLimit(data + curIxMasked + curLen, data + prevIxMasked + curLen, maxLength - curLen);
-            if (matches != null && len > *bestLen)
+            nuint len = curLen + FindMatchLength.WithLimit(data, curIxMasked + curLen, prevIxMasked + curLen, maxLength - curLen);
+            if (!matches.IsEmpty && len > bestLen)
             {
-                *bestLen = len;
-                *matches++ = new BackwardMatch(backward, len);
+                bestLen = len;
+                matches[found++] = new BackwardMatch(backward, len);
             }
 
             if (len >= maxCompLen)
@@ -144,7 +145,7 @@ internal unsafe struct HashToBinaryTree
                 break;
             }
 
-            if (data[curIxMasked + len] > data[prevIxMasked + len])
+            if (data[(int)(curIxMasked + len)] > data[(int)(prevIxMasked + len)])
             {
                 bestLenLeft = len;
                 if (shouldRerootTree)
@@ -168,21 +169,21 @@ internal unsafe struct HashToBinaryTree
             }
         }
 
-        return matches;
+        return found;
     }
 
     /// <summary>
     /// brotli's <c>FindAllMatches</c>: the matches of increasing lengths at <paramref name="curIx"/>, the
     /// short ones among the last 16 or 64 positions, the tree's, and the static dictionary's.
     /// </summary>
-    public nuint FindAllMatches(byte* data, nuint ringBufferMask, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, int quality, nuint maxDistance, BackwardMatch* matches)
+    public nuint FindAllMatches(ReadOnlySpan<byte> data, nuint ringBufferMask, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, int quality, nuint maxDistance, Span<BackwardMatch> matches)
     {
-        BackwardMatch* origMatches = matches;
+        int found = 0;
         nuint curIxMasked = curIx & ringBufferMask;
         nuint bestLen = 1;
         nuint shortMatchMaxBackward = quality != 11 ? 16u : 64u;
         nuint stop = curIx - shortMatchMaxBackward;
-        uint* dictMatches = stackalloc uint[StaticDictionaryLut.MaxStaticDictionaryMatchLen + 1];
+        Span<uint> dictMatches = stackalloc uint[StaticDictionaryLut.MaxStaticDictionaryMatchLen + 1];
         if (curIx < shortMatchMaxBackward)
         {
             stop = 0;
@@ -198,22 +199,22 @@ internal unsafe struct HashToBinaryTree
             }
 
             prevIx &= ringBufferMask;
-            if (data[curIxMasked] != data[prevIx] || data[curIxMasked + 1] != data[prevIx + 1])
+            if (data[(int)curIxMasked] != data[(int)prevIx] || data[(int)curIxMasked + 1] != data[(int)prevIx + 1])
             {
                 continue;
             }
 
-            nuint len = FindMatchLength.WithLimit(data + prevIx, data + curIxMasked, maxLength);
+            nuint len = FindMatchLength.WithLimit(data, prevIx, curIxMasked, maxLength);
             if (len > bestLen)
             {
                 bestLen = len;
-                *matches++ = new BackwardMatch(backward, len);
+                matches[found++] = new BackwardMatch(backward, len);
             }
         }
 
         if (bestLen < maxLength)
         {
-            matches = StoreAndFindMatches(data, curIx, ringBufferMask, maxLength, maxBackward, &bestLen, matches);
+            found = StoreAndFindMatches(data, curIx, ringBufferMask, maxLength, maxBackward, ref bestLen, matches, found);
         }
 
         for (int i = 0; i <= StaticDictionaryLut.MaxStaticDictionaryMatchLen; ++i)
@@ -223,36 +224,37 @@ internal unsafe struct HashToBinaryTree
 
         {
             nuint minLen = Math.Max(4, bestLen + 1);
-            if (StaticDictionaryLut.FindAllStaticDictionaryMatches(data + curIxMasked, minLen, maxLength, dictMatches))
+            if (StaticDictionaryLut.FindAllStaticDictionaryMatches(data.Slice((int)curIxMasked), minLen, maxLength, dictMatches))
             {
                 nuint maxLen = Math.Min(StaticDictionaryLut.MaxStaticDictionaryMatchLen, maxLength);
                 for (nuint l = minLen; l <= maxLen; ++l)
                 {
-                    uint dictId = dictMatches[l];
+                    uint dictId = dictMatches[(int)l];
                     if (dictId < StaticDictionaryLut.InvalidMatch)
                     {
                         nuint distance = dictionaryDistance + (dictId >> 5) + 1;
                         if (distance <= maxDistance)
                         {
-                            *matches++ = new BackwardMatch(distance, l, dictId & 31);
+                            matches[found++] = new BackwardMatch(distance, l, dictId & 31);
                         }
                     }
                 }
             }
         }
 
-        return (nuint)(matches - origMatches);
+        return (nuint)found;
     }
 
     /// <summary>brotli's <c>Store</c>: the position into the tree; it needs 128 bytes after it.</summary>
-    public void Store(byte* data, nuint mask, nuint ix)
+    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
         nuint maxBackward = _windowMask - Prefix.WindowGap + 1;
-        StoreAndFindMatches(data, ix, mask, MaxTreeCompLength, maxBackward, null, null);
+        nuint unused = 0;
+        StoreAndFindMatches(data, ix, mask, MaxTreeCompLength, maxBackward, ref unused, default, 0);
     }
 
     /// <summary>brotli's <c>StoreRange</c>: every 8th position of a long range, then its last 63.</summary>
-    public void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd)
+    public void StoreRange(ReadOnlySpan<byte> data, nuint mask, nuint ixStart, nuint ixEnd)
     {
         nuint i = ixStart;
         nuint j = ixStart;
@@ -276,7 +278,7 @@ internal unsafe struct HashToBinaryTree
     }
 
     /// <summary>brotli's <c>StitchToPreviousBlock</c>: the previous block's last 127 positions, which needed this block's bytes.</summary>
-    public void StitchToPreviousBlock(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask)
+    public void StitchToPreviousBlock(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask)
     {
         if (numBytes >= HashTypeLength - 1 && position >= MaxTreeCompLength)
         {
@@ -285,7 +287,8 @@ internal unsafe struct HashToBinaryTree
             for (nuint i = iStart; i < iEnd; ++i)
             {
                 nuint maxBackward = _windowMask - Math.Max(Prefix.WindowGap - 1, position - i);
-                StoreAndFindMatches(ringBuffer, i, ringBufferMask, MaxTreeCompLength, maxBackward, null, null);
+                nuint unused = 0;
+                StoreAndFindMatches(ringBuffer, i, ringBufferMask, MaxTreeCompLength, maxBackward, ref unused, default, 0);
             }
         }
     }

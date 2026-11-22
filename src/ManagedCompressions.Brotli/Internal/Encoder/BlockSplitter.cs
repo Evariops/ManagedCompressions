@@ -10,7 +10,7 @@ namespace ManagedCompressions.Brotli.Internal;
 /// <c>c/enc/block_splitter_inc.h</c>): entropy codes sampled and refined, the cheapest path through
 /// them, and the blocks clustered into at most 256 types.
 /// </summary>
-internal sealed unsafe class BlockSplitter
+internal sealed class BlockSplitter
 {
     private const int MaxLiteralHistograms = 100;
     private const int MaxCommandHistograms = 50;
@@ -29,87 +29,87 @@ internal sealed unsafe class BlockSplitter
     private const int HistogramsPerBatch = 64;
     private const int ClustersPerBatch = 16;
 
-    private readonly PinnedBuffer<byte> _literals = new();
-    private readonly PinnedBuffer<ushort> _codes = new();
-    private readonly PinnedBuffer<byte> _histograms = new();
-    private readonly PinnedBuffer<byte> _allHistograms = new();
-    private readonly PinnedBuffer<byte> _blockIds = new();
-    private readonly PinnedBuffer<double> _insertCost = new();
-    private readonly PinnedBuffer<double> _cost = new();
-    private readonly PinnedBuffer<byte> _switchSignal = new();
-    private readonly PinnedBuffer<ushort> _newId = new();
-    private readonly PinnedBuffer<uint> _histogramSymbols = new();
-    private readonly PinnedBuffer<uint> _u32 = new();
-    private readonly PinnedBuffer<uint> _clusterSize = new();
-    private readonly PinnedBuffer<uint> _clusters = new();
-    private readonly PinnedBuffer<uint> _newIndex = new();
-    private readonly PinnedBuffer<HistogramPair> _pairs = new();
-    private readonly PinnedBuffer<byte> _tmp = new();
+    private readonly GrowableBuffer<byte> _literals = new();
+    private readonly GrowableBuffer<ushort> _codes = new();
+    private readonly TypedBuffer _histograms = new();
+    private readonly TypedBuffer _allHistograms = new();
+    private readonly GrowableBuffer<byte> _blockIds = new();
+    private readonly GrowableBuffer<double> _insertCost = new();
+    private readonly GrowableBuffer<double> _cost = new();
+    private readonly GrowableBuffer<byte> _switchSignal = new();
+    private readonly GrowableBuffer<ushort> _newId = new();
+    private readonly GrowableBuffer<uint> _histogramSymbols = new();
+    private readonly GrowableBuffer<uint> _u32 = new();
+    private readonly TypedBuffer _clusterSize = new();
+    private readonly GrowableBuffer<uint> _clusters = new();
+    private readonly GrowableBuffer<uint> _newIndex = new();
+    private readonly GrowableBuffer<HistogramPair> _pairs = new();
+    private readonly TypedBuffer _tmp = new();
 
     /// <summary>brotli's <c>BrotliSplitBlock</c>: the splits of the literals, the commands and the distances.</summary>
-    public void SplitBlock(Command* cmds, nuint numCommands, byte* data, nuint pos, nuint mask, int quality, BlockSplit literalSplit, BlockSplit insertAndCopySplit, BlockSplit distSplit)
+    public void SplitBlock(ReadOnlySpan<Command> cmds, ReadOnlySpan<byte> data, nuint pos, nuint mask, int quality, BlockSplit literalSplit, BlockSplit insertAndCopySplit, BlockSplit distSplit)
     {
         {
             nuint literalsCount = 0;
-            for (nuint i = 0; i < numCommands; ++i)
+            for (int i = 0; i < cmds.Length; ++i)
             {
                 literalsCount += cmds[i].InsertLen;
             }
 
-            byte* literals = _literals.Ensure(literalsCount);
-            CopyLiteralsToByteArray(cmds, numCommands, data, pos, mask, literals);
-            SplitByteVector<HistogramLiteral, byte>(literals, literalsCount, SymbolsPerLiteralHistogram, MaxLiteralHistograms, LiteralStrideLength, LiteralBlockSwitchCost, quality, literalSplit);
+            byte[] literals = _literals.Ensure(literalsCount);
+            CopyLiteralsToByteArray(cmds, data, pos, mask, literals);
+            SplitByteVector<HistogramLiteral, byte>(literals.AsSpan(0, (int)literalsCount), SymbolsPerLiteralHistogram, MaxLiteralHistograms, LiteralStrideLength, LiteralBlockSwitchCost, quality, literalSplit);
         }
 
         {
-            ushort* insertAndCopyCodes = _codes.Ensure(numCommands);
-            for (nuint i = 0; i < numCommands; ++i)
+            ushort[] insertAndCopyCodes = _codes.Ensure((nuint)cmds.Length);
+            for (int i = 0; i < cmds.Length; ++i)
             {
                 insertAndCopyCodes[i] = cmds[i].CmdPrefix;
             }
 
-            SplitByteVector<HistogramCommand, ushort>(insertAndCopyCodes, numCommands, SymbolsPerCommandHistogram, MaxCommandHistograms, CommandStrideLength, CommandBlockSwitchCost, quality, insertAndCopySplit);
+            SplitByteVector<HistogramCommand, ushort>(insertAndCopyCodes.AsSpan(0, cmds.Length), SymbolsPerCommandHistogram, MaxCommandHistograms, CommandStrideLength, CommandBlockSwitchCost, quality, insertAndCopySplit);
         }
 
         {
-            ushort* distancePrefixes = _codes.Ensure(numCommands);
-            nuint j = 0;
-            for (nuint i = 0; i < numCommands; ++i)
+            ushort[] distancePrefixes = _codes.Ensure((nuint)cmds.Length);
+            int j = 0;
+            for (int i = 0; i < cmds.Length; ++i)
             {
-                Command* cmd = cmds + i;
-                if (Commands.CopyLen(cmd) != 0 && cmd->CmdPrefix >= 128)
+                ref readonly Command cmd = ref cmds[i];
+                if (Commands.CopyLen(in cmd) != 0 && cmd.CmdPrefix >= 128)
                 {
-                    distancePrefixes[j++] = (ushort)(cmd->DistPrefix & 0x3FF);
+                    distancePrefixes[j++] = (ushort)(cmd.DistPrefix & 0x3FF);
                 }
             }
 
-            SplitByteVector<HistogramDistance, ushort>(distancePrefixes, j, SymbolsPerDistanceHistogram, MaxCommandHistograms, DistanceStrideLength, DistanceBlockSwitchCost, quality, distSplit);
+            SplitByteVector<HistogramDistance, ushort>(distancePrefixes.AsSpan(0, j), SymbolsPerDistanceHistogram, MaxCommandHistograms, DistanceStrideLength, DistanceBlockSwitchCost, quality, distSplit);
         }
     }
 
-    private static void CopyLiteralsToByteArray(Command* cmds, nuint numCommands, byte* data, nuint offset, nuint mask, byte* literals)
+    private static void CopyLiteralsToByteArray(ReadOnlySpan<Command> cmds, ReadOnlySpan<byte> data, nuint offset, nuint mask, Span<byte> literals)
     {
-        nuint pos = 0;
+        int pos = 0;
         nuint fromPos = offset & mask;
-        for (nuint i = 0; i < numCommands; ++i)
+        for (int i = 0; i < cmds.Length; ++i)
         {
             nuint insertLen = cmds[i].InsertLen;
             if (fromPos + insertLen > mask)
             {
                 nuint headSize = mask + 1 - fromPos;
-                Buffer.MemoryCopy(data + fromPos, literals + pos, headSize, headSize);
+                data.Slice((int)fromPos, (int)headSize).CopyTo(literals.Slice(pos));
                 fromPos = 0;
-                pos += headSize;
+                pos += (int)headSize;
                 insertLen -= headSize;
             }
 
             if (insertLen > 0)
             {
-                Buffer.MemoryCopy(data + fromPos, literals + pos, insertLen, insertLen);
-                pos += insertLen;
+                data.Slice((int)fromPos, (int)insertLen).CopyTo(literals.Slice(pos));
+                pos += (int)insertLen;
             }
 
-            fromPos = (fromPos + insertLen + Commands.CopyLen(cmds + i)) & mask;
+            fromPos = (fromPos + insertLen + Commands.CopyLen(in cmds[i])) & mask;
         }
     }
 
@@ -124,25 +124,26 @@ internal sealed unsafe class BlockSplitter
     private static double BitCost(nuint count) => count == 0 ? -2.0 : FastLog.FastLog2(count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void HistogramAddVector<THistogram, TData>(THistogram* h, TData* p, nuint n)
-        where THistogram : unmanaged, IHistogram
+    private static void HistogramAddVector<THistogram, TData>(ref THistogram h, ReadOnlySpan<TData> p)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
-        *Histogram.TotalCount(h) += n;
-        uint* data = Histogram.Data(h);
-        for (nuint i = 0; i < n; ++i)
+        h.TotalCount += (nuint)p.Length;
+        Span<uint> data = h.Data;
+        for (int i = 0; i < p.Length; ++i)
         {
-            ++data[nuint.CreateTruncating(p[i])];
+            ++data[int.CreateTruncating(p[i])];
         }
     }
 
-    private static void InitialEntropyCodes<THistogram, TData>(TData* data, nuint length, nuint stride, nuint numHistograms, THistogram* histograms)
-        where THistogram : unmanaged, IHistogram
+    private static void InitialEntropyCodes<THistogram, TData>(ReadOnlySpan<TData> data, nuint stride, nuint numHistograms, Span<THistogram> histograms)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
+        nuint length = (nuint)data.Length;
         uint seed = 7;
         nuint blockLength = length / numHistograms;
-        Histogram.ClearAll(histograms, numHistograms);
+        Histogram.ClearAll(histograms.Slice(0, (int)numHistograms));
         for (nuint i = 0; i < numHistograms; ++i)
         {
             nuint pos = length * i / numHistograms;
@@ -156,14 +157,15 @@ internal sealed unsafe class BlockSplitter
                 pos = length - stride - 1;
             }
 
-            HistogramAddVector(histograms + i, data + pos, stride);
+            HistogramAddVector(ref histograms[(int)i], data.Slice((int)pos, (int)stride));
         }
     }
 
-    private static void RandomSample<THistogram, TData>(ref uint seed, TData* data, nuint length, nuint stride, THistogram* sample)
-        where THistogram : unmanaged, IHistogram
+    private static void RandomSample<THistogram, TData>(ref uint seed, ReadOnlySpan<TData> data, nuint stride, ref THistogram sample)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
+        nuint length = (nuint)data.Length;
         nuint pos = 0;
         if (stride >= length)
         {
@@ -174,71 +176,72 @@ internal sealed unsafe class BlockSplitter
             pos = MyRand(ref seed) % (length - stride + 1);
         }
 
-        HistogramAddVector(sample, data + pos, stride);
+        HistogramAddVector(ref sample, data.Slice((int)pos, (int)stride));
     }
 
-    private static void RefineEntropyCodes<THistogram, TData>(TData* data, nuint length, nuint stride, nuint numHistograms, THistogram* histograms, THistogram* tmp)
-        where THistogram : unmanaged, IHistogram
+    private static void RefineEntropyCodes<THistogram, TData>(ReadOnlySpan<TData> data, nuint stride, nuint numHistograms, Span<THistogram> histograms, ref THistogram tmp)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
+        nuint length = (nuint)data.Length;
         nuint iters = (IterMulForRefining * length / stride) + MinItersForRefining;
         uint seed = 7;
         iters = (iters + numHistograms - 1) / numHistograms * numHistograms;
         for (nuint iter = 0; iter < iters; ++iter)
         {
-            Histogram.Clear(tmp);
-            RandomSample(ref seed, data, length, stride, tmp);
-            Histogram.AddHistogram(histograms + (iter % numHistograms), tmp);
+            Histogram.Clear(ref tmp);
+            RandomSample(ref seed, data, stride, ref tmp);
+            Histogram.AddHistogram(ref histograms[(int)(iter % numHistograms)], ref tmp);
         }
     }
 
     /// <summary>brotli's <c>FindBlocks</c>: the cheapest assignment of the symbols to the codes, with block switches.</summary>
-    private static nuint FindBlocks<THistogram, TData>(TData* data, nuint length, double blockSwitchBitcost, nuint numHistograms, THistogram* histograms, double* insertCost, double* cost, byte* switchSignal, byte* blockId)
-        where THistogram : unmanaged, IHistogram
+    private static nuint FindBlocks<THistogram, TData>(ReadOnlySpan<TData> data, double blockSwitchBitcost, nuint numHistograms, Span<THistogram> histograms, Span<double> insertCost, Span<double> cost, Span<byte> switchSignal, Span<byte> blockId)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
-        nuint alphabetSize = (nuint)THistogram.DataSize;
-        nuint bitmapLen = (numHistograms + 7) >> 3;
+        int length = data.Length;
+        int alphabetSize = THistogram.DataSize;
+        int numCodes = (int)numHistograms;
+        int bitmapLen = (numCodes + 7) >> 3;
         nuint numBlocks = 1;
         if (numHistograms <= 1)
         {
-            for (nuint i = 0; i < length; ++i)
-            {
-                blockId[i] = 0;
-            }
-
+            blockId.Slice(0, length).Clear();
             return 1;
         }
 
         // The bits of each symbol in each code: 2 + log2(total) for a symbol a code lacks.
-        new Span<double>(insertCost, (int)(alphabetSize * numHistograms)).Clear();
-        for (nuint i = 0; i < numHistograms; ++i)
+        insertCost = insertCost.Slice(0, alphabetSize * numCodes);
+        insertCost.Clear();
+        for (int i = 0; i < numCodes; ++i)
         {
-            insertCost[i] = FastLog.FastLog2((uint)*Histogram.TotalCount(histograms + i));
+            insertCost[i] = FastLog.FastLog2((uint)histograms[i].TotalCount);
         }
 
-        for (nuint i = alphabetSize; i != 0;)
+        for (int i = alphabetSize; i != 0;)
         {
             --i;
-            for (nuint j = 0; j < numHistograms; ++j)
+            for (int j = 0; j < numCodes; ++j)
             {
-                insertCost[(i * numHistograms) + j] = insertCost[j] - BitCost(Histogram.Data(histograms + j)[i]);
+                insertCost[(i * numCodes) + j] = insertCost[j] - BitCost(histograms[j].Data[i]);
             }
         }
 
-        new Span<double>(cost, (int)numHistograms).Clear();
-        new Span<byte>(switchSignal, (int)(length * bitmapLen)).Clear();
-        for (nuint byteIx = 0; byteIx < length; ++byteIx)
+        cost = cost.Slice(0, numCodes);
+        cost.Clear();
+        switchSignal.Slice(0, length * bitmapLen).Clear();
+        for (int byteIx = 0; byteIx < length; ++byteIx)
         {
-            nuint ix = byteIx * bitmapLen;
-            nuint symbol = nuint.CreateTruncating(data[byteIx]);
-            nuint insertCostIx = symbol * numHistograms;
+            int ix = byteIx * bitmapLen;
+            int symbol = int.CreateTruncating(data[byteIx]);
+            int insertCostIx = symbol * numCodes;
             double blockSwitchCost = blockSwitchBitcost;
 
             // The symbol coded with each code; the cheapest code, the first of the cheapest.
-            AddCosts(cost, insertCost + insertCostIx, numHistograms);
+            AddCosts(cost, insertCost.Slice(insertCostIx, numCodes));
             double minCost = 1e99;
-            int best = FirstMinimum(cost, numHistograms, ref minCost);
+            int best = FirstMinimum(cost, ref minCost);
             if (best >= 0)
             {
                 blockId[byteIx] = (byte)best;
@@ -250,20 +253,20 @@ internal sealed unsafe class BlockSplitter
                 blockSwitchCost *= 0.77 + (0.07 * (double)byteIx / 2000);
             }
 
-            SubtractAndCap(cost, numHistograms, minCost, blockSwitchCost, switchSignal + ix);
+            SubtractAndCap(cost, minCost, blockSwitchCost, switchSignal.Slice(ix, bitmapLen));
         }
 
         {
             // Back from the last position, switching at the marks.
-            nuint byteIx = length - 1;
-            nuint ix = byteIx * bitmapLen;
+            int byteIx = length - 1;
+            int ix = byteIx * bitmapLen;
             byte curId = blockId[byteIx];
             while (byteIx > 0)
             {
                 byte mask = (byte)(1u << (curId & 7));
                 --byteIx;
                 ix -= bitmapLen;
-                if ((switchSignal[ix + (nuint)(curId >> 3)] & mask) != 0)
+                if ((switchSignal[ix + (curId >> 3)] & mask) != 0)
                 {
                     if (curId != blockId[byteIx])
                     {
@@ -281,21 +284,23 @@ internal sealed unsafe class BlockSplitter
 
     /// <summary><c>cost[k] += insert[k]</c> for each code: the same additions, a vector at a time.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AddCosts(double* cost, double* insert, nuint n)
+    private static void AddCosts(Span<double> cost, ReadOnlySpan<double> insert)
     {
-        nuint k = 0;
+        int n = cost.Length;
+        insert = insert.Slice(0, n);
+        int k = 0;
         if (Vector256.IsHardwareAccelerated)
         {
             for (; k + 4 <= n; k += 4)
             {
-                (Vector256.Load(cost + k) + Vector256.Load(insert + k)).Store(cost + k);
+                (Vector256.Create(cost.Slice(k, 4)) + Vector256.Create(insert.Slice(k, 4))).CopyTo(cost.Slice(k, 4));
             }
         }
         else if (Vector128.IsHardwareAccelerated)
         {
             for (; k + 2 <= n; k += 2)
             {
-                (Vector128.Load(cost + k) + Vector128.Load(insert + k)).Store(cost + k);
+                (Vector128.Create(cost.Slice(k, 2)) + Vector128.Create(insert.Slice(k, 2))).CopyTo(cost.Slice(k, 2));
             }
         }
 
@@ -310,16 +315,17 @@ internal sealed unsafe class BlockSplitter
     /// strict comparisons finds it, and its cost in <paramref name="minCost"/>; -1 when none is below.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int FirstMinimum(double* cost, nuint n, ref double minCost)
+    private static int FirstMinimum(ReadOnlySpan<double> cost, ref double minCost)
     {
+        int n = cost.Length;
         double least = minCost;
-        nuint k = 0;
+        int k = 0;
         if (Vector256.IsHardwareAccelerated && n >= 4)
         {
             Vector256<double> min = Vector256.Create(least);
             for (; k + 4 <= n; k += 4)
             {
-                min = Vector256.Min(min, Vector256.Load(cost + k));
+                min = Vector256.Min(min, Vector256.Create(cost.Slice(k, 4)));
             }
 
             least = Math.Min(Math.Min(min[0], min[1]), Math.Min(min[2], min[3]));
@@ -329,7 +335,7 @@ internal sealed unsafe class BlockSplitter
             Vector128<double> min = Vector128.Create(least);
             for (; k + 2 <= n; k += 2)
             {
-                min = Vector128.Min(min, Vector128.Load(cost + k));
+                min = Vector128.Min(min, Vector128.Create(cost.Slice(k, 2)));
             }
 
             least = Math.Min(min[0], min[1]);
@@ -351,7 +357,7 @@ internal sealed unsafe class BlockSplitter
             if (cost[k] == least)
             {
                 minCost = cost[k];
-                return (int)k;
+                return k;
             }
         }
     }
@@ -361,21 +367,23 @@ internal sealed unsafe class BlockSplitter
     /// <paramref name="switchSignal"/>'s bits, a vector at a time.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void SubtractAndCap(double* cost, nuint n, double minCost, double blockSwitchCost, byte* switchSignal)
+    private static void SubtractAndCap(Span<double> cost, double minCost, double blockSwitchCost, Span<byte> switchSignal)
     {
-        nuint k = 0;
+        int n = cost.Length;
+        int k = 0;
         if (Vector256.IsHardwareAccelerated)
         {
             Vector256<double> min = Vector256.Create(minCost);
             Vector256<double> cap = Vector256.Create(blockSwitchCost);
             for (; k + 8 <= n; k += 8)
             {
-                Vector256<double> c0 = Vector256.Load(cost + k) - min;
-                Vector256<double> c1 = Vector256.Load(cost + k + 4) - min;
+                Span<double> eight = cost.Slice(k, 8);
+                Vector256<double> c0 = Vector256.Create((ReadOnlySpan<double>)eight.Slice(0, 4)) - min;
+                Vector256<double> c1 = Vector256.Create((ReadOnlySpan<double>)eight.Slice(4, 4)) - min;
                 Vector256<double> m0 = Vector256.GreaterThanOrEqual(c0, cap);
                 Vector256<double> m1 = Vector256.GreaterThanOrEqual(c1, cap);
-                Vector256.ConditionalSelect(m0, cap, c0).Store(cost + k);
-                Vector256.ConditionalSelect(m1, cap, c1).Store(cost + k + 4);
+                Vector256.ConditionalSelect(m0, cap, c0).CopyTo(eight.Slice(0, 4));
+                Vector256.ConditionalSelect(m1, cap, c1).CopyTo(eight.Slice(4, 4));
                 switchSignal[k >> 3] |= (byte)(m0.ExtractMostSignificantBits() | (m1.ExtractMostSignificantBits() << 4));
             }
         }
@@ -388,9 +396,10 @@ internal sealed unsafe class BlockSplitter
                 uint bits = 0;
                 for (int i = 0; i < 8; i += 2)
                 {
-                    Vector128<double> c = Vector128.Load(cost + k + (nuint)i) - min;
+                    Span<double> two = cost.Slice(k + i, 2);
+                    Vector128<double> c = Vector128.Create((ReadOnlySpan<double>)two) - min;
                     Vector128<double> m = Vector128.GreaterThanOrEqual(c, cap);
-                    Vector128.ConditionalSelect(m, cap, c).Store(cost + k + (nuint)i);
+                    Vector128.ConditionalSelect(m, cap, c).CopyTo(two);
                     bits |= m.ExtractMostSignificantBits() << i;
                 }
 
@@ -404,21 +413,17 @@ internal sealed unsafe class BlockSplitter
             if (cost[k] >= blockSwitchCost)
             {
                 cost[k] = blockSwitchCost;
-                switchSignal[k >> 3] |= (byte)(1u << (int)(k & 7));
+                switchSignal[k >> 3] |= (byte)(1u << (k & 7));
             }
         }
     }
 
-    private static nuint RemapBlockIds(byte* blockIds, nuint length, ushort* newId, nuint numHistograms)
+    private static nuint RemapBlockIds(Span<byte> blockIds, Span<ushort> newId, nuint numHistograms)
     {
         const ushort invalidId = 256;
         ushort nextId = 0;
-        for (nuint i = 0; i < numHistograms; ++i)
-        {
-            newId[i] = invalidId;
-        }
-
-        for (nuint i = 0; i < length; ++i)
+        newId.Slice(0, (int)numHistograms).Fill(invalidId);
+        for (int i = 0; i < blockIds.Length; ++i)
         {
             if (newId[blockIds[i]] == invalidId)
             {
@@ -426,7 +431,7 @@ internal sealed unsafe class BlockSplitter
             }
         }
 
-        for (nuint i = 0; i < length; ++i)
+        for (int i = 0; i < blockIds.Length; ++i)
         {
             blockIds[i] = (byte)newId[blockIds[i]];
         }
@@ -434,50 +439,50 @@ internal sealed unsafe class BlockSplitter
         return nextId;
     }
 
-    private static void BuildBlockHistograms<THistogram, TData>(TData* data, nuint length, byte* blockIds, nuint numHistograms, THistogram* histograms)
-        where THistogram : unmanaged, IHistogram
+    private static void BuildBlockHistograms<THistogram, TData>(ReadOnlySpan<TData> data, ReadOnlySpan<byte> blockIds, nuint numHistograms, Span<THistogram> histograms)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
-        Histogram.ClearAll(histograms, numHistograms);
-        for (nuint i = 0; i < length; ++i)
+        Histogram.ClearAll(histograms.Slice(0, (int)numHistograms));
+        for (int i = 0; i < data.Length; ++i)
         {
-            Histogram.Add(histograms + blockIds[i], nuint.CreateTruncating(data[i]));
+            Histogram.Add(ref histograms[blockIds[i]], nuint.CreateTruncating(data[i]));
         }
     }
 
     /// <summary>brotli's <c>ClusterBlocks</c>: the blocks' histograms clustered in batches, then together.</summary>
-    private void ClusterBlocks<THistogram, TData>(TData* data, nuint length, nuint numBlocks, byte* blockIds, BlockSplit split)
-        where THistogram : unmanaged, IHistogram
+    private void ClusterBlocks<THistogram, TData>(ReadOnlySpan<TData> data, nuint numBlocks, ReadOnlySpan<byte> blockIds, BlockSplit split)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
-        uint* histogramSymbols = _histogramSymbols.Ensure(numBlocks);
-        uint* u32 = _u32.Ensure(numBlocks + (4 * HistogramsPerBatch));
+        int length = data.Length;
+        uint[] histogramSymbols = _histogramSymbols.Ensure(numBlocks);
+        Span<uint> u32 = _u32.Ensure(numBlocks + (4 * HistogramsPerBatch)).AsSpan(0, (int)numBlocks + (4 * HistogramsPerBatch));
         nuint expectedNumClusters = ClustersPerBatch * (numBlocks + HistogramsPerBatch - 1) / HistogramsPerBatch;
         nuint allHistogramsSize = 0;
         nuint allHistogramsCapacity = expectedNumClusters;
-        THistogram* allHistograms = (THistogram*)_allHistograms.Ensure(allHistogramsCapacity * (nuint)sizeof(THistogram));
+        THistogram[] allHistograms = _allHistograms.Ensure<THistogram>(allHistogramsCapacity);
         nuint clusterSizeSize = 0;
         nuint clusterSizeCapacity = expectedNumClusters;
-        uint* clusterSize = _clusterSize.Ensure(clusterSizeCapacity);
+        uint[] clusterSize = _clusterSize.Ensure<uint>(clusterSizeCapacity);
         nuint numClusters = 0;
-        THistogram* histograms = (THistogram*)_histograms.Ensure(Math.Min(numBlocks, HistogramsPerBatch) * (nuint)sizeof(THistogram));
+        THistogram[] histograms = _histograms.Ensure<THistogram>(Math.Min(numBlocks, HistogramsPerBatch));
         nuint maxNumPairs = HistogramsPerBatch * HistogramsPerBatch / 2;
         nuint pairsCapacity = maxNumPairs + 1;
-        HistogramPair* pairs = _pairs.Ensure(pairsCapacity);
-        nuint pos = 0;
+        HistogramPair[] pairs = _pairs.Ensure(pairsCapacity);
+        int pos = 0;
         const uint invalidIndex = uint.MaxValue;
-        uint* sizes = u32;
-        uint* newClusters = u32 + HistogramsPerBatch;
-        uint* symbols = u32 + (2 * HistogramsPerBatch);
-        uint* remap = u32 + (3 * HistogramsPerBatch);
-        uint* blockLengths = u32 + (4 * HistogramsPerBatch);
-        THistogram* tmp = (THistogram*)_tmp.Ensure(2 * (nuint)sizeof(THistogram));
-        new Span<uint>(u32, (int)(numBlocks + (4 * HistogramsPerBatch))).Clear();
-
+        Span<uint> sizes = u32.Slice(0, HistogramsPerBatch);
+        Span<uint> newClusters = u32.Slice(HistogramsPerBatch, HistogramsPerBatch);
+        Span<uint> symbols = u32.Slice(2 * HistogramsPerBatch, HistogramsPerBatch);
+        Span<uint> remap = u32.Slice(3 * HistogramsPerBatch, HistogramsPerBatch);
+        Span<uint> blockLengths = u32.Slice(4 * HistogramsPerBatch);
+        THistogram[] tmp = _tmp.Ensure<THistogram>(2);
+        u32.Clear();
         {
             // The blocks' lengths.
-            nuint blockIdx = 0;
-            for (nuint i = 0; i < length; ++i)
+            int blockIdx = 0;
+            for (int i = 0; i < length; ++i)
             {
                 ++blockLengths[blockIdx];
                 if (i + 1 == length || blockIds[i] != blockIds[i + 1])
@@ -491,44 +496,45 @@ internal sealed unsafe class BlockSplitter
         for (nuint i = 0; i < numBlocks; i += HistogramsPerBatch)
         {
             nuint numToCombine = Math.Min(numBlocks - i, HistogramsPerBatch);
-            for (nuint j = 0; j < numToCombine; ++j)
+            for (int j = 0; j < (int)numToCombine; ++j)
             {
-                nuint blockLength = blockLengths[i + j];
-                Histogram.Clear(histograms + j);
-                for (nuint k = 0; k < blockLength; ++k)
+                uint blockLength = blockLengths[(int)i + j];
+                ref THistogram histogram = ref histograms[j];
+                Histogram.Clear(ref histogram);
+                for (uint k = 0; k < blockLength; ++k)
                 {
-                    Histogram.Add(histograms + j, nuint.CreateTruncating(data[pos++]));
+                    Histogram.Add(ref histogram, nuint.CreateTruncating(data[pos++]));
                 }
 
-                *Histogram.BitCost(histograms + j) = Cluster.PopulationCost(histograms + j);
+                histogram.BitCost = Cluster.PopulationCost(ref histogram);
                 newClusters[j] = (uint)j;
                 symbols[j] = (uint)j;
                 sizes[j] = 1;
             }
 
-            nuint numNewClusters = Cluster.HistogramCombine(histograms, tmp, sizes, symbols, newClusters, pairs, numToCombine, numToCombine, HistogramsPerBatch, maxNumPairs);
+            nuint numNewClusters = Cluster.HistogramCombine(histograms, ref tmp[0], sizes, symbols, newClusters, pairs, numToCombine, numToCombine, HistogramsPerBatch, maxNumPairs);
             if (allHistogramsCapacity < allHistogramsSize + numNewClusters)
             {
                 allHistogramsCapacity = Math.Max(allHistogramsSize + numNewClusters, allHistogramsCapacity * 2);
-                allHistograms = (THistogram*)Grow(_allHistograms, allHistogramsSize * (nuint)sizeof(THistogram), allHistogramsCapacity * (nuint)sizeof(THistogram));
+                allHistograms = _allHistograms.Grow<THistogram>(allHistogramsSize, allHistogramsCapacity);
             }
 
             if (clusterSizeCapacity < clusterSizeSize + numNewClusters)
             {
                 clusterSizeCapacity = Math.Max(clusterSizeSize + numNewClusters, clusterSizeCapacity * 2);
-                clusterSize = (uint*)Grow(_clusterSize, clusterSizeSize * sizeof(uint), clusterSizeCapacity * sizeof(uint));
+                clusterSize = _clusterSize.Grow<uint>(clusterSizeSize, clusterSizeCapacity);
             }
 
-            for (nuint j = 0; j < numNewClusters; ++j)
+            for (int j = 0; j < (int)numNewClusters; ++j)
             {
                 allHistograms[allHistogramsSize++] = histograms[newClusters[j]];
-                clusterSize[clusterSizeSize++] = sizes[newClusters[j]];
-                remap[newClusters[j]] = (uint)j;
+                clusterSize[clusterSizeSize++] = sizes[(int)newClusters[j]];
+                remap[(int)newClusters[j]] = (uint)j;
             }
 
-            for (nuint j = 0; j < numToCombine; ++j)
+            for (int j = 0; j < (int)numToCombine; ++j)
             {
-                histogramSymbols[i + j] = (uint)numClusters + remap[symbols[j]];
+                histogramSymbols[(int)i + j] = (uint)numClusters + remap[(int)symbols[j]];
             }
 
             numClusters += numNewClusters;
@@ -541,38 +547,34 @@ internal sealed unsafe class BlockSplitter
             pairs = _pairs.Ensure(maxNumPairs + 1);
         }
 
-        uint* clusters = _clusters.Ensure(numClusters);
+        uint[] clusters = _clusters.Ensure(numClusters);
         for (nuint i = 0; i < numClusters; ++i)
         {
             clusters[i] = (uint)i;
         }
 
-        nuint numFinalClusters = Cluster.HistogramCombine(allHistograms, tmp, clusterSize, histogramSymbols, clusters, pairs, numClusters, numBlocks, Prefix.MaxBlockTypes, maxNumPairs);
+        nuint numFinalClusters = Cluster.HistogramCombine(allHistograms, ref tmp[0], clusterSize, histogramSymbols, clusters, pairs, numClusters, numBlocks, Prefix.MaxBlockTypes, maxNumPairs);
 
         // Each block to its final histogram.
-        uint* newIndex = _newIndex.Ensure(numClusters);
-        for (nuint i = 0; i < numClusters; ++i)
-        {
-            newIndex[i] = invalidIndex;
-        }
-
+        uint[] newIndex = _newIndex.Ensure(numClusters);
+        newIndex.AsSpan(0, (int)numClusters).Fill(invalidIndex);
         pos = 0;
         {
             uint nextIndex = 0;
-            for (nuint i = 0; i < numBlocks; ++i)
+            for (int i = 0; i < (int)numBlocks; ++i)
             {
-                Histogram.Clear(tmp);
-                for (nuint j = 0; j < blockLengths[i]; ++j)
+                Histogram.Clear(ref tmp[0]);
+                for (uint j = 0; j < blockLengths[i]; ++j)
                 {
-                    Histogram.Add(tmp, nuint.CreateTruncating(data[pos++]));
+                    Histogram.Add(ref tmp[0], nuint.CreateTruncating(data[pos++]));
                 }
 
                 // Among equally good histograms, the last one used.
                 uint bestOut = i == 0 ? histogramSymbols[0] : histogramSymbols[i - 1];
-                double bestBits = Cluster.HistogramBitCostDistance(tmp, allHistograms + bestOut, tmp + 1);
+                double bestBits = Cluster.HistogramBitCostDistance(ref tmp[0], ref allHistograms[bestOut], ref tmp[1]);
                 for (nuint j = 0; j < numFinalClusters; ++j)
                 {
-                    double curBits = Cluster.HistogramBitCostDistance(tmp, allHistograms + clusters[j], tmp + 1);
+                    double curBits = Cluster.HistogramBitCostDistance(ref tmp[0], ref allHistograms[clusters[j]], ref tmp[1]);
                     if (curBits < bestBits)
                     {
                         bestBits = curBits;
@@ -593,10 +595,10 @@ internal sealed unsafe class BlockSplitter
             uint curLength = 0;
             nuint blockIdx = 0;
             byte maxType = 0;
-            for (nuint i = 0; i < numBlocks; ++i)
+            for (int i = 0; i < (int)numBlocks; ++i)
             {
                 curLength += blockLengths[i];
-                if (i + 1 == numBlocks || histogramSymbols[i] != histogramSymbols[i + 1])
+                if (i + 1 == (int)numBlocks || histogramSymbols[i] != histogramSymbols[i + 1])
                 {
                     byte id = (byte)newIndex[histogramSymbols[i]];
                     split.Types[blockIdx] = id;
@@ -612,23 +614,12 @@ internal sealed unsafe class BlockSplitter
         }
     }
 
-    /// <summary>A buffer grown to <paramref name="bytes"/>, which keeps its first <paramref name="keep"/> bytes.</summary>
-    private static byte* Grow<T>(PinnedBuffer<T> buffer, nuint keep, nuint bytes)
-        where T : unmanaged
-    {
-        byte[] copy = new byte[(int)keep];
-        T* old = buffer.Ensure(0);
-        new ReadOnlySpan<byte>(old, (int)keep).CopyTo(copy);
-        byte* grown = (byte*)buffer.Ensure((bytes + (nuint)sizeof(T) - 1) / (nuint)sizeof(T));
-        copy.CopyTo(new Span<byte>(grown, (int)keep));
-        return grown;
-    }
-
     /// <summary>brotli's <c>SplitByteVector</c>: the split of a category's symbols.</summary>
-    private void SplitByteVector<THistogram, TData>(TData* data, nuint length, nuint symbolsPerHistogram, nuint maxHistograms, nuint samplingStrideLength, double blockSwitchCost, int quality, BlockSplit split)
-        where THistogram : unmanaged, IHistogram
+    private void SplitByteVector<THistogram, TData>(ReadOnlySpan<TData> data, nuint symbolsPerHistogram, nuint maxHistograms, nuint samplingStrideLength, double blockSwitchCost, int quality, BlockSplit split)
+        where THistogram : struct, IHistogram
         where TData : unmanaged, IBinaryInteger<TData>
     {
+        nuint length = (nuint)data.Length;
         nuint dataSize = (nuint)THistogram.DataSize;
         nuint numHistograms = (length / symbolsPerHistogram) + 1;
         if (numHistograms > maxHistograms)
@@ -652,30 +643,30 @@ internal sealed unsafe class BlockSplitter
             return;
         }
 
-        THistogram* histograms = (THistogram*)_histograms.Ensure((numHistograms + 1) * (nuint)sizeof(THistogram));
-        THistogram* tmp = histograms + numHistograms;
+        THistogram[] histograms = _histograms.Ensure<THistogram>(numHistograms + 1);
+        ref THistogram tmp = ref histograms[numHistograms];
 
         // Good entropy codes.
-        InitialEntropyCodes(data, length, samplingStrideLength, numHistograms, histograms);
-        RefineEntropyCodes(data, length, samplingStrideLength, numHistograms, histograms, tmp);
+        InitialEntropyCodes(data, samplingStrideLength, numHistograms, histograms);
+        RefineEntropyCodes(data, samplingStrideLength, numHistograms, histograms, ref tmp);
         {
             // A good path through the symbols with them.
-            byte* blockIds = _blockIds.Ensure(length);
+            Span<byte> blockIds = _blockIds.Ensure(length).AsSpan(0, (int)length);
             nuint numBlocks = 0;
             nuint bitmapLen = (numHistograms + 7) >> 3;
-            double* insertCost = _insertCost.Ensure(dataSize * numHistograms);
-            double* cost = _cost.Ensure(numHistograms);
-            byte* switchSignal = _switchSignal.Ensure(length * bitmapLen);
-            ushort* newId = _newId.Ensure(numHistograms);
+            Span<double> insertCost = _insertCost.Ensure(dataSize * numHistograms);
+            Span<double> cost = _cost.Ensure(numHistograms);
+            Span<byte> switchSignal = _switchSignal.Ensure(length * bitmapLen);
+            Span<ushort> newId = _newId.Ensure(numHistograms);
             int iters = quality < 11 ? 3 : 10;
             for (int i = 0; i < iters; ++i)
             {
-                numBlocks = FindBlocks(data, length, blockSwitchCost, numHistograms, histograms, insertCost, cost, switchSignal, blockIds);
-                numHistograms = RemapBlockIds(blockIds, length, newId, numHistograms);
-                BuildBlockHistograms(data, length, blockIds, numHistograms, histograms);
+                numBlocks = FindBlocks(data, blockSwitchCost, numHistograms, histograms, insertCost, cost, switchSignal, blockIds);
+                numHistograms = RemapBlockIds(blockIds, newId, numHistograms);
+                BuildBlockHistograms(data, blockIds, numHistograms, histograms);
             }
 
-            ClusterBlocks<THistogram, TData>(data, length, numBlocks, blockIds, split);
+            ClusterBlocks<THistogram, TData>(data, numBlocks, blockIds, split);
         }
     }
 }

@@ -8,7 +8,7 @@ namespace ManagedCompressions.Brotli.Internal;
 /// The low level of brotli's format, as brotli writes it (<c>c/enc/brotli_bit_stream.c</c>): prefix
 /// codes, meta-block headers, uncompressed meta-blocks.
 /// </summary>
-internal static unsafe partial class BitStream
+internal static partial class BitStream
 {
     /// <summary>The order of the code length code's lengths in the stream.</summary>
     private static ReadOnlySpan<byte> StorageOrder => [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -31,7 +31,7 @@ internal static unsafe partial class BitStream
     }
 
     /// <summary>brotli's <c>BrotliStoreUncompressedMetaBlockHeader</c>: never the last meta-block.</summary>
-    public static void StoreUncompressedMetaBlockHeader(int length, ref int storageIx, byte* storage)
+    public static void StoreUncompressedMetaBlockHeader(int length, ref int storageIx, Span<byte> storage)
     {
         BitWriter.Write(1, 0, ref storageIx, storage);
         EncodeMlen(length, out ulong lenBits, out int numLenBits, out ulong nibblesBits);
@@ -45,7 +45,7 @@ internal static unsafe partial class BitStream
     /// <paramref name="input"/> from <paramref name="position"/>, the ring buffer's masked; then the empty
     /// last meta-block if it is the final block.
     /// </summary>
-    public static void StoreUncompressedMetaBlock(bool isFinalBlock, byte* input, nuint position, nuint mask, int length, ref int storageIx, byte* storage)
+    public static void StoreUncompressedMetaBlock(bool isFinalBlock, ReadOnlySpan<byte> input, nuint position, nuint mask, int length, ref int storageIx, Span<byte> storage)
     {
         nuint maskedPos = position & mask;
         StoreUncompressedMetaBlockHeader(length, ref storageIx, storage);
@@ -53,13 +53,13 @@ internal static unsafe partial class BitStream
         if (maskedPos + (nuint)length > mask + 1)
         {
             int length1 = (int)(mask + 1 - maskedPos);
-            Buffer.MemoryCopy(input + maskedPos, storage + (storageIx >> 3), length1, length1);
+            input.Slice((int)maskedPos, length1).CopyTo(storage.Slice(storageIx >> 3));
             storageIx += length1 << 3;
             length -= length1;
             maskedPos = 0;
         }
 
-        Buffer.MemoryCopy(input + maskedPos, storage + (storageIx >> 3), length, length);
+        input.Slice((int)maskedPos, length).CopyTo(storage.Slice(storageIx >> 3));
         storageIx += length << 3;
         BitWriter.PrepareStorage(storageIx, storage);
         if (isFinalBlock)
@@ -75,8 +75,9 @@ internal static unsafe partial class BitStream
     /// uncompressed meta-blocks of up to 16 MiB, in a window of 1 KiB. <paramref name="output"/> holds
     /// <see cref="MaxCompressedSize"/> bytes.
     /// </summary>
-    public static int MakeUncompressedStream(byte* input, int inputSize, byte* output)
+    public static int MakeUncompressedStream(ReadOnlySpan<byte> input, Span<byte> output)
     {
+        int inputSize = input.Length;
         int size = inputSize;
         int result = 0;
         int offset = 0;
@@ -107,7 +108,7 @@ internal static unsafe partial class BitStream
                 output[result++] = (byte)(bits >> 24);
             }
 
-            Buffer.MemoryCopy(input + offset, output + result, chunkSize, chunkSize);
+            input.Slice(offset, (int)chunkSize).CopyTo(output.Slice(result));
             result += (int)chunkSize;
             offset += (int)chunkSize;
             size -= (int)chunkSize;
@@ -132,7 +133,7 @@ internal static unsafe partial class BitStream
         return result < inputSize ? 0 : result;
     }
 
-    private static void StoreHuffmanTreeOfHuffmanTreeToBitMask(int numCodes, byte* codeLengthBitDepth, ref int storageIx, byte* storage)
+    private static void StoreHuffmanTreeOfHuffmanTreeToBitMask(int numCodes, Span<byte> codeLengthBitDepth, ref int storageIx, Span<byte> storage)
     {
         ReadOnlySpan<byte> order = StorageOrder;
         int skipSome = 0;
@@ -167,7 +168,7 @@ internal static unsafe partial class BitStream
         }
     }
 
-    private static void StoreHuffmanTreeToBitMask(int huffmanTreeSize, byte* huffmanTree, byte* huffmanTreeExtraBits, byte* codeLengthBitDepth, ushort* codeLengthBitDepthSymbols, ref int storageIx, byte* storage)
+    private static void StoreHuffmanTreeToBitMask(int huffmanTreeSize, Span<byte> huffmanTree, Span<byte> huffmanTreeExtraBits, Span<byte> codeLengthBitDepth, Span<ushort> codeLengthBitDepthSymbols, ref int storageIx, Span<byte> storage)
     {
         for (int i = 0; i < huffmanTreeSize; ++i)
         {
@@ -185,7 +186,7 @@ internal static unsafe partial class BitStream
     }
 
     /// <summary>brotli's <c>StoreSimpleHuffmanTree</c>: 2 to 4 symbols, sorted by depth.</summary>
-    public static void StoreSimpleHuffmanTree(byte* depths, nuint* symbols, int numSymbols, int maxBits, ref int storageIx, byte* storage)
+    public static void StoreSimpleHuffmanTree(ReadOnlySpan<byte> depths, Span<nuint> symbols, int numSymbols, int maxBits, ref int storageIx, Span<byte> storage)
     {
         BitWriter.Write(2, 1, ref storageIx, storage);
         BitWriter.Write(2, (ulong)(numSymbols - 1), ref storageIx, storage);
@@ -193,7 +194,7 @@ internal static unsafe partial class BitStream
         {
             for (int j = i + 1; j < numSymbols; j++)
             {
-                if (depths[symbols[j]] < depths[symbols[i]])
+                if (depths[(int)symbols[j]] < depths[(int)symbols[i]])
                 {
                     (symbols[j], symbols[i]) = (symbols[i], symbols[j]);
                 }
@@ -210,7 +211,7 @@ internal static unsafe partial class BitStream
         if (numSymbols == 4)
         {
             BitWriter.Write(maxBits, symbols[3], ref storageIx, storage);
-            BitWriter.Write(1, depths[symbols[0]] == 1 ? 1u : 0u, ref storageIx, storage);
+            BitWriter.Write(1, depths[(int)symbols[0]] == 1 ? 1u : 0u, ref storageIx, storage);
         }
     }
 
@@ -218,20 +219,18 @@ internal static unsafe partial class BitStream
     /// brotli's <c>BrotliStoreHuffmanTree</c>: a complex prefix code, its depths RLE-coded with a code
     /// length code built for them. <paramref name="tree"/> holds 2 * 18 + 1 nodes.
     /// </summary>
-    public static void StoreHuffmanTree(byte* depths, int num, HuffmanTree* tree, ref int storageIx, byte* storage)
+    public static void StoreHuffmanTree(ReadOnlySpan<byte> depths, Span<HuffmanTree> tree, ref int storageIx, Span<byte> storage)
     {
-        byte* huffmanTree = stackalloc byte[Prefix.NumCommandSymbols];
-        byte* huffmanTreeExtraBits = stackalloc byte[Prefix.NumCommandSymbols];
+        Span<byte> huffmanTree = stackalloc byte[Prefix.NumCommandSymbols];
+        Span<byte> huffmanTreeExtraBits = stackalloc byte[Prefix.NumCommandSymbols];
         int huffmanTreeSize = 0;
-        byte* codeLengthBitDepth = stackalloc byte[Prefix.NumCodeLengthCodes];
-        ushort* codeLengthBitDepthSymbols = stackalloc ushort[Prefix.NumCodeLengthCodes];
-        uint* huffmanTreeHistogram = stackalloc uint[Prefix.NumCodeLengthCodes];
-        new Span<byte>(codeLengthBitDepth, Prefix.NumCodeLengthCodes).Clear();
-        new Span<uint>(huffmanTreeHistogram, Prefix.NumCodeLengthCodes).Clear();
+        Span<byte> codeLengthBitDepth = stackalloc byte[Prefix.NumCodeLengthCodes];
+        Span<ushort> codeLengthBitDepthSymbols = stackalloc ushort[Prefix.NumCodeLengthCodes];
+        Span<uint> huffmanTreeHistogram = stackalloc uint[Prefix.NumCodeLengthCodes];
         int numCodes = 0;
         int code = 0;
 
-        EntropyEncode.WriteHuffmanTree(depths, num, ref huffmanTreeSize, huffmanTree, huffmanTreeExtraBits);
+        EntropyEncode.WriteHuffmanTree(depths, depths.Length, ref huffmanTreeSize, huffmanTree, huffmanTreeExtraBits);
         for (int i = 0; i < huffmanTreeSize; ++i)
         {
             ++huffmanTreeHistogram[huffmanTree[i]];
@@ -254,8 +253,8 @@ internal static unsafe partial class BitStream
             }
         }
 
-        EntropyEncode.CreateHuffmanTree(huffmanTreeHistogram, Prefix.NumCodeLengthCodes, 5, tree, codeLengthBitDepth);
-        EntropyEncode.ConvertBitDepthsToSymbols(codeLengthBitDepth, Prefix.NumCodeLengthCodes, codeLengthBitDepthSymbols);
+        EntropyEncode.CreateHuffmanTree(huffmanTreeHistogram, 5, tree, codeLengthBitDepth);
+        EntropyEncode.ConvertBitDepthsToSymbols(codeLengthBitDepth, codeLengthBitDepthSymbols);
         StoreHuffmanTreeOfHuffmanTreeToBitMask(numCodes, codeLengthBitDepth, ref storageIx, storage);
         if (numCodes == 1)
         {
@@ -270,12 +269,12 @@ internal static unsafe partial class BitStream
     /// <paramref name="histogramTotal"/>, stored as a simple code or with the static code length code.
     /// <paramref name="tree"/> holds 2 * 256 + 1 nodes.
     /// </summary>
-    public static void BuildAndStoreHuffmanTreeFast(HuffmanTree* tree, uint* histogram, nuint histogramTotal, int maxBits, byte* depth, ushort* bits, ref int storageIx, byte* storage)
+    public static void BuildAndStoreHuffmanTreeFast(Span<HuffmanTree> tree, ReadOnlySpan<uint> histogram, nuint histogramTotal, int maxBits, Span<byte> depth, Span<ushort> bits, ref int storageIx, Span<byte> storage)
     {
         // The symbols, the first four kept. Without a branch on the counts, which the processor mispredicts:
         // every symbol is written to the slot of the next one present, which keeps it only if it is present.
         int count = 0;
-        nuint* symbols = stackalloc nuint[5];
+        Span<nuint> symbols = stackalloc nuint[5];
         symbols[0] = symbols[1] = symbols[2] = symbols[3] = 0;
         int length = 0;
         nuint total = histogramTotal;
@@ -292,31 +291,31 @@ internal static unsafe partial class BitStream
         {
             BitWriter.Write(4, 1, ref storageIx, storage);
             BitWriter.Write(maxBits, symbols[0], ref storageIx, storage);
-            depth[symbols[0]] = 0;
-            bits[symbols[0]] = 0;
+            depth[(int)symbols[0]] = 0;
+            bits[(int)symbols[0]] = 0;
             return;
         }
 
-        new Span<byte>(depth, length).Clear();
+        depth.Slice(0, length).Clear();
         for (uint countLimit = 1; ; countLimit *= 2)
         {
             // A leaf for each symbol present, without a branch: each written, kept if present.
-            HuffmanTree* node = tree;
+            int node = 0;
             for (int l = length; l != 0;)
             {
                 --l;
                 uint value = histogram[l];
-                *node = new HuffmanTree(Math.Max(value, countLimit), -1, (short)l);
+                tree[node] = new HuffmanTree(Math.Max(value, countLimit), -1, (short)l);
                 node += value != 0 ? 1 : 0;
             }
 
-            int n = (int)(node - tree);
+            int n = node;
             var sentinel = new HuffmanTree(uint.MaxValue, -1, -1);
             int leaf = 0;
             int parent = n + 1;
             EntropyEncode.Sort<EntropyEncode.ByCount>(tree, n);
-            *node++ = sentinel;
-            *node++ = sentinel;
+            tree[node++] = sentinel;
+            tree[node++] = sentinel;
             for (int k = n - 1; k > 0; --k)
             {
                 int left;
@@ -339,10 +338,10 @@ internal static unsafe partial class BitStream
                     right = parent++;
                 }
 
-                node[-1].TotalCount = tree[left].TotalCount + tree[right].TotalCount;
-                node[-1].IndexLeft = (short)left;
-                node[-1].IndexRightOrValue = (short)right;
-                *node++ = sentinel;
+                tree[node - 1].TotalCount = tree[left].TotalCount + tree[right].TotalCount;
+                tree[node - 1].IndexLeft = (short)left;
+                tree[node - 1].IndexRightOrValue = (short)right;
+                tree[node++] = sentinel;
             }
 
             if (EntropyEncode.SetDepth((2 * n) - 1, tree, depth, 14))
@@ -351,7 +350,7 @@ internal static unsafe partial class BitStream
             }
         }
 
-        EntropyEncode.ConvertBitDepthsToSymbols(depth, length, bits);
+        EntropyEncode.ConvertBitDepthsToSymbols(depth.Slice(0, length), bits);
         if (count <= 4)
         {
             // A simple code: its symbols, sorted by depth.
@@ -361,7 +360,7 @@ internal static unsafe partial class BitStream
             {
                 for (int j = i + 1; j < count; j++)
                 {
-                    if (depth[symbols[j]] < depth[symbols[i]])
+                    if (depth[(int)symbols[j]] < depth[(int)symbols[i]])
                     {
                         (symbols[j], symbols[i]) = (symbols[i], symbols[j]);
                     }
@@ -378,7 +377,7 @@ internal static unsafe partial class BitStream
             if (count == 4)
             {
                 BitWriter.Write(maxBits, symbols[3], ref storageIx, storage);
-                BitWriter.Write(1, depth[symbols[0]] == 1 ? 1u : 0u, ref storageIx, storage);
+                BitWriter.Write(1, depth[(int)symbols[0]] == 1 ? 1u : 0u, ref storageIx, storage);
             }
 
             return;
@@ -388,12 +387,12 @@ internal static unsafe partial class BitStream
         byte previousValue = 8;
         StoreStaticCodeLengthCode(ref storageIx, storage);
         var sink = new BitSink(storageIx, storage);
-        ref byte codeLengthDepth = ref MemoryMarshal.GetReference(EncoderTables.CodeLengthDepth);
-        ref uint codeLengthBits = ref MemoryMarshal.GetReference(EncoderTables.CodeLengthBits);
-        ref uint zeroRepsDepth = ref MemoryMarshal.GetReference(EncoderTables.ZeroRepsDepth);
-        ref ulong zeroRepsBits = ref MemoryMarshal.GetReference(EncoderTables.ZeroRepsBits);
-        ref uint nonZeroRepsDepth = ref MemoryMarshal.GetReference(EncoderTables.NonZeroRepsDepth);
-        ref ulong nonZeroRepsBits = ref MemoryMarshal.GetReference(EncoderTables.NonZeroRepsBits);
+        ReadOnlySpan<byte> codeLengthDepth = EncoderTables.CodeLengthDepth;
+        ReadOnlySpan<uint> codeLengthBits = EncoderTables.CodeLengthBits;
+        ReadOnlySpan<uint> zeroRepsDepth = EncoderTables.ZeroRepsDepth;
+        ReadOnlySpan<ulong> zeroRepsBits = EncoderTables.ZeroRepsBits;
+        ReadOnlySpan<uint> nonZeroRepsDepth = EncoderTables.NonZeroRepsDepth;
+        ReadOnlySpan<ulong> nonZeroRepsBits = EncoderTables.NonZeroRepsBits;
         for (int i = 0; i < length;)
         {
             byte value = depth[i];
@@ -406,13 +405,13 @@ internal static unsafe partial class BitStream
             i += reps;
             if (value == 0)
             {
-                sink.Write((int)Unsafe.Add(ref zeroRepsDepth, reps), Unsafe.Add(ref zeroRepsBits, reps));
+                sink.Write((int)zeroRepsDepth[reps], zeroRepsBits[reps]);
                 continue;
             }
 
             if (previousValue != value)
             {
-                sink.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value));
+                sink.Write(codeLengthDepth[value], codeLengthBits[value]);
                 --reps;
             }
 
@@ -421,23 +420,23 @@ internal static unsafe partial class BitStream
                 while (reps != 0)
                 {
                     reps--;
-                    sink.Write(Unsafe.Add(ref codeLengthDepth, value), Unsafe.Add(ref codeLengthBits, value));
+                    sink.Write(codeLengthDepth[value], codeLengthBits[value]);
                 }
             }
             else
             {
                 reps -= 3;
-                sink.Write((int)Unsafe.Add(ref nonZeroRepsDepth, reps), Unsafe.Add(ref nonZeroRepsBits, reps));
+                sink.Write((int)nonZeroRepsDepth[reps], nonZeroRepsBits[reps]);
             }
 
             previousValue = value;
         }
 
-        storageIx = sink.Finish(storage);
+        storageIx = sink.Finish();
     }
 
     /// <summary>brotli's <c>StoreStaticCodeLengthCode</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void StoreStaticCodeLengthCode(ref int storageIx, byte* storage) =>
+    public static void StoreStaticCodeLengthCode(ref int storageIx, Span<byte> storage) =>
         BitWriter.Write(40, 0x0000FF55555554UL, ref storageIx, storage);
 }

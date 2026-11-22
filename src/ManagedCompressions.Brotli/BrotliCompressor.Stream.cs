@@ -8,17 +8,18 @@ namespace ManagedCompressions.Brotli;
 /// asked to finish: the input copied into the ring buffer a block at a time, each block processed, and the
 /// meta-blocks copied into the destination as they are written.
 /// </summary>
-public sealed unsafe partial class BrotliCompressor
+public sealed partial class BrotliCompressor
 {
     private EncoderState? _state;
 
     /// <summary>The stream of qualities 2 to 11 into <paramref name="dst"/>: its size, or -1 when it does not fit.</summary>
-    private int CompressStream(byte* src, int srcLength, byte* dst, int dstLength)
+    private int CompressStream(ReadOnlySpan<byte> src, Span<byte> dst)
     {
+        int dstLength = dst.Length;
         EncoderState state = _state ??= new EncoderState();
-        state.Reset(Quality, WindowLog, Mode, (nuint)srcLength);
-        byte* nextIn = src;
-        nuint availableIn = (nuint)srcLength;
+        state.Reset(Quality, WindowLog, Mode, (nuint)src.Length);
+        int nextIn = 0;
+        nuint availableIn = (nuint)src.Length;
         int written = 0;
         while (true)
         {
@@ -26,14 +27,14 @@ public sealed unsafe partial class BrotliCompressor
             if (remainingBlockSize != 0 && availableIn != 0)
             {
                 nuint copy = Math.Min(remainingBlockSize, availableIn);
-                state.CopyInputToRingBuffer(nextIn, copy);
-                nextIn += copy;
+                state.CopyInputToRingBuffer(src.Slice(nextIn, (int)copy));
+                nextIn += (int)copy;
                 availableIn -= copy;
                 continue;
             }
 
             bool isLast = availableIn == 0;
-            nuint outSize = state.EncodeData(isLast, false, out byte* output);
+            nuint outSize = state.EncodeData(isLast, false, out byte[]? output);
             if (outSize != 0)
             {
                 if (outSize > (nuint)(dstLength - written))
@@ -41,7 +42,7 @@ public sealed unsafe partial class BrotliCompressor
                     return -1;
                 }
 
-                Buffer.MemoryCopy(output, dst + written, outSize, outSize);
+                output!.AsSpan(0, (int)outSize).CopyTo(dst.Slice(written));
                 written += (int)outSize;
             }
 

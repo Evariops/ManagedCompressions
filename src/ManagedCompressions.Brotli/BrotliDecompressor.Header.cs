@@ -259,8 +259,6 @@ public sealed partial class BrotliDecompressor
         // The code length code: kind is how many of its first lengths are skipped (0, 2 or 3).
         Span<byte> codeLengthCodeLengths = stackalloc byte[Prefix.NumCodeLengthCodes];
         Span<ushort> histogram = stackalloc ushort[Huffman.MaxCodeLength + 1];
-        codeLengthCodeLengths.Clear();
-        histogram.Clear();
         uint space = 32;
         int numCodes = 0;
         ReadOnlySpan<byte> order = Prefix.CodeLengthCodeOrder;
