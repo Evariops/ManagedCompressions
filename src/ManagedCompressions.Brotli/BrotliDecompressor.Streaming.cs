@@ -9,7 +9,7 @@ namespace ManagedCompressions.Brotli;
 /// 64 bytes before the end of the input, from where the careful loop finishes the meta-block if the
 /// input holds it, or the state goes back to that point to wait for more.
 /// </summary>
-public sealed partial class BrotliDecompressor
+public sealed unsafe partial class BrotliDecompressor
 {
     /// <summary>What a step did.</summary>
     internal enum StreamResult
@@ -63,9 +63,9 @@ public sealed partial class BrotliDecompressor
         public int CopyLength;
         public int DistanceCode;
         public int DistanceContext;
-        public int CommandTree;
-        public int DistanceTree;
-        public int DistContextMapSlice;
+        public int DistanceTreeIndex;
+        public nint CommandTree;
+        public nint DistContextMapSlice;
         public int Resume;
         public Fixed S;
         public int DistRbIndex;
@@ -110,14 +110,14 @@ public sealed partial class BrotliDecompressor
     internal void StreamDropHistory(int bytes) => _pos -= bytes;
 
     /// <summary>One step of the stream from <paramref name="input"/>, into <paramref name="history"/> at <see cref="StreamPosition"/>.</summary>
-    internal StreamResult StreamStep(ReadOnlySpan<byte> input, Span<byte> history)
+    internal StreamResult StreamStep(byte* input, long inputLength, byte* history, int historyCapacity)
     {
         switch (_phase)
         {
             case StreamPhase.WindowBits:
             {
-                StartReader(input);
-                BrotliError error = DecodeWindowBits(input);
+                StartReader(input, inputLength);
+                BrotliError error = DecodeWindowBits();
                 if (_br.Overrun)
                 {
                     return StreamResult.NeedInput;
@@ -129,20 +129,20 @@ public sealed partial class BrotliDecompressor
                 }
 
                 _maxBackwardDistance = (1 << _windowBits) - Prefix.WindowGap;
-                _bitPosition = ReaderPosition();
+                _bitPosition = ReaderPosition(input);
                 _phase = StreamPhase.Header;
                 return StreamResult.Progress;
             }
 
             case StreamPhase.Header:
-                return StreamHeader(input, history);
+                return StreamHeader(input, inputLength, history, historyCapacity);
 
             case StreamPhase.Commands:
-                return StreamCommands(input, history);
+                return StreamCommands(input, inputLength, history, historyCapacity);
 
             case StreamPhase.Padding:
             {
-                StartReader(input);
+                StartReader(input, inputLength);
                 if (_br.JumpToByteBoundary() != 0)
                 {
                     return _br.Overrun ? StreamResult.NeedInput : Failed(BrotliError.Padding);
@@ -153,7 +153,7 @@ public sealed partial class BrotliDecompressor
                     return StreamResult.NeedInput;
                 }
 
-                _bitPosition = ReaderPosition();
+                _bitPosition = ReaderPosition(input);
                 _phase = StreamPhase.Done;
                 return StreamResult.Finished;
             }
@@ -163,10 +163,10 @@ public sealed partial class BrotliDecompressor
         }
     }
 
-    private StreamResult StreamHeader(ReadOnlySpan<byte> input, Span<byte> history)
+    private StreamResult StreamHeader(byte* input, long inputLength, byte* history, int historyCapacity)
     {
-        StartReader(input);
-        BrotliError error = DecodeMetaBlockHeader(input, out bool last, out bool uncompressed, out bool metadata);
+        StartReader(input, inputLength);
+        BrotliError error = DecodeMetaBlockHeader(out bool last, out bool uncompressed, out bool metadata);
         if (_br.Overrun || error == BrotliError.Truncated)
         {
             return StreamResult.NeedInput;
@@ -193,20 +193,20 @@ public sealed partial class BrotliDecompressor
             }
 
             // A metadata block can be the last one, as an empty one can.
-            _bitPosition = ReaderPosition();
+            _bitPosition = ReaderPosition(input);
             _phase = last ? StreamPhase.Padding : StreamPhase.Header;
             return StreamResult.Progress;
         }
 
         if (_metaBlockRemaining == 0)
         {
-            _bitPosition = ReaderPosition();
+            _bitPosition = ReaderPosition(input);
             _phase = last ? StreamPhase.Padding : StreamPhase.Header;
             return StreamResult.Progress;
         }
 
         // The meta-block's room first; the header is read again once there is room.
-        if (history.Length - _pos < StreamRoomNeeded)
+        if (historyCapacity - _pos < StreamRoomNeeded)
         {
             return StreamResult.NeedRoom;
         }
@@ -216,7 +216,7 @@ public sealed partial class BrotliDecompressor
             return StreamUncompressed(input, history);
         }
 
-        error = DecodeCompressedHeader(input);
+        error = DecodeCompressedHeader();
         if (_br.Overrun || error == BrotliError.Truncated)
         {
             return StreamResult.NeedInput;
@@ -227,62 +227,58 @@ public sealed partial class BrotliDecompressor
             return Failed(error);
         }
 
+        if (_contextTrees == null)
+        {
+            _contextTreesArray = Pinned<nint>(1 << Prefix.LiteralContextBits);
+            _contextTrees = Pointer(_contextTreesArray);
+        }
+
         PrepareLiteralDecoding();
-        _distContextMapSlice = 0;
-        _commandTree = _commandGroup.Trees[0];
-        _commandCodes = _commandGroup.Codes;
-        _distanceCodes = _distanceGroup.Codes;
-        _literalCodes = _literalGroup.Codes;
+        _distContextMapSlice = _distContextMap;
+        _commandTree = (uint*)_commandGroup.Trees[0];
         _insertRemaining = 0;
         _resume = AtCommandBegin;
         _lastMetaBlock = last;
-        _bitPosition = ReaderPosition();
+        _bitPosition = ReaderPosition(input);
         _phase = StreamPhase.Commands;
         SaveCheckpoint();
         return StreamResult.Progress;
     }
 
-    private StreamResult StreamUncompressed(ReadOnlySpan<byte> input, Span<byte> history)
+    private StreamResult StreamUncompressed(byte* input, byte* history)
     {
         // Its bytes all in the input, then copied; the header is read again until they are.
-        if (CopyUncompressed(input, history) != BrotliError.None)
+        if (CopyUncompressed(history) != BrotliError.None)
         {
             return StreamResult.NeedInput;
         }
 
-        _bitPosition = ReaderPosition();
+        _bitPosition = ReaderPosition(input);
         return StreamResult.Progress;
     }
 
-    private StreamResult StreamCommands(ReadOnlySpan<byte> input, Span<byte> history)
+    private StreamResult StreamCommands(byte* input, long inputLength, byte* history, int historyCapacity)
     {
         // A bit reader at the last stop, which holds the rest of its byte and nothing else: the bits past it
         // come from the input as it is now.
         long start = _bitPosition >> 3;
+        _br = new BitReader(input + start, (int)(inputLength - start));
         int used = (int)(_bitPosition & 7);
-        if (used != 0 && start >= input.Length)
-        {
-            // The rest of the byte went back to the caller with the input after it (the destination was
-            // full): it comes again with that input.
-            return StreamResult.NeedInput;
-        }
-
-        _br = new BitReader((int)start, input.Length);
         if (used != 0)
         {
-            _br.Bits = (ulong)(input[_br.Next] >> used);
+            _br.Bits = (ulong)(*_br.Next >> used);
             _br.Count = 8 - used;
             _br.Next++;
         }
 
         bool wide = _literalGroup.RootBits == WideLiteralRootBits;
-        int result = wide ? Commands<FastMode, WideRoot>(input, history, _resume) : Commands<FastMode, NarrowRoot>(input, history, _resume);
+        int result = wide ? Commands<FastMode, WideRoot>(history, historyCapacity, _resume) : Commands<FastMode, NarrowRoot>(history, historyCapacity, _resume);
         if (result == SwitchToCareful)
         {
             // A stop the input can resume from; the careful loop finishes the meta-block if the input holds it.
-            _bitPosition = ReaderPosition();
+            _bitPosition = ReaderPosition(input);
             SaveCheckpoint();
-            result = wide ? Commands<CarefulMode, WideRoot>(input, history, _resume) : Commands<CarefulMode, NarrowRoot>(input, history, _resume);
+            result = wide ? Commands<CarefulMode, WideRoot>(history, historyCapacity, _resume) : Commands<CarefulMode, NarrowRoot>(history, historyCapacity, _resume);
             if (result == (int)BrotliError.Truncated || (result == 0 && _br.Overrun))
             {
                 RestoreCheckpoint();
@@ -295,24 +291,25 @@ public sealed partial class BrotliDecompressor
             return Failed((BrotliError)result);
         }
 
-        _bitPosition = ReaderPosition();
+        _bitPosition = ReaderPosition(input);
         _phase = _lastMetaBlock ? StreamPhase.Padding : StreamPhase.Header;
         return StreamResult.Progress;
     }
 
     /// <summary>A bit reader at <see cref="_bitPosition"/>.</summary>
-    private void StartReader(ReadOnlySpan<byte> input)
+    private void StartReader(byte* input, long inputLength)
     {
-        _br = new BitReader((int)(_bitPosition >> 3), input.Length);
+        long start = _bitPosition >> 3;
+        _br = new BitReader(input + start, (int)(inputLength - start));
         int skip = (int)(_bitPosition & 7);
         if (skip != 0)
         {
-            _br.Read(input, skip);
+            _br.Read(skip);
         }
     }
 
     /// <summary>The bit reader's position in the input.</summary>
-    private long ReaderPosition() => _br.AbsolutePosition;
+    private long ReaderPosition(byte* input) => ((_br.Start - input) * 8) + _br.Position;
 
     private StreamResult Failed(BrotliError error)
     {
@@ -330,9 +327,9 @@ public sealed partial class BrotliDecompressor
         _checkpoint.CopyLength = _copyLength;
         _checkpoint.DistanceCode = _distanceCode;
         _checkpoint.DistanceContext = _distanceContext;
-        _checkpoint.CommandTree = _commandTree;
-        _checkpoint.DistanceTree = _distanceTree;
-        _checkpoint.DistContextMapSlice = _distContextMapSlice;
+        _checkpoint.DistanceTreeIndex = _distanceTreeIndex;
+        _checkpoint.CommandTree = (nint)_commandTree;
+        _checkpoint.DistContextMapSlice = (nint)_distContextMapSlice;
         _checkpoint.Resume = _resume;
         _checkpoint.S = _s;
         _checkpoint.DistRbIndex = _distRbIndex;
@@ -347,9 +344,9 @@ public sealed partial class BrotliDecompressor
         _copyLength = _checkpoint.CopyLength;
         _distanceCode = _checkpoint.DistanceCode;
         _distanceContext = _checkpoint.DistanceContext;
-        _commandTree = _checkpoint.CommandTree;
-        _distanceTree = _checkpoint.DistanceTree;
-        _distContextMapSlice = _checkpoint.DistContextMapSlice;
+        _distanceTreeIndex = _checkpoint.DistanceTreeIndex;
+        _commandTree = (uint*)_checkpoint.CommandTree;
+        _distContextMapSlice = (byte*)_checkpoint.DistContextMapSlice;
         _resume = _checkpoint.Resume;
         _s = _checkpoint.S;
         _distRbIndex = _checkpoint.DistRbIndex;

@@ -18,28 +18,29 @@ internal struct HistogramPair
 /// brotli's histogram costs and clustering (<c>c/enc/bit_cost_inc.h</c>, <c>c/enc/cluster_inc.h</c>):
 /// the cost of a histogram's prefix code, and the greedy merges of histograms that save the most bits.
 /// </summary>
-internal static class Cluster
+internal static unsafe class Cluster
 {
     /// <summary>brotli's <c>BrotliPopulationCost</c>: the bits of a histogram's symbols and of its code.</summary>
-    public static double PopulationCost<T>(ref T histogram)
-        where T : struct, IHistogram
+    public static double PopulationCost<T>(T* histogram)
+        where T : unmanaged, IHistogram
     {
         const double oneSymbolHistogramCost = 12;
         const double twoSymbolHistogramCost = 20;
         const double threeSymbolHistogramCost = 28;
         const double fourSymbolHistogramCost = 37;
-        ReadOnlySpan<uint> data = histogram.Data;
-        int dataSize = data.Length;
-        nuint totalCount = histogram.TotalCount;
+        int dataSize = T.DataSize;
+        uint* data = Histogram.Data(histogram);
+        nuint totalCount = *Histogram.TotalCount(histogram);
         int count = 0;
-        Span<int> s = stackalloc int[5];
+        int* s = stackalloc int[5];
         double bits = 0.0;
         if (totalCount == 0)
         {
             return oneSymbolHistogramCost;
         }
 
-        count = FirstNonZero(data, s);
+        count = FirstNonZero(data, dataSize, s);
+
         if (count == 1)
         {
             return oneSymbolHistogramCost;
@@ -61,7 +62,7 @@ internal static class Cluster
 
         if (count == 4)
         {
-            Span<uint> histo = stackalloc uint[4];
+            uint* histo = stackalloc uint[4];
             for (int i = 0; i < 4; ++i)
             {
                 histo[i] = data[s[i]];
@@ -86,7 +87,8 @@ internal static class Cluster
         {
             // The entropy, and the code length code's histogram, with the zero repeat code 17 but not 16.
             nuint maxDepth = 1;
-            Span<uint> depthHisto = stackalloc uint[Prefix.NumCodeLengthCodes];
+            uint* depthHisto = stackalloc uint[Prefix.NumCodeLengthCodes];
+            new Span<uint>(depthHisto, Prefix.NumCodeLengthCodes).Clear();
             double log2Total = FastLog.FastLog2(totalCount);
             for (int i = 0; i < dataSize;)
             {
@@ -105,12 +107,13 @@ internal static class Cluster
                         maxDepth = depth;
                     }
 
-                    ++depthHisto[(int)depth];
+                    ++depthHisto[depth];
                     ++i;
                 }
                 else
                 {
-                    uint reps = (uint)ZeroRun(data, i + 1) + 1;
+                    uint reps = (uint)ZeroRun(data, i + 1, dataSize) + 1;
+
                     i += (int)reps;
                     if (i == dataSize)
                     {
@@ -136,7 +139,7 @@ internal static class Cluster
             }
 
             bits += (double)(18 + (2 * maxDepth));
-            bits += FastLog.BitsEntropy(depthHisto);
+            bits += FastLog.BitsEntropy(depthHisto, Prefix.NumCodeLengthCodes);
         }
 
         return bits;
@@ -144,16 +147,15 @@ internal static class Cluster
 
     /// <summary>The indices of the first nonzero counts into <paramref name="s"/>, five at most: their number.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int FirstNonZero(ReadOnlySpan<uint> data, Span<int> s)
+    private static int FirstNonZero(uint* data, int size, int* s)
     {
-        int size = data.Length;
         int count = 0;
         int i = 0;
         if (Vector256.IsHardwareAccelerated)
         {
             for (; i + 8 <= size; i += 8)
             {
-                uint mask = ~Vector256.Equals(Vector256.Create(data.Slice(i, 8)), Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFF;
+                uint mask = ~Vector256.Equals(Vector256.Load(data + i), Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFF;
                 for (; mask != 0; mask &= mask - 1)
                 {
                     s[count++] = i + BitOperations.TrailingZeroCount(mask);
@@ -168,7 +170,7 @@ internal static class Cluster
         {
             for (; i + 4 <= size; i += 4)
             {
-                uint mask = ~Vector128.Equals(Vector128.Create(data.Slice(i, 4)), Vector128<uint>.Zero).ExtractMostSignificantBits() & 0xF;
+                uint mask = ~Vector128.Equals(Vector128.Load(data + i), Vector128<uint>.Zero).ExtractMostSignificantBits() & 0xF;
                 for (; mask != 0; mask &= mask - 1)
                 {
                     s[count++] = i + BitOperations.TrailingZeroCount(mask);
@@ -197,15 +199,14 @@ internal static class Cluster
 
     /// <summary>The number of zero counts from <paramref name="from"/> on.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int ZeroRun(ReadOnlySpan<uint> data, int from)
+    private static int ZeroRun(uint* data, int from, int size)
     {
-        int size = data.Length;
         int k = from;
         if (Vector256.IsHardwareAccelerated)
         {
             for (; k + 8 <= size; k += 8)
             {
-                uint nonZero = ~Vector256.Equals(Vector256.Create(data.Slice(k, 8)), Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFF;
+                uint nonZero = ~Vector256.Equals(Vector256.Load(data + k), Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFF;
                 if (nonZero != 0)
                 {
                     return k + BitOperations.TrailingZeroCount(nonZero) - from;
@@ -216,7 +217,7 @@ internal static class Cluster
         {
             for (; k + 4 <= size; k += 4)
             {
-                uint nonZero = ~Vector128.Equals(Vector128.Create(data.Slice(k, 4)), Vector128<uint>.Zero).ExtractMostSignificantBits() & 0xF;
+                uint nonZero = ~Vector128.Equals(Vector128.Load(data + k), Vector128<uint>.Zero).ExtractMostSignificantBits() & 0xF;
                 if (nonZero != 0)
                 {
                     return k + BitOperations.TrailingZeroCount(nonZero) - from;
@@ -233,14 +234,14 @@ internal static class Cluster
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool HistogramPairIsLess(in HistogramPair p1, in HistogramPair p2)
+    private static bool HistogramPairIsLess(HistogramPair* p1, HistogramPair* p2)
     {
-        if (p1.CostDiff != p2.CostDiff)
+        if (p1->CostDiff != p2->CostDiff)
         {
-            return p1.CostDiff > p2.CostDiff;
+            return p1->CostDiff > p2->CostDiff;
         }
 
-        return p1.Idx2 - p1.Idx1 > p2.Idx2 - p2.Idx1;
+        return p1->Idx2 - p1->Idx1 > p2->Idx2 - p2->Idx1;
     }
 
     /// <summary>brotli's <c>ClusterCostDiff</c>: the context map's entropy saved by merging two clusters.</summary>
@@ -251,8 +252,8 @@ internal static class Cluster
     }
 
     /// <summary>brotli's <c>BrotliCompareAndPushToQueue</c>.</summary>
-    private static void CompareAndPushToQueue<T>(Span<T> output, ref T tmp, Span<uint> clusterSize, uint idx1, uint idx2, nuint maxNumPairs, Span<HistogramPair> pairs, ref nuint numPairs)
-        where T : struct, IHistogram
+    private static void CompareAndPushToQueue<T>(T* output, T* tmp, uint* clusterSize, uint idx1, uint idx2, nuint maxNumPairs, HistogramPair* pairs, ref nuint numPairs)
+        where T : unmanaged, IHistogram
     {
         bool isGoodPair = false;
         HistogramPair p;
@@ -266,29 +267,27 @@ internal static class Cluster
             (idx1, idx2) = (idx2, idx1);
         }
 
-        ref T out1 = ref output[(int)idx1];
-        ref T out2 = ref output[(int)idx2];
         p.Idx1 = idx1;
         p.Idx2 = idx2;
         p.CostCombo = 0;
-        p.CostDiff = 0.5 * ClusterCostDiff(clusterSize[(int)idx1], clusterSize[(int)idx2]);
-        p.CostDiff -= out1.BitCost;
-        p.CostDiff -= out2.BitCost;
-        if (out1.TotalCount == 0)
+        p.CostDiff = 0.5 * ClusterCostDiff(clusterSize[idx1], clusterSize[idx2]);
+        p.CostDiff -= *Histogram.BitCost(output + idx1);
+        p.CostDiff -= *Histogram.BitCost(output + idx2);
+        if (*Histogram.TotalCount(output + idx1) == 0)
         {
-            p.CostCombo = out2.BitCost;
+            p.CostCombo = *Histogram.BitCost(output + idx2);
             isGoodPair = true;
         }
-        else if (out2.TotalCount == 0)
+        else if (*Histogram.TotalCount(output + idx2) == 0)
         {
-            p.CostCombo = out1.BitCost;
+            p.CostCombo = *Histogram.BitCost(output + idx1);
             isGoodPair = true;
         }
         else
         {
             double threshold = numPairs == 0 ? 1e99 : Math.Max(0.0, pairs[0].CostDiff);
-            Histogram.Sum(ref tmp, ref out1, ref out2);
-            double costCombo = PopulationCost(ref tmp);
+            Histogram.Sum(tmp, output + idx1, output + idx2);
+            double costCombo = PopulationCost(tmp);
             if (costCombo < threshold - p.CostDiff)
             {
                 p.CostCombo = costCombo;
@@ -299,12 +298,12 @@ internal static class Cluster
         if (isGoodPair)
         {
             p.CostDiff += p.CostCombo;
-            if (numPairs > 0 && HistogramPairIsLess(in pairs[0], in p))
+            if (numPairs > 0 && HistogramPairIsLess(pairs, &p))
             {
                 // The new top of the queue.
                 if (numPairs < maxNumPairs)
                 {
-                    pairs[(int)numPairs] = pairs[0];
+                    pairs[numPairs] = pairs[0];
                     ++numPairs;
                 }
 
@@ -312,24 +311,24 @@ internal static class Cluster
             }
             else if (numPairs < maxNumPairs)
             {
-                pairs[(int)numPairs] = p;
+                pairs[numPairs] = p;
                 ++numPairs;
             }
         }
     }
 
     /// <summary>brotli's <c>BrotliHistogramCombine</c>: merges the best pairs until none saves bits, or to <paramref name="maxClusters"/>.</summary>
-    public static nuint HistogramCombine<T>(Span<T> output, ref T tmp, Span<uint> clusterSize, Span<uint> symbols, Span<uint> clusters, Span<HistogramPair> pairs, nuint numClusters, nuint symbolsSize, nuint maxClusters, nuint maxNumPairs)
-        where T : struct, IHistogram
+    public static nuint HistogramCombine<T>(T* output, T* tmp, uint* clusterSize, uint* symbols, uint* clusters, HistogramPair* pairs, nuint numClusters, nuint symbolsSize, nuint maxClusters, nuint maxNumPairs)
+        where T : unmanaged, IHistogram
     {
         double costDiffThreshold = 0.0;
         nuint minClusterSize = 1;
         nuint numPairs = 0;
-        for (int idx1 = 0; idx1 < (int)numClusters; ++idx1)
+        for (nuint idx1 = 0; idx1 < numClusters; ++idx1)
         {
-            for (int idx2 = idx1 + 1; idx2 < (int)numClusters; ++idx2)
+            for (nuint idx2 = idx1 + 1; idx2 < numClusters; ++idx2)
             {
-                CompareAndPushToQueue(output, ref tmp, clusterSize, clusters[idx1], clusters[idx2], maxNumPairs, pairs, ref numPairs);
+                CompareAndPushToQueue(output, tmp, clusterSize, clusters[idx1], clusters[idx2], maxNumPairs, pairs, ref numPairs);
             }
         }
 
@@ -345,10 +344,10 @@ internal static class Cluster
             // The best pair, at the top.
             uint bestIdx1 = pairs[0].Idx1;
             uint bestIdx2 = pairs[0].Idx2;
-            Histogram.AddHistogram(ref output[(int)bestIdx1], ref output[(int)bestIdx2]);
-            output[(int)bestIdx1].BitCost = pairs[0].CostCombo;
-            clusterSize[(int)bestIdx1] += clusterSize[(int)bestIdx2];
-            for (int i = 0; i < (int)symbolsSize; ++i)
+            Histogram.AddHistogram(output + bestIdx1, output + bestIdx2);
+            *Histogram.BitCost(output + bestIdx1) = pairs[0].CostCombo;
+            clusterSize[bestIdx1] += clusterSize[bestIdx2];
+            for (nuint i = 0; i < symbolsSize; ++i)
             {
                 if (symbols[i] == bestIdx2)
                 {
@@ -356,11 +355,11 @@ internal static class Cluster
                 }
             }
 
-            for (int i = 0; i < (int)numClusters; ++i)
+            for (nuint i = 0; i < numClusters; ++i)
             {
                 if (clusters[i] == bestIdx2)
                 {
-                    clusters.Slice(i + 1, (int)numClusters - i - 1).CopyTo(clusters.Slice(i));
+                    Buffer.MemoryCopy(clusters + i + 1, clusters + i, (numClusters - i - 1) * sizeof(uint), (numClusters - i - 1) * sizeof(uint));
                     break;
                 }
             }
@@ -368,36 +367,36 @@ internal static class Cluster
             --numClusters;
             {
                 // The pairs of either cluster go.
-                int copyToIdx = 0;
-                for (int i = 0; i < (int)numPairs; ++i)
+                nuint copyToIdx = 0;
+                for (nuint i = 0; i < numPairs; ++i)
                 {
-                    HistogramPair p = pairs[i];
-                    if (p.Idx1 == bestIdx1 || p.Idx2 == bestIdx1 || p.Idx1 == bestIdx2 || p.Idx2 == bestIdx2)
+                    HistogramPair* p = pairs + i;
+                    if (p->Idx1 == bestIdx1 || p->Idx2 == bestIdx1 || p->Idx1 == bestIdx2 || p->Idx2 == bestIdx2)
                     {
                         continue;
                     }
 
-                    if (HistogramPairIsLess(in pairs[0], in p))
+                    if (HistogramPairIsLess(pairs, p))
                     {
                         HistogramPair front = pairs[0];
-                        pairs[0] = p;
+                        pairs[0] = *p;
                         pairs[copyToIdx] = front;
                     }
                     else
                     {
-                        pairs[copyToIdx] = p;
+                        pairs[copyToIdx] = *p;
                     }
 
                     ++copyToIdx;
                 }
 
-                numPairs = (nuint)copyToIdx;
+                numPairs = copyToIdx;
             }
 
             // The pairs of the merged cluster.
-            for (int i = 0; i < (int)numClusters; ++i)
+            for (nuint i = 0; i < numClusters; ++i)
             {
-                CompareAndPushToQueue(output, ref tmp, clusterSize, bestIdx1, clusters[i], maxNumPairs, pairs, ref numPairs);
+                CompareAndPushToQueue(output, tmp, clusterSize, bestIdx1, clusters[i], maxNumPairs, pairs, ref numPairs);
             }
         }
 
@@ -405,29 +404,29 @@ internal static class Cluster
     }
 
     /// <summary>brotli's <c>BrotliHistogramBitCostDistance</c>: the bits moving a histogram into a candidate costs.</summary>
-    public static double HistogramBitCostDistance<T>(ref T histogram, ref T candidate, ref T tmp)
-        where T : struct, IHistogram
+    public static double HistogramBitCostDistance<T>(T* histogram, T* candidate, T* tmp)
+        where T : unmanaged, IHistogram
     {
-        if (histogram.TotalCount == 0)
+        if (*Histogram.TotalCount(histogram) == 0)
         {
             return 0.0;
         }
 
-        Histogram.Sum(ref tmp, ref histogram, ref candidate);
-        return PopulationCost(ref tmp) - candidate.BitCost;
+        Histogram.Sum(tmp, histogram, candidate);
+        return PopulationCost(tmp) - *Histogram.BitCost(candidate);
     }
 
     /// <summary>brotli's <c>BrotliHistogramRemap</c>: each input to its best cluster, and the clusters rebuilt.</summary>
-    private static void HistogramRemap<T>(Span<T> input, nuint inSize, Span<uint> clusters, nuint numClusters, Span<T> output, ref T tmp, Span<uint> symbols)
-        where T : struct, IHistogram
+    private static void HistogramRemap<T>(T* input, nuint inSize, uint* clusters, nuint numClusters, T* output, T* tmp, uint* symbols)
+        where T : unmanaged, IHistogram
     {
-        for (int i = 0; i < (int)inSize; ++i)
+        for (nuint i = 0; i < inSize; ++i)
         {
             uint bestOut = i == 0 ? symbols[0] : symbols[i - 1];
-            double bestBits = HistogramBitCostDistance(ref input[i], ref output[(int)bestOut], ref tmp);
-            for (int j = 0; j < (int)numClusters; ++j)
+            double bestBits = HistogramBitCostDistance(input + i, output + bestOut, tmp);
+            for (nuint j = 0; j < numClusters; ++j)
             {
-                double curBits = HistogramBitCostDistance(ref input[i], ref output[(int)clusters[j]], ref tmp);
+                double curBits = HistogramBitCostDistance(input + i, output + clusters[j], tmp);
                 if (curBits < bestBits)
                 {
                     bestBits = curBits;
@@ -438,48 +437,56 @@ internal static class Cluster
             symbols[i] = bestOut;
         }
 
-        for (int i = 0; i < (int)numClusters; ++i)
+        for (nuint i = 0; i < numClusters; ++i)
         {
-            Histogram.Clear(ref output[(int)clusters[i]]);
+            Histogram.Clear(output + clusters[i]);
         }
 
-        for (int i = 0; i < (int)inSize; ++i)
+        for (nuint i = 0; i < inSize; ++i)
         {
-            Histogram.AddHistogram(ref output[(int)symbols[i]], ref input[i]);
+            Histogram.AddHistogram(output + symbols[i], input + i);
         }
     }
 
     /// <summary>brotli's <c>BrotliHistogramReindex</c>: the clusters renumbered in their first use's order.</summary>
-    private static nuint HistogramReindex<T>(ClusterArena arena, Span<T> output, Span<uint> symbols, nuint length)
-        where T : struct, IHistogram
+    private static nuint HistogramReindex<T>(ClusterArena arena, T* output, uint* symbols, nuint length)
+        where T : unmanaged, IHistogram
     {
         const uint invalidIndex = uint.MaxValue;
-        Span<uint> newIndex = arena.NewIndex(length);
-        newIndex.Slice(0, (int)length).Fill(invalidIndex);
+        uint* newIndex = arena.NewIndex(length);
+        for (nuint i = 0; i < length; ++i)
+        {
+            newIndex[i] = invalidIndex;
+        }
+
         uint nextIndex = 0;
-        for (int i = 0; i < (int)length; ++i)
+        for (nuint i = 0; i < length; ++i)
         {
-            if (newIndex[(int)symbols[i]] == invalidIndex)
+            if (newIndex[symbols[i]] == invalidIndex)
             {
-                newIndex[(int)symbols[i]] = nextIndex;
+                newIndex[symbols[i]] = nextIndex;
                 ++nextIndex;
             }
         }
 
-        Span<T> tmp = arena.Histograms<T>(nextIndex);
+        T* tmp = (T*)arena.Histograms((nuint)sizeof(T) * nextIndex);
         nextIndex = 0;
-        for (int i = 0; i < (int)length; ++i)
+        for (nuint i = 0; i < length; ++i)
         {
-            if (newIndex[(int)symbols[i]] == nextIndex)
+            if (newIndex[symbols[i]] == nextIndex)
             {
-                tmp[(int)nextIndex] = output[(int)symbols[i]];
+                tmp[nextIndex] = output[symbols[i]];
                 ++nextIndex;
             }
 
-            symbols[i] = newIndex[(int)symbols[i]];
+            symbols[i] = newIndex[symbols[i]];
         }
 
-        tmp.Slice(0, (int)nextIndex).CopyTo(output);
+        for (nuint i = 0; i < nextIndex; ++i)
+        {
+            output[i] = tmp[i];
+        }
+
         return nextIndex;
     }
 
@@ -487,21 +494,25 @@ internal static class Cluster
     /// brotli's <c>BrotliClusterHistograms</c>: <paramref name="input"/>'s histograms merged into at most
     /// <paramref name="maxHistograms"/>, in <paramref name="output"/>, with the map of each to its cluster.
     /// </summary>
-    public static void ClusterHistograms<T>(ClusterArena arena, Span<T> input, nuint inSize, nuint maxHistograms, Span<T> output, out nuint outSize, Span<uint> histogramSymbols)
-        where T : struct, IHistogram
+    public static void ClusterHistograms<T>(ClusterArena arena, T* input, nuint inSize, nuint maxHistograms, T* output, out nuint outSize, uint* histogramSymbols)
+        where T : unmanaged, IHistogram
     {
-        Span<uint> clusterSize = arena.ClusterSize(inSize);
-        Span<uint> clusters = arena.Clusters(inSize);
+        uint* clusterSize = arena.ClusterSize(inSize);
+        uint* clusters = arena.Clusters(inSize);
         nuint numClusters = 0;
         const nuint maxInputHistograms = 64;
         nuint pairsCapacity = maxInputHistograms * maxInputHistograms / 2;
-        Span<HistogramPair> pairs = arena.Pairs(pairsCapacity + 1);
-        ref T tmp = ref arena.Tmp<T>()[0];
-        clusterSize.Slice(0, (int)inSize).Fill(1);
-        for (int i = 0; i < (int)inSize; ++i)
+        HistogramPair* pairs = arena.Pairs(pairsCapacity + 1);
+        T* tmp = (T*)arena.Tmp((nuint)sizeof(T));
+        for (nuint i = 0; i < inSize; ++i)
+        {
+            clusterSize[i] = 1;
+        }
+
+        for (nuint i = 0; i < inSize; ++i)
         {
             output[i] = input[i];
-            output[i].BitCost = PopulationCost(ref input[i]);
+            *Histogram.BitCost(output + i) = PopulationCost(input + i);
             histogramSymbols[i] = (uint)i;
         }
 
@@ -510,10 +521,10 @@ internal static class Cluster
             nuint numToCombine = Math.Min(inSize - i, maxInputHistograms);
             for (nuint j = 0; j < numToCombine; ++j)
             {
-                clusters[(int)(numClusters + j)] = (uint)(i + j);
+                clusters[numClusters + j] = (uint)(i + j);
             }
 
-            nuint numNewClusters = HistogramCombine(output, ref tmp, clusterSize, histogramSymbols.Slice((int)i), clusters.Slice((int)numClusters), pairs, numToCombine, numToCombine, maxHistograms, pairsCapacity);
+            nuint numNewClusters = HistogramCombine(output, tmp, clusterSize, histogramSymbols + i, clusters + numClusters, pairs, numToCombine, numToCombine, maxHistograms, pairsCapacity);
             numClusters += numNewClusters;
         }
 
@@ -525,46 +536,42 @@ internal static class Cluster
                 pairs = arena.GrowPairs(pairsCapacity + 1, maxNumPairs + 1);
             }
 
-            numClusters = HistogramCombine(output, ref tmp, clusterSize, histogramSymbols, clusters, pairs, numClusters, inSize, maxHistograms, maxNumPairs);
+            numClusters = HistogramCombine(output, tmp, clusterSize, histogramSymbols, clusters, pairs, numClusters, inSize, maxHistograms, maxNumPairs);
         }
 
-        HistogramRemap(input, inSize, clusters, numClusters, output, ref tmp, histogramSymbols);
+        HistogramRemap(input, inSize, clusters, numClusters, output, tmp, histogramSymbols);
         outSize = HistogramReindex(arena, output, histogramSymbols, inSize);
     }
 }
 
-/// <summary>The memory of the clustering: brotli's allocations, kept.</summary>
-internal sealed class ClusterArena
+/// <summary>The memory of the clustering: brotli's allocations, pinned and kept.</summary>
+internal sealed unsafe class ClusterArena
 {
-    private readonly GrowableBuffer<uint> _clusterSize = new();
-    private readonly GrowableBuffer<uint> _clusters = new();
-    private readonly GrowableBuffer<uint> _newIndex = new();
-    private readonly GrowableBuffer<HistogramPair> _pairs = new();
-    private readonly GrowableBuffer<HistogramPair> _pairsGrown = new();
-    private readonly TypedBuffer _histograms = new();
-    private readonly TypedBuffer _tmp = new();
+    private readonly PinnedBuffer<uint> _clusterSize = new();
+    private readonly PinnedBuffer<uint> _clusters = new();
+    private readonly PinnedBuffer<uint> _newIndex = new();
+    private readonly PinnedBuffer<HistogramPair> _pairs = new();
+    private readonly PinnedBuffer<HistogramPair> _pairsGrown = new();
+    private readonly PinnedBuffer<byte> _histograms = new();
+    private readonly PinnedBuffer<byte> _tmp = new();
 
-    public uint[] ClusterSize(nuint count) => _clusterSize.Ensure(count);
+    public uint* ClusterSize(nuint count) => _clusterSize.Ensure(count);
 
-    public uint[] Clusters(nuint count) => _clusters.Ensure(count);
+    public uint* Clusters(nuint count) => _clusters.Ensure(count);
 
-    public uint[] NewIndex(nuint count) => _newIndex.Ensure(count);
+    public uint* NewIndex(nuint count) => _newIndex.Ensure(count);
 
-    public HistogramPair[] Pairs(nuint count) => _pairs.Ensure(count);
+    public HistogramPair* Pairs(nuint count) => _pairs.Ensure(count);
 
     /// <summary>brotli's <c>BROTLI_ENSURE_CAPACITY</c> of the pairs: a larger array, which keeps the first <paramref name="keep"/>.</summary>
-    public HistogramPair[] GrowPairs(nuint keep, nuint count)
+    public HistogramPair* GrowPairs(nuint keep, nuint count)
     {
-        HistogramPair[] grown = _pairsGrown.Ensure(count);
-        _pairs.Ensure(keep).AsSpan(0, (int)keep).CopyTo(grown);
+        HistogramPair* grown = _pairsGrown.Ensure(count);
+        Buffer.MemoryCopy(_pairs.Ensure(keep), grown, keep * (nuint)sizeof(HistogramPair), keep * (nuint)sizeof(HistogramPair));
         return grown;
     }
 
-    /// <summary>At least <paramref name="count"/> histograms of <typeparamref name="T"/>.</summary>
-    public T[] Histograms<T>(nuint count)
-        where T : struct => _histograms.Ensure<T>(Math.Max(count, 1));
+    public byte* Histograms(nuint bytes) => _histograms.Ensure(bytes);
 
-    /// <summary>A histogram of <typeparamref name="T"/>, to compute with.</summary>
-    public T[] Tmp<T>()
-        where T : struct => _tmp.Ensure<T>(1);
+    public byte* Tmp(nuint bytes) => _tmp.Ensure(bytes);
 }

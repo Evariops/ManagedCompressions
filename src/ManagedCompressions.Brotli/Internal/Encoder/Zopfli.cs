@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -7,42 +8,28 @@ namespace ManagedCompressions.Brotli.Internal;
 /// brotli's <c>ZopfliNode</c>: the best way found to reach a position, its cost replaced by the distance
 /// shortcut once evaluated, and by the next command's length once the path is chosen.
 /// </summary>
+[StructLayout(LayoutKind.Explicit)]
 internal struct ZopfliNode
 {
     /// <summary>The copy length in the low 25 bits, and 9 plus the length less the length code in the high 7.</summary>
+    [FieldOffset(0)]
     public uint Length;
 
+    [FieldOffset(4)]
     public uint Distance;
 
     /// <summary>The insert length in the low 27 bits, and the short distance code plus 1 in the high 5.</summary>
+    [FieldOffset(8)]
     public uint DcodeInsertLength;
 
-    /// <summary>The cost, the shortcut or the next command's length: brotli's union, its bits.</summary>
-    private uint _u;
+    [FieldOffset(12)]
+    public float Cost;
 
-    public float Cost
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        readonly get => BitConverter.UInt32BitsToSingle(_u);
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set => _u = BitConverter.SingleToUInt32Bits(value);
-    }
+    [FieldOffset(12)]
+    public uint Next;
 
-    public uint Next
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        readonly get => _u;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set => _u = value;
-    }
-
-    public uint Shortcut
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        readonly get => _u;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set => _u = value;
-    }
+    [FieldOffset(12)]
+    public uint Shortcut;
 
     public readonly uint CopyLength => Length & 0x1FFFFFF;
 
@@ -65,7 +52,7 @@ internal struct ZopfliNode
 /// model, over every match the binary tree and the dictionary find; quality 11 runs it twice, its second
 /// cost model taken from the first's commands.
 /// </summary>
-internal sealed class Zopfli
+internal sealed unsafe class Zopfli
 {
     private const float Infinity = 1.7e38f;
     private const int MaxEffectiveDistanceAlphabetSize = 544;
@@ -76,15 +63,18 @@ internal sealed class Zopfli
     /// <summary>The lengths <see cref="CopyLengthCodes"/> holds: from 2118 on, the copy code is 23.</summary>
     private const int CopyLengthCodesSize = 2118;
 
+    private static readonly byte[] CopyLengthCodesArray = BuildCopyLengthCodes();
+    private static readonly ushort[] CommandCodesArray = BuildCommandCodes();
+
     /// <summary><see cref="Commands.GetCopyLengthCode"/> of the lengths 2 to 2117.</summary>
-    private static readonly byte[] CopyLengthCodes = BuildCopyLengthCodes();
+    private static readonly byte* CopyLengthCodes = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(CopyLengthCodesArray));
 
     /// <summary><see cref="Commands.CombineLengthCodes"/> of each insert code times 24 plus copy code, without the last distance.</summary>
-    private static readonly ushort[] CommandCodes = BuildCommandCodes();
+    private static readonly ushort* CommandCodes = (ushort*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(CommandCodesArray));
 
     private static byte[] BuildCopyLengthCodes()
     {
-        byte[] codes = new byte[CopyLengthCodesSize];
+        byte[] codes = GC.AllocateArray<byte>(CopyLengthCodesSize, pinned: true);
         for (int len = 2; len < CopyLengthCodesSize; len++)
         {
             codes[len] = (byte)Commands.GetCopyLengthCode((nuint)len);
@@ -95,7 +85,7 @@ internal sealed class Zopfli
 
     private static ushort[] BuildCommandCodes()
     {
-        ushort[] codes = new ushort[24 * 24];
+        ushort[] codes = GC.AllocateArray<ushort>(24 * 24, pinned: true);
         for (uint insCode = 0; insCode < 24; insCode++)
         {
             for (uint copyCode = 0; copyCode < 24; copyCode++)
@@ -111,41 +101,36 @@ internal sealed class Zopfli
 
     private static ReadOnlySpan<sbyte> DistanceCacheOffset => [0, 0, 0, 0, -1, 1, -2, 2, -3, 3, -1, 1, -2, 2, -3, 3];
 
-    private readonly GrowableBuffer<ZopfliNode> _nodes = new();
-    private readonly GrowableBuffer<BackwardMatch> _matches = new();
-    private readonly GrowableBuffer<uint> _numMatches = new();
-    private readonly GrowableBuffer<float> _literalCosts = new();
-    private readonly GrowableBuffer<float> _costDist = new();
-    private readonly GrowableBuffer<float> _costCmd = new();
-    private readonly GrowableBuffer<nuint> _literalHistograms = new();
-    private readonly GrowableBuffer<uint> _arena = new();
-    private readonly float[] _costLiteral = new float[Prefix.NumLiteralSymbols];
-    private readonly GrowableBuffer<PosData> _queue = new();
+    private readonly PinnedBuffer<ZopfliNode> _nodes = new();
+    private readonly PinnedBuffer<BackwardMatch> _matches = new();
+    private readonly PinnedBuffer<uint> _numMatches = new();
+    private readonly PinnedBuffer<float> _literalCosts = new();
+    private readonly PinnedBuffer<float> _costDist = new();
+    private readonly PinnedBuffer<float> _costCmd = new();
+    private readonly PinnedBuffer<nuint> _literalHistograms = new();
+    private readonly PinnedBuffer<uint> _arena = new();
+    private readonly PinnedBuffer<PosData> _queue = new();
 
     private int _quality;
     private int _lgwin;
     private DistanceParams _dist;
 
     // The cost model: brotli's ZopfliCostModel.
-    private float[] _costCmdModel = [];
-    private float[] _costDistModel = [];
+    private float* _costCmdP;
+    private float* _costDistP;
     private uint _distanceHistogramSize;
-    private float[] _literalCostsModel = [];
+    private float* _literalCostsP;
     private float _minCostCmd;
     private nuint _numBytes;
-
-    /// <summary>The four distances of a <see cref="PosData"/>.</summary>
-    [InlineArray(4)]
-    private struct DistanceCache4
-    {
-        private int _element;
-    }
 
     /// <summary>brotli's <c>PosData</c>.</summary>
     private struct PosData
     {
         public nuint Pos;
-        public DistanceCache4 DistanceCache;
+        public int DistanceCache0;
+        public int DistanceCache1;
+        public int DistanceCache2;
+        public int DistanceCache3;
         public float Costdiff;
         public float Cost;
     }
@@ -153,17 +138,17 @@ internal sealed class Zopfli
     /// <summary>brotli's <c>StartPosQueue</c>: the 8 start positions of the smallest cost differences.</summary>
     private struct StartPosQueue
     {
-        public PosData[] Q;
+        public PosData* Q;
         public nuint Idx;
 
         public readonly nuint Size => Math.Min(Idx, 8);
 
-        public void Push(in PosData posdata)
+        public void Push(PosData* posdata)
         {
             nuint offset = ~Idx++ & 7;
             nuint len = Size;
-            PosData[] q = Q;
-            q[offset] = posdata;
+            PosData* q = Q;
+            q[offset] = *posdata;
             for (nuint i = 1; i < len; ++i)
             {
                 if (q[offset & 7].Costdiff > q[(offset + 1) & 7].Costdiff)
@@ -175,7 +160,7 @@ internal sealed class Zopfli
             }
         }
 
-        public readonly ref PosData At(nuint k) => ref Q[(k - Idx) & 7];
+        public readonly PosData* At(nuint k) => Q + ((k - Idx) & 7);
     }
 
     public void Setup(int quality, int lgwin)
@@ -190,31 +175,34 @@ internal sealed class Zopfli
 
     private nuint MaxBackwardLimit => ((nuint)1 << _lgwin) - Prefix.WindowGap;
 
-    private static void InitZopfliNodes(Span<ZopfliNode> array)
+    private static void InitZopfliNodes(ZopfliNode* array, nuint length)
     {
         ZopfliNode stub = default;
         stub.Length = 1;
         stub.Distance = 0;
         stub.DcodeInsertLength = 0;
         stub.Cost = Infinity;
-        array.Fill(stub);
+        for (nuint i = 0; i < length; ++i)
+        {
+            array[i] = stub;
+        }
     }
 
     /// <summary>brotli's <c>InitZopfliCostModel</c>.</summary>
     private void InitCostModel(nuint numBytes)
     {
         _numBytes = numBytes;
-        _literalCostsModel = _literalCosts.Ensure(numBytes + 2);
-        _costDistModel = _costDist.Ensure(_dist.AlphabetSizeLimit);
-        _costCmdModel = _costCmd.Ensure(Prefix.NumCommandSymbols);
+        _literalCostsP = _literalCosts.Ensure(numBytes + 2);
+        _costDistP = _costDist.Ensure(_dist.AlphabetSizeLimit);
+        _costCmdP = _costCmd.Ensure(Prefix.NumCommandSymbols);
         _distanceHistogramSize = _dist.AlphabetSizeLimit;
     }
 
     /// <summary>brotli's <c>SetCost</c>: the bits of each symbol of a histogram, as floats.</summary>
-    private static void SetCost(ReadOnlySpan<uint> histogram, bool literalHistogram, Span<float> cost)
+    private static void SetCost(uint* histogram, nuint histogramSize, bool literalHistogram, float* cost)
     {
         nuint sum = 0;
-        for (int i = 0; i < histogram.Length; i++)
+        for (nuint i = 0; i < histogramSize; i++)
         {
             sum += histogram[i];
         }
@@ -223,7 +211,7 @@ internal sealed class Zopfli
         nuint missingSymbolSum = sum;
         if (!literalHistogram)
         {
-            for (int i = 0; i < histogram.Length; i++)
+            for (nuint i = 0; i < histogramSize; i++)
             {
                 if (histogram[i] == 0)
                 {
@@ -233,7 +221,7 @@ internal sealed class Zopfli
         }
 
         float missingSymbolCost = (float)FastLog.FastLog2(missingSymbolSum) + 2;
-        for (int i = 0; i < histogram.Length; i++)
+        for (nuint i = 0; i < histogramSize; i++)
         {
             if (histogram[i] == 0)
             {
@@ -250,25 +238,23 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>ZopfliCostModelSetFromCommands</c>: the costs of the histograms of the first pass's commands.</summary>
-    private void SetCostModelFromCommands(nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask, ReadOnlySpan<Command> commands, nuint lastInsertLen)
+    private void SetCostModelFromCommands(nuint position, byte* ringBuffer, nuint ringBufferMask, Command* commands, nuint numCommands, nuint lastInsertLen)
     {
-        const int ArenaSize = Prefix.NumLiteralSymbols + Prefix.NumCommandSymbols + MaxEffectiveDistanceAlphabetSize;
-        Span<uint> arena = _arena.Ensure(ArenaSize).AsSpan(0, ArenaSize);
-        Span<uint> histogramLiteral = arena.Slice(0, Prefix.NumLiteralSymbols);
-        Span<uint> histogramCmd = arena.Slice(Prefix.NumLiteralSymbols, Prefix.NumCommandSymbols);
-        Span<uint> histogramDist = arena.Slice(Prefix.NumLiteralSymbols + Prefix.NumCommandSymbols, MaxEffectiveDistanceAlphabetSize);
-        float[] costLiteral = _costLiteral;
+        uint* arena = _arena.Ensure(Prefix.NumLiteralSymbols + Prefix.NumCommandSymbols + MaxEffectiveDistanceAlphabetSize + Prefix.NumLiteralSymbols);
+        uint* histogramLiteral = arena;
+        uint* histogramCmd = histogramLiteral + Prefix.NumLiteralSymbols;
+        uint* histogramDist = histogramCmd + Prefix.NumCommandSymbols;
+        float* costLiteral = (float*)(histogramDist + MaxEffectiveDistanceAlphabetSize);
         nuint pos = position - lastInsertLen;
         float minCostCmd = Infinity;
-        float[] costCmd = _costCmdModel;
-        arena.Clear();
-        for (int i = 0; i < commands.Length; i++)
+        float* costCmd = _costCmdP;
+        new Span<uint>(arena, Prefix.NumLiteralSymbols + Prefix.NumCommandSymbols + MaxEffectiveDistanceAlphabetSize).Clear();
+        for (nuint i = 0; i < numCommands; i++)
         {
-            ref readonly Command cmd = ref commands[i];
-            nuint insLength = cmd.InsertLen;
-            nuint copyLength = Commands.CopyLen(in cmd);
-            int distCode = cmd.DistPrefix & 0x3FF;
-            int cmdCode = cmd.CmdPrefix;
+            nuint insLength = commands[i].InsertLen;
+            nuint copyLength = Commands.CopyLen(commands + i);
+            nuint distCode = (nuint)(commands[i].DistPrefix & 0x3FF);
+            nuint cmdCode = commands[i].CmdPrefix;
             histogramCmd[cmdCode]++;
             if (cmdCode >= 128)
             {
@@ -277,29 +263,29 @@ internal sealed class Zopfli
 
             for (nuint j = 0; j < insLength; j++)
             {
-                histogramLiteral[ringBuffer[(int)((pos + j) & ringBufferMask)]]++;
+                histogramLiteral[ringBuffer[(pos + j) & ringBufferMask]]++;
             }
 
             pos += insLength + copyLength;
         }
 
-        SetCost(histogramLiteral, true, costLiteral);
-        SetCost(histogramCmd, false, costCmd);
-        SetCost(histogramDist.Slice(0, (int)_distanceHistogramSize), false, _costDistModel);
-        for (int i = 0; i < Prefix.NumCommandSymbols; ++i)
+        SetCost(histogramLiteral, Prefix.NumLiteralSymbols, true, costLiteral);
+        SetCost(histogramCmd, Prefix.NumCommandSymbols, false, costCmd);
+        SetCost(histogramDist, _distanceHistogramSize, false, _costDistP);
+        for (nuint i = 0; i < Prefix.NumCommandSymbols; ++i)
         {
             minCostCmd = Math.Min(minCostCmd, costCmd[i]);
         }
 
         _minCostCmd = minCostCmd;
         {
-            float[] literalCosts = _literalCostsModel;
+            float* literalCosts = _literalCostsP;
             float literalCarry = 0.0f;
             nuint numBytes = _numBytes;
             literalCosts[0] = 0.0f;
             for (nuint i = 0; i < numBytes; ++i)
             {
-                literalCarry += costLiteral[ringBuffer[(int)((position + i) & ringBufferMask)]];
+                literalCarry += costLiteral[ringBuffer[(position + i) & ringBufferMask]];
                 literalCosts[i + 1] = literalCosts[i] + literalCarry;
                 literalCarry -= literalCosts[i + 1] - literalCosts[i];
             }
@@ -307,14 +293,14 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>ZopfliCostModelSetFromLiteralCosts</c>: the literals' estimated costs, and fixed command and distance costs.</summary>
-    private void SetCostModelFromLiteralCosts(nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask)
+    private void SetCostModelFromLiteralCosts(nuint position, byte* ringBuffer, nuint ringBufferMask)
     {
-        float[] literalCosts = _literalCostsModel;
+        float* literalCosts = _literalCostsP;
         float literalCarry = 0.0f;
-        float[] costDist = _costDistModel;
-        float[] costCmd = _costCmdModel;
+        float* costDist = _costDistP;
+        float* costCmd = _costCmdP;
         nuint numBytes = _numBytes;
-        LiteralCost.EstimateBitCostsForLiterals(position, numBytes, ringBufferMask, ringBuffer, _literalHistograms.Ensure(3 * 256), literalCosts.AsSpan(1));
+        LiteralCost.EstimateBitCostsForLiterals(position, numBytes, ringBufferMask, ringBuffer, _literalHistograms.Ensure(3 * 256), literalCosts + 1);
         literalCosts[0] = 0.0f;
         for (nuint i = 0; i < numBytes; ++i)
         {
@@ -337,20 +323,20 @@ internal sealed class Zopfli
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private float GetLiteralCosts(nuint from, nuint to) => _literalCostsModel[to] - _literalCostsModel[from];
+    private float GetLiteralCosts(nuint from, nuint to) => _literalCostsP[to] - _literalCostsP[from];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void UpdateZopfliNode(ZopfliNode[] nodes, nuint pos, nuint startPos, nuint len, nuint lenCode, nuint dist, nuint shortCode, float cost)
+    private static void UpdateZopfliNode(ZopfliNode* nodes, nuint pos, nuint startPos, nuint len, nuint lenCode, nuint dist, nuint shortCode, float cost)
     {
-        ref ZopfliNode next = ref nodes[pos + len];
-        next.Length = (uint)(len | ((len + 9u - lenCode) << 25));
-        next.Distance = (uint)dist;
-        next.DcodeInsertLength = (uint)((shortCode << 27) | (pos - startPos));
-        next.Cost = cost;
+        ZopfliNode* next = nodes + pos + len;
+        next->Length = (uint)(len | ((len + 9u - lenCode) << 25));
+        next->Distance = (uint)dist;
+        next->DcodeInsertLength = (uint)((shortCode << 27) | (pos - startPos));
+        next->Cost = cost;
     }
 
     /// <summary>brotli's <c>ComputeMinimumCopyLength</c>: the shortest copy that can improve a later position.</summary>
-    private static nuint ComputeMinimumCopyLength(float startCost, ZopfliNode[] nodes, nuint numBytes, nuint pos)
+    private static nuint ComputeMinimumCopyLength(float startCost, ZopfliNode* nodes, nuint numBytes, nuint pos)
     {
         float minCost = startCost;
         nuint len = 2;
@@ -372,7 +358,7 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>ComputeDistanceShortcut</c>: the last position whose command updated the distances.</summary>
-    private static uint ComputeDistanceShortcut(nuint blockStart, nuint pos, nuint maxBackwardLimit, nuint gap, ZopfliNode[] nodes)
+    private static uint ComputeDistanceShortcut(nuint blockStart, nuint pos, nuint maxBackwardLimit, nuint gap, ZopfliNode* nodes)
     {
         nuint clen = nodes[pos].CopyLength;
         nuint ilen = nodes[pos].DcodeInsertLength & 0x7FFFFFF;
@@ -391,7 +377,7 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>ComputeDistanceCache</c>: the last four distances at a position, on its best path.</summary>
-    private static void ComputeDistanceCache(nuint pos, ReadOnlySpan<int> startingDistCache, ZopfliNode[] nodes, Span<int> distCache)
+    private static void ComputeDistanceCache(nuint pos, int* startingDistCache, ZopfliNode* nodes, int* distCache)
     {
         int idx = 0;
         nuint p = nodes[pos].Shortcut;
@@ -404,30 +390,30 @@ internal sealed class Zopfli
             p = nodes[p - clen - ilen].Shortcut;
         }
 
-        for (int s = 0; idx < 4; ++idx)
+        for (; idx < 4; ++idx)
         {
-            distCache[idx] = startingDistCache[s++];
+            distCache[idx] = *startingDistCache++;
         }
     }
 
     /// <summary>brotli's <c>EvaluateNode</c>: the shortcut of a reached position, and the position into the queue when it is cheap enough.</summary>
-    private void EvaluateNode(nuint blockStart, nuint pos, nuint maxBackwardLimit, nuint gap, ReadOnlySpan<int> startingDistCache, ref StartPosQueue queue, ZopfliNode[] nodes)
+    private void EvaluateNode(nuint blockStart, nuint pos, nuint maxBackwardLimit, nuint gap, int* startingDistCache, ref StartPosQueue queue, ZopfliNode* nodes)
     {
         float nodeCost = nodes[pos].Cost;
         nodes[pos].Shortcut = ComputeDistanceShortcut(blockStart, pos, maxBackwardLimit, gap, nodes);
         if (nodeCost <= GetLiteralCosts(0, pos))
         {
-            PosData posdata = default;
+            PosData posdata;
             posdata.Pos = pos;
             posdata.Cost = nodeCost;
             posdata.Costdiff = nodeCost - GetLiteralCosts(0, pos);
-            ComputeDistanceCache(pos, startingDistCache, nodes, posdata.DistanceCache);
-            queue.Push(in posdata);
+            ComputeDistanceCache(pos, startingDistCache, nodes, &posdata.DistanceCache0);
+            queue.Push(&posdata);
         }
     }
 
     /// <summary>brotli's <c>UpdateNodes</c>: the positions a command from the queue's start positions reaches; the longest copy.</summary>
-    private nuint UpdateNodes(nuint numBytes, nuint blockStart, nuint pos, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask, nuint maxBackwardLimit, ReadOnlySpan<int> startingDistCache, nuint numMatches, ReadOnlySpan<BackwardMatch> matches, ref StartPosQueue queue, ZopfliNode[] nodes)
+    private nuint UpdateNodes(nuint numBytes, nuint blockStart, nuint pos, byte* ringBuffer, nuint ringBufferMask, nuint maxBackwardLimit, int* startingDistCache, nuint numMatches, BackwardMatch* matches, ref StartPosQueue queue, ZopfliNode* nodes)
     {
         nuint curIx = blockStart + pos;
         nuint curIxMasked = curIx & ringBufferMask;
@@ -441,41 +427,41 @@ internal sealed class Zopfli
         ReadOnlySpan<byte> distanceCacheIndex = DistanceCacheIndex;
         ReadOnlySpan<sbyte> distanceCacheOffset = DistanceCacheOffset;
 
-        // The model in locals: the JIT reloads fields after every store to the nodes.
-        float[] costCmd = _costCmdModel;
-        float[] costDist = _costDistModel;
-        float[] literalCosts = _literalCostsModel;
+        // The model in locals: the JIT reloads fields after every store through a pointer.
+        float* costCmd = _costCmdP;
+        float* costDist = _costDistP;
+        float* literalCosts = _literalCostsP;
         nuint numDirectCodes = _dist.NumDirectCodes;
         int postfixBits = (int)_dist.PostfixBits;
-        byte[] copyCodes = CopyLengthCodes;
-        ushort[] commandCodes = CommandCodes;
+        byte* copyCodes = CopyLengthCodes;
+        ushort* commandCodes = CommandCodes;
         EvaluateNode(blockStart, pos, maxBackwardLimit, gap, startingDistCache, ref queue, nodes);
         nuint minLen;
         {
-            ref PosData posdata = ref queue.At(0);
-            float minCost = posdata.Cost + _minCostCmd + (literalCosts[pos] - literalCosts[posdata.Pos]);
+            PosData* posdata = queue.At(0);
+            float minCost = posdata->Cost + _minCostCmd + (literalCosts[pos] - literalCosts[posdata->Pos]);
             minLen = ComputeMinimumCopyLength(minCost, nodes, numBytes, pos);
         }
 
         // The start positions, by increasing cost difference.
         for (nuint k = 0; k < maxIters && k < queue.Size; ++k)
         {
-            ref PosData posdata = ref queue.At(k);
-            nuint start = posdata.Pos;
+            PosData* posdata = queue.At(k);
+            nuint start = posdata->Pos;
             uint insCode = Commands.GetInsertLengthCode(pos - start);
-            float startCostdiff = posdata.Costdiff;
+            float startCostdiff = posdata->Costdiff;
             float baseCost = startCostdiff + (float)Commands.GetInsertExtra(insCode) + (literalCosts[pos] - literalCosts[0]);
 
             // The last distances, from this start position's cache.
             nuint bestLen = minLen - 1;
-            ReadOnlySpan<int> cache = posdata.DistanceCache;
+            int* cache = &posdata->DistanceCache0;
             for (int j = 0; j < Prefix.NumDistanceShortCodes && bestLen < maxLen; ++j)
             {
-                int idx = distanceCacheIndex[j];
+                nuint idx = distanceCacheIndex[j];
                 nuint backward = (nuint)(nint)(cache[idx] + distanceCacheOffset[j]);
                 nuint prevIx = curIx - backward;
                 nuint len = 0;
-                byte continuation = ringBuffer[(int)(curIxMasked + bestLen)];
+                byte continuation = ringBuffer[curIxMasked + bestLen];
                 if (curIxMasked + bestLen > ringBufferMask)
                 {
                     break;
@@ -495,12 +481,12 @@ internal sealed class Zopfli
                     }
 
                     prevIx &= ringBufferMask;
-                    if (prevIx + bestLen > ringBufferMask || continuation != ringBuffer[(int)(prevIx + bestLen)])
+                    if (prevIx + bestLen > ringBufferMask || continuation != ringBuffer[prevIx + bestLen])
                     {
                         continue;
                     }
 
-                    len = FindMatchLength.WithLimit(ringBuffer, prevIx, curIxMasked, maxLen);
+                    len = FindMatchLength.WithLimit(ringBuffer + prevIx, ringBuffer + curIxMasked, maxLen);
                 }
                 else
                 {
@@ -534,7 +520,7 @@ internal sealed class Zopfli
 
             {
                 nuint len = minLen;
-                for (int j = 0; j < (int)numMatches; ++j)
+                for (nuint j = 0; j < numMatches; ++j)
                 {
                     BackwardMatch match = matches[j];
                     nuint dist = match.Distance;
@@ -571,7 +557,7 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>ComputeShortestPathFromNodes</c>: the chosen path, each node's next command length; the number of commands.</summary>
-    private static nuint ComputeShortestPathFromNodes(nuint numBytes, ZopfliNode[] nodes)
+    private static nuint ComputeShortestPathFromNodes(nuint numBytes, ZopfliNode* nodes)
     {
         nuint index = numBytes;
         nuint numCommands = 0;
@@ -593,19 +579,19 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>BrotliZopfliCreateCommands</c>.</summary>
-    private void CreateCommands(nuint numBytes, nuint blockStart, ZopfliNode[] nodes, Span<int> distCache, ref nuint lastInsertLen, Span<Command> commands, ref nuint numLiterals)
+    private void CreateCommands(nuint numBytes, nuint blockStart, ZopfliNode* nodes, int* distCache, ref nuint lastInsertLen, Command* commands, ref nuint numLiterals)
     {
         nuint maxBackwardLimit = MaxBackwardLimit;
         nuint pos = 0;
         uint offset = nodes[0].Next;
         const nuint gap = 0;
-        for (int i = 0; offset != uint.MaxValue; i++)
+        for (nuint i = 0; offset != uint.MaxValue; i++)
         {
-            ref ZopfliNode next = ref nodes[pos + offset];
-            nuint copyLength = next.CopyLength;
-            nuint insertLength = next.DcodeInsertLength & 0x7FFFFFF;
+            ZopfliNode* next = nodes + pos + offset;
+            nuint copyLength = next->CopyLength;
+            nuint insertLength = next->DcodeInsertLength & 0x7FFFFFF;
             pos += insertLength;
-            offset = next.Next;
+            offset = next->Next;
             if (i == 0)
             {
                 insertLength += lastInsertLen;
@@ -613,12 +599,12 @@ internal sealed class Zopfli
             }
 
             {
-                nuint distance = next.Distance;
-                nuint lenCode = next.LengthCode;
+                nuint distance = next->Distance;
+                nuint lenCode = next->LengthCode;
                 nuint dictionaryStart = Math.Min(blockStart + pos, maxBackwardLimit);
                 bool isDictionary = distance > dictionaryStart + gap;
-                nuint distCode = next.DistanceCode;
-                Commands.Init(ref commands[i], _dist, insertLength, copyLength, (int)lenCode - (int)copyLength, distCode);
+                nuint distCode = next->DistanceCode;
+                Commands.Init(commands + i, _dist, insertLength, copyLength, (int)lenCode - (int)copyLength, distCode);
                 if (!isDictionary && distCode > 0)
                 {
                     distCache[3] = distCache[2];
@@ -636,7 +622,7 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>ZopfliIterate</c>: a pass over matches found before.</summary>
-    private nuint ZopfliIterate(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask, ReadOnlySpan<int> distCache, uint[] numMatches, BackwardMatch[] matches, ZopfliNode[] nodes)
+    private nuint ZopfliIterate(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask, int* distCache, uint* numMatches, BackwardMatch* matches, ZopfliNode* nodes)
     {
         nuint maxBackwardLimit = MaxBackwardLimit;
         nuint maxZopfliLen = MaxZopfliLen;
@@ -649,7 +635,7 @@ internal sealed class Zopfli
         nodes[0].Cost = 0;
         for (nuint i = 0; i + 3 < numBytes; i++)
         {
-            nuint skip = UpdateNodes(numBytes, position, i, ringBuffer, ringBufferMask, maxBackwardLimit, distCache, numMatches[i], matches.AsSpan((int)curMatchPos), ref queue, nodes);
+            nuint skip = UpdateNodes(numBytes, position, i, ringBuffer, ringBufferMask, maxBackwardLimit, distCache, numMatches[i], matches + curMatchPos, ref queue, nodes);
             if (skip < LongCopyQuickStep)
             {
                 skip = 0;
@@ -683,14 +669,14 @@ internal sealed class Zopfli
     }
 
     /// <summary>brotli's <c>BrotliZopfliComputeShortestPath</c>: one pass, the matches found as it goes.</summary>
-    private nuint ComputeShortestPath(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask, ReadOnlySpan<int> distCache, ref HashToBinaryTree hasher, ZopfliNode[] nodes)
+    private nuint ComputeShortestPath(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask, int* distCache, ref HashToBinaryTree hasher, ZopfliNode* nodes)
     {
         nuint maxBackwardLimit = MaxBackwardLimit;
         nuint maxZopfliLen = MaxZopfliLen;
         StartPosQueue queue;
         queue.Q = _queue.Ensure(8);
         queue.Idx = 0;
-        BackwardMatch[] matches = _matches.Ensure(2 * (HashToBinaryTree.MaxNumMatches + 64));
+        BackwardMatch* matches = _matches.Ensure(2 * (HashToBinaryTree.MaxNumMatches + 64));
         nuint storeEnd = numBytes >= HashToBinaryTree.StoreLookahead ? position + numBytes - HashToBinaryTree.StoreLookahead + 1 : position;
         const nuint gap = 0;
         nodes[0].Length = 0;
@@ -742,31 +728,28 @@ internal sealed class Zopfli
         return ComputeShortestPathFromNodes(numBytes, nodes);
     }
 
-    /// <summary>brotli's <c>BrotliCreateZopfliBackwardReferences</c>, quality 10: the commands written from the start of <paramref name="commands"/>.</summary>
-    public void CreateBackwardReferences(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask, in DistanceParams dist, ref HashToBinaryTree hasher, Span<int> distCache, ref nuint lastInsertLen, Span<Command> commands, ref nuint numCommands, ref nuint numLiterals)
+    /// <summary>brotli's <c>BrotliCreateZopfliBackwardReferences</c>, quality 10.</summary>
+    public void CreateBackwardReferences(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask, in DistanceParams dist, ref HashToBinaryTree hasher, int* distCache, ref nuint lastInsertLen, Command* commands, ref nuint numCommands, ref nuint numLiterals)
     {
         _dist = dist;
-        ZopfliNode[] nodes = _nodes.Ensure(numBytes + 1);
-        InitZopfliNodes(nodes.AsSpan(0, (int)numBytes + 1));
+        ZopfliNode* nodes = _nodes.Ensure(numBytes + 1);
+        InitZopfliNodes(nodes, numBytes + 1);
         numCommands += ComputeShortestPath(numBytes, position, ringBuffer, ringBufferMask, distCache, ref hasher, nodes);
         CreateCommands(numBytes, position, nodes, distCache, ref lastInsertLen, commands, ref numLiterals);
     }
 
-    /// <summary>
-    /// brotli's <c>BrotliCreateHqZopfliBackwardReferences</c>, quality 11: every match first, then two passes;
-    /// the commands written from the start of <paramref name="commands"/>.
-    /// </summary>
-    public void CreateHqBackwardReferences(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask, in DistanceParams dist, ref HashToBinaryTree hasher, Span<int> distCache, ref nuint lastInsertLen, Span<Command> commands, ref nuint numCommands, ref nuint numLiterals)
+    /// <summary>brotli's <c>BrotliCreateHqZopfliBackwardReferences</c>, quality 11: every match first, then two passes.</summary>
+    public void CreateHqBackwardReferences(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask, in DistanceParams dist, ref HashToBinaryTree hasher, int* distCache, ref nuint lastInsertLen, Command* commands, ref nuint numCommands, ref nuint numLiterals)
     {
         _dist = dist;
         nuint maxBackwardLimit = MaxBackwardLimit;
-        uint[] numMatches = _numMatches.Ensure(numBytes);
+        uint* numMatches = _numMatches.Ensure(numBytes);
         nuint matchesSize = 4 * numBytes;
         nuint storeEnd = numBytes >= HashToBinaryTree.StoreLookahead ? position + numBytes - HashToBinaryTree.StoreLookahead + 1 : position;
         nuint curMatchPos = 0;
         const nuint gap = 0;
-        BackwardMatch[] matches = _matches.Ensure(matchesSize);
-        Span<int> origDistCache = stackalloc int[4];
+        BackwardMatch* matches = _matches.Ensure(matchesSize);
+        int* origDistCache = stackalloc int[4];
         for (nuint i = 0; i + HashToBinaryTree.HashTypeLength - 1 < numBytes; ++i)
         {
             nuint pos = position + i;
@@ -782,13 +765,13 @@ internal sealed class Zopfli
                     newSize *= 2;
                 }
 
-                BackwardMatch[] kept = matches.AsSpan(0, (int)curMatchPos).ToArray();
+                BackwardMatch[] kept = new ReadOnlySpan<BackwardMatch>(matches, (int)curMatchPos).ToArray();
                 matches = _matches.Ensure(newSize);
-                kept.CopyTo(matches, 0);
+                kept.CopyTo(new Span<BackwardMatch>(matches, (int)curMatchPos));
                 matchesSize = newSize;
             }
 
-            nuint numFoundMatches = hasher.FindAllMatches(ringBuffer, ringBufferMask, pos, maxLength, maxDistance, dictionaryStart + gap, _quality, _dist.MaxDistance, matches.AsSpan((int)curMatchPos));
+            nuint numFoundMatches = hasher.FindAllMatches(ringBuffer, ringBufferMask, pos, maxLength, maxDistance, dictionaryStart + gap, _quality, _dist.MaxDistance, matches + curMatchPos);
             nuint curMatchEnd = curMatchPos + numFoundMatches;
             numMatches[i] = (uint)numFoundMatches;
             if (numFoundMatches > 0)
@@ -802,7 +785,7 @@ internal sealed class Zopfli
 
                     // The copy's tail into the hasher.
                     hasher.StoreRange(ringBuffer, ringBufferMask, pos + 1, Math.Min(pos + matchLen, storeEnd));
-                    numMatches.AsSpan((int)(i + 1), (int)skip).Clear();
+                    new Span<uint>(numMatches + i + 1, (int)skip).Clear();
                     i += skip;
                 }
                 else
@@ -814,26 +797,26 @@ internal sealed class Zopfli
 
         nuint origNumLiterals = numLiterals;
         nuint origLastInsertLen = lastInsertLen;
-        distCache.Slice(0, 4).CopyTo(origDistCache);
+        new Span<int>(distCache, 4).CopyTo(new Span<int>(origDistCache, 4));
         nuint origNumCommands = numCommands;
-        ZopfliNode[] nodes = _nodes.Ensure(numBytes + 1);
+        ZopfliNode* nodes = _nodes.Ensure(numBytes + 1);
         InitCostModel(numBytes);
         for (int i = 0; i < 2; i++)
         {
-            InitZopfliNodes(nodes.AsSpan(0, (int)numBytes + 1));
+            InitZopfliNodes(nodes, numBytes + 1);
             if (i == 0)
             {
                 SetCostModelFromLiteralCosts(position, ringBuffer, ringBufferMask);
             }
             else
             {
-                SetCostModelFromCommands(position, ringBuffer, ringBufferMask, commands.Slice(0, (int)(numCommands - origNumCommands)), origLastInsertLen);
+                SetCostModelFromCommands(position, ringBuffer, ringBufferMask, commands, numCommands - origNumCommands, origLastInsertLen);
             }
 
             numCommands = origNumCommands;
             numLiterals = origNumLiterals;
             lastInsertLen = origLastInsertLen;
-            origDistCache.CopyTo(distCache);
+            new Span<int>(origDistCache, 4).CopyTo(new Span<int>(distCache, 4));
             numCommands += ZopfliIterate(numBytes, position, ringBuffer, ringBufferMask, distCache, numMatches, matches, nodes);
             CreateCommands(numBytes, position, nodes, distCache, ref lastInsertLen, commands, ref numLiterals);
         }

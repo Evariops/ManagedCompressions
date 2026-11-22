@@ -1,6 +1,6 @@
 using System;
-using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -9,7 +9,7 @@ namespace ManagedCompressions.Brotli.Internal;
 /// dictionary word, under every transform the lookup table knows, that the data starts with; qualities
 /// 10 and 11 weigh them all.
 /// </summary>
-internal static partial class StaticDictionaryLut
+internal static unsafe partial class StaticDictionaryLut
 {
     /// <summary>brotli's <c>kInvalidMatch</c>: no match of that length.</summary>
     public const uint InvalidMatch = 0xFFFFFFF;
@@ -22,9 +22,10 @@ internal static partial class StaticDictionaryLut
     private const ulong CutoffTransforms = 0x071B520ADA2D3200;
     private const int UppercaseFirst = 10;
 
+    private static byte* DictionaryData => (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(StaticDictionary.Data));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint Hash(ReadOnlySpan<byte> data) => (BinaryPrimitives.ReadUInt32LittleEndian(data) * DictHashMul32) >> (32 - DictNumBits);
+    private static uint Hash(byte* data) => (Unsafe.ReadUnaligned<uint>(data) * DictHashMul32) >> (32 - DictNumBits);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int SizeBits(nuint length) => StaticDictionary.SizeBitsByLength[(int)length];
@@ -33,28 +34,28 @@ internal static partial class StaticDictionaryLut
     private static uint Transform(uint word) => (word >> 8) & 0xFF;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ReadOnlySpan<byte> Word(nuint length, nuint id) => StaticDictionary.Data.Slice((int)((nuint)StaticDictionary.OffsetsByLength[(int)length] + (length * id)));
+    private static byte* Word(nuint length, nuint id) => DictionaryData + (nuint)StaticDictionary.OffsetsByLength[(int)length] + (length * id);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AddMatch(nuint distance, nuint len, nuint lenCode, Span<uint> matches)
+    private static void AddMatch(nuint distance, nuint len, nuint lenCode, uint* matches)
     {
         uint match = (uint)((distance << 5) + lenCode);
-        matches[(int)len] = Math.Min(matches[(int)len], match);
+        matches[len] = Math.Min(matches[len], match);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static nuint DictMatchLength(ReadOnlySpan<byte> data, nuint id, nuint len, nuint maxLen) =>
+    private static nuint DictMatchLength(byte* data, nuint id, nuint len, nuint maxLen) =>
         FindMatchLength.WithLimit(Word(len, id), data, Math.Min(len, maxLen));
 
     /// <summary>brotli's <c>IsMatch</c>: the word, as is, with its first letter or all its letters upper case.</summary>
-    private static bool IsMatch(nuint len, nuint idx, uint transform, ReadOnlySpan<byte> data, nuint maxLength)
+    private static bool IsMatch(nuint len, nuint idx, uint transform, byte* data, nuint maxLength)
     {
         if (len > maxLength)
         {
             return false;
         }
 
-        ReadOnlySpan<byte> dict = Word(len, idx);
+        byte* dict = Word(len, idx);
         if (transform == 0)
         {
             return FindMatchLength.WithLimit(dict, data, len) == len;
@@ -62,19 +63,19 @@ internal static partial class StaticDictionaryLut
 
         if (transform == 10)
         {
-            return dict[0] >= 'a' && dict[0] <= 'z' && (dict[0] ^ 32) == data[0] && FindMatchLength.WithLimit(dict.Slice(1), data.Slice(1), len - 1) == len - 1;
+            return dict[0] >= 'a' && dict[0] <= 'z' && (dict[0] ^ 32) == data[0] && FindMatchLength.WithLimit(dict + 1, data + 1, len - 1) == len - 1;
         }
 
         for (nuint i = 0; i < len; ++i)
         {
-            if (dict[(int)i] >= 'a' && dict[(int)i] <= 'z')
+            if (dict[i] >= 'a' && dict[i] <= 'z')
             {
-                if ((dict[(int)i] ^ 32) != data[(int)(i)])
+                if ((dict[i] ^ 32) != data[i])
                 {
                     return false;
                 }
             }
-            else if (dict[(int)i] != data[(int)(i)])
+            else if (dict[i] != data[i])
             {
                 return false;
             }
@@ -87,7 +88,7 @@ internal static partial class StaticDictionaryLut
     /// The matches of <paramref name="minLength"/> to <paramref name="maxLength"/> bytes into
     /// <paramref name="matches"/>, indexed by length: the smallest of distance &lt;&lt; 5 plus the word's length.
     /// </summary>
-    public static bool FindAllStaticDictionaryMatches(ReadOnlySpan<byte> data, nuint minLength, nuint maxLength, Span<uint> matches)
+    public static bool FindAllStaticDictionaryMatches(byte* data, nuint minLength, nuint maxLength, uint* matches)
     {
         bool hasFoundMatch = false;
         {
@@ -104,7 +105,7 @@ internal static partial class StaticDictionaryLut
                 {
                     nuint matchlen =
                         DictMatchLength(data, id, l, maxLength);
-                    ReadOnlySpan<byte> s;
+                    byte* s;
                     nuint minlen;
                     nuint maxlen;
                     nuint len;
@@ -120,8 +121,8 @@ internal static partial class StaticDictionaryLut
                     {
                         AddMatch(id + 12 * n, l - 1, l, matches);
                         if (l + 2 < maxLength &&
-                            data[(int)(l - 1)] == 'i' && data[(int)(l)] == 'n' && data[(int)(l + 1)] == 'g' &&
-                            data[(int)(l + 2)] == ' ')
+                            data[l - 1] == 'i' && data[l] == 'n' && data[l + 1] == 'g' &&
+                            data[l + 2] == ' ')
                         {
                             AddMatch(id + 49 * n, l + 3, l, matches);
                         }
@@ -143,7 +144,7 @@ internal static partial class StaticDictionaryLut
                     {
                         continue;
                     }
-                    s = data.Slice((int)(l));
+                    s = &data[l];
                     /* Transforms "" + BROTLI_TRANSFORM_IDENTITY + <suffix> */
                     if (s[0] == ' ')
                     {
@@ -403,7 +404,7 @@ internal static partial class StaticDictionaryLut
                        transform. */
                     bool isAllCaps =
                         (Transform(w) != UppercaseFirst);
-                    ReadOnlySpan<byte> s;
+                    byte* s;
                     if (!IsMatch(l, id, Transform(w), data, maxLength))
                     {
                         continue;
@@ -416,7 +417,7 @@ internal static partial class StaticDictionaryLut
                         continue;
                     }
                     /* Transforms "" + kUppercase{First,All} + <suffix> */
-                    s = data.Slice((int)(l));
+                    s = &data[l];
                     if (s[0] == ' ')
                     {
                         AddMatch(id + (nuint)(isAllCaps ? 68 : 4) * n, l + 1, l, matches);
@@ -471,7 +472,7 @@ internal static partial class StaticDictionaryLut
         if (maxLength >= 5 && (data[0] == ' ' || data[0] == '.'))
         {
             bool isSpace = (data[0] == ' ');
-            nuint offset = Buckets[(int)Hash(data.Slice(1))];
+            nuint offset = Buckets[(int)Hash(&data[1])];
             bool end = offset == 0;
             while (!end)
             {
@@ -482,8 +483,8 @@ internal static partial class StaticDictionaryLut
                 end = (w & 0x80) != 0;
                 if (Transform(w) == 0)
                 {
-                    ReadOnlySpan<byte> s;
-                    if (!IsMatch(l, id, Transform(w), data.Slice(1), maxLength - 1))
+                    byte* s;
+                    if (!IsMatch(l, id, Transform(w), &data[1], maxLength - 1))
                     {
                         continue;
                     }
@@ -498,7 +499,7 @@ internal static partial class StaticDictionaryLut
                     /* Transforms " " + BROTLI_TRANSFORM_IDENTITY + <suffix> and
                                   "." + BROTLI_TRANSFORM_IDENTITY + <suffix>
                     */
-                    s = data.Slice((int)(l + 1));
+                    s = &data[l + 1];
                     if (s[0] == ' ')
                     {
                         AddMatch(id + (nuint)(isSpace ? 2 : 77) * n, l + 2, l, matches);
@@ -545,8 +546,8 @@ internal static partial class StaticDictionaryLut
                        transform. */
                     bool isAllCaps =
                         (Transform(w) != UppercaseFirst);
-                    ReadOnlySpan<byte> s;
-                    if (!IsMatch(l, id, Transform(w), data.Slice(1), maxLength - 1))
+                    byte* s;
+                    if (!IsMatch(l, id, Transform(w), &data[1], maxLength - 1))
                     {
                         continue;
                     }
@@ -558,7 +559,7 @@ internal static partial class StaticDictionaryLut
                         continue;
                     }
                     /* Transforms " " + kUppercase{First,All} + <suffix> */
-                    s = data.Slice((int)(l + 1));
+                    s = &data[l + 1];
                     if (s[0] == ' ')
                     {
                         AddMatch(id + (nuint)(isAllCaps ? 83 : 15) * n, l + 2, l, matches);
@@ -603,7 +604,7 @@ internal static partial class StaticDictionaryLut
                  (data[0] == 'e' || data[0] == 's' || data[0] == ',')) ||
                 (data[0] == 0xC2 && data[1] == 0xA0))
             {
-                nuint offset = Buckets[(int)Hash(data.Slice(2))];
+                nuint offset = Buckets[(int)Hash(&data[2])];
                 bool end = offset == 0;
                 while (!end)
                 {
@@ -613,14 +614,14 @@ internal static partial class StaticDictionaryLut
                     nuint id = w >> 16;
                     end = (w & 0x80) != 0;
                     if (Transform(w) == 0 &&
-                        IsMatch(l, id, Transform(w), data.Slice(2), maxLength - 2))
+                        IsMatch(l, id, Transform(w), &data[2], maxLength - 2))
                     {
                         if (data[0] == 0xC2)
                         {
                             AddMatch(id + 102 * n, l + 2, l, matches);
                             hasFoundMatch = true;
                         }
-                        else if (l + 2 < maxLength && data[(int)(l + 2)] == ' ')
+                        else if (l + 2 < maxLength && data[l + 2] == ' ')
                         {
                             nuint t = (nuint)(data[0] == 'e' ? 18 : (data[0] == 's' ? 7 : 13));
                             AddMatch(id + t * n, l + 3, l, matches);
@@ -638,7 +639,7 @@ internal static partial class StaticDictionaryLut
                 (data[0] == '.' && data[1] == 'c' && data[2] == 'o' &&
                  data[3] == 'm' && data[4] == '/'))
             {
-                nuint offset = Buckets[(int)Hash(data.Slice(5))];
+                nuint offset = Buckets[(int)Hash(&data[5])];
                 bool end = offset == 0;
                 while (!end)
                 {
@@ -648,13 +649,13 @@ internal static partial class StaticDictionaryLut
                     nuint id = w >> 16;
                     end = (w & 0x80) != 0;
                     if (Transform(w) == 0 &&
-                        IsMatch(l, id, Transform(w), data.Slice(5), maxLength - 5))
+                        IsMatch(l, id, Transform(w), &data[5], maxLength - 5))
                     {
                         AddMatch(id + (nuint)(data[0] == ' ' ? 41 : 72) * n, l + 5, l, matches);
                         hasFoundMatch = true;
                         if (l + 5 < maxLength)
                         {
-                            ReadOnlySpan<byte> s = data.Slice((int)(l + 5));
+                            byte* s = &data[l + 5];
                             if (data[0] == ' ')
                             {
                                 if (l + 8 < maxLength &&

@@ -1,6 +1,6 @@
 using System;
-using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -17,7 +17,7 @@ internal struct HasherSearchResult
 /// A hasher of <c>c/enc/hash.h</c>, as a struct, so that the backward reference search is compiled for
 /// each one, as brotli's templates are.
 /// </summary>
-internal interface IHasher
+internal unsafe interface IHasher
 {
     /// <summary>The bytes a hash reads: the search stops that many bytes before the end.</summary>
     static abstract int HashTypeLength { get; }
@@ -26,49 +26,31 @@ internal interface IHasher
     static abstract int StoreLookahead { get; }
 
     /// <summary>Clears the tables, or only the entries of the input's positions when it is small and whole.</summary>
-    void Prepare(bool oneShot, nuint inputSize, ReadOnlySpan<byte> data);
+    void Prepare(bool oneShot, nuint inputSize, byte* data);
 
-    void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix);
+    void Store(byte* data, nuint mask, nuint ix);
 
-    void StoreRange(ReadOnlySpan<byte> data, nuint mask, nuint ixStart, nuint ixEnd);
+    void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd);
 
     /// <summary>
     /// Fetches into the cache what the search at <paramref name="ix"/> reads first, ahead of it: no effect on
     /// the output, and nothing for the hashers whose tables stay in the cache.
     /// </summary>
-    void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix);
+    void Prefetch(byte* data, nuint mask, nuint ix);
 
     /// <summary>Stores the last three positions of the previous block, which needed the bytes of this one.</summary>
-    void StitchToPreviousBlock(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask);
+    void StitchToPreviousBlock(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask);
 
-    void PrepareDistanceCache(Span<int> distanceCache);
+    void PrepareDistanceCache(int* distanceCache);
 
-    void FindLongestMatch(ReadOnlySpan<byte> data, nuint ringBufferMask, ReadOnlySpan<int> distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result);
+    void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result);
 }
 
 /// <summary>The common part of brotli's hashers: scores, hashes, and the static dictionary's lookup.</summary>
-internal static class HasherCommon
+internal static unsafe class HasherCommon
 {
     public const uint HashMul32 = 0x1E35A7BD;
     public const ulong HashMul64 = 0x1FE35A7BD3579BD3;
-
-    /// <summary>
-    /// The one-shot input below which the hashers do not prefetch: the table lines its positions reach stay in
-    /// the caches, and the hints only cost their instructions (7 to 8 % at qualities 7 and 9 on small records).
-    /// </summary>
-    public const nuint PrefetchMinInput = 1 << 16;
-
-    /// <summary>
-    /// Appends <paramref name="ix"/> to the bucket of <paramref name="key"/>: a ring of <c>1 &lt;&lt; blockBits</c>
-    /// positions in <paramref name="buckets"/>, whose count <paramref name="num"/> keeps (H5's and H6's).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void StoreInBucket(ushort[] num, uint[] buckets, int key, uint blockMask, int blockBits, uint ix)
-    {
-        ref ushort count = ref num[key];
-        buckets[(int)((count & blockMask) + ((uint)key << blockBits))] = ix;
-        count++;
-    }
     public const int LiteralByteScore = 135;
     public const int DistanceBitPenalty = 30;
 
@@ -76,7 +58,7 @@ internal static class HasherCommon
     public static nuint ScoreBase
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => (nuint)(DistanceBitPenalty * 8 * IntPtr.Size);
+        get => (nuint)(DistanceBitPenalty * 8 * sizeof(nuint));
     }
 
     private const int CutoffTransformsCount = 10;
@@ -95,13 +77,12 @@ internal static class HasherCommon
         39 + ((nuint)(0x1CA10 >> (int)(distanceShortCode & 0xE)) & 0xE);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint Hash14(ReadOnlySpan<byte> data) => (BinaryPrimitives.ReadUInt32LittleEndian(data) * HashMul32) >> (32 - 14);
+    public static uint Hash14(byte* data) => (Unsafe.ReadUnaligned<uint>(data) * HashMul32) >> (32 - 14);
 
     /// <summary>brotli's <c>PrepareDistanceCache</c>: the last distance and the one before, plus or minus 1 to 3.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void PrepareDistanceCache(Span<int> distanceCache, int numDistances)
+    public static void PrepareDistanceCache(int* distanceCache, int numDistances)
     {
-        distanceCache = distanceCache.Slice(0, 16);
         if (numDistances > 4)
         {
             int lastDistance = distanceCache[0];
@@ -124,12 +105,14 @@ internal static class HasherCommon
         }
     }
 
+    private static byte* DictionaryData => (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(StaticDictionary.Data));
+
     /// <summary>
     /// brotli's <c>TestStaticDictionaryItem</c>: the word's match, when it scores at least
     /// <paramref name="bestScore"/>. It is out of line, so it takes and returns values: a reference to the
     /// caller's result would keep that result in memory.
     /// </summary>
-    private static bool TestStaticDictionaryItem(nuint len, nuint wordIdx, ReadOnlySpan<byte> data, nuint maxLength, nuint maxBackward, nuint maxDistance, nuint bestScore, out HasherSearchResult match)
+    private static bool TestStaticDictionaryItem(nuint len, nuint wordIdx, byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, nuint bestScore, out HasherSearchResult match)
     {
         match = default;
         nuint offset = (nuint)StaticDictionary.OffsetsByLength[(int)len] + (len * wordIdx);
@@ -138,7 +121,7 @@ internal static class HasherCommon
             return false;
         }
 
-        nuint matchLen = FindMatchLength.WithLimit(data, StaticDictionary.Data.Slice((int)offset), len);
+        nuint matchLen = FindMatchLength.WithLimit(data, DictionaryData + offset, len);
         if (matchLen + CutoffTransformsCount <= len || matchLen == 0)
         {
             return false;
@@ -169,7 +152,7 @@ internal static class HasherCommon
     /// brotli's <c>SearchInStaticDictionary</c>: the words of the slots of the position's hash, while
     /// the lookups match often enough.
     /// </summary>
-    public static void SearchInStaticDictionary(ref nuint numLookups, ref nuint numMatches, ReadOnlySpan<byte> data, nuint maxLength, nuint maxBackward, nuint maxDistance, ref HasherSearchResult result, bool shallow)
+    public static void SearchInStaticDictionary(ref nuint numLookups, ref nuint numMatches, byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, ref HasherSearchResult result, bool shallow)
     {
         if (numMatches < (numLookups >> 7))
         {
@@ -199,7 +182,7 @@ internal static class HasherCommon
     /// exposed by a reference to them.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static nuint SearchInStaticDictionaryDeep(ReadOnlySpan<byte> data, nuint maxLength, nuint maxBackward, nuint maxDistance, ref HasherSearchResult result)
+    public static nuint SearchInStaticDictionaryDeep(byte* data, nuint maxLength, nuint maxBackward, nuint maxDistance, HasherSearchResult* result)
     {
         nuint key = (nuint)Hash14(data) << 1;
         ReadOnlySpan<byte> lengths = DictionaryHash.Lengths;
@@ -208,9 +191,9 @@ internal static class HasherCommon
         for (int i = 0; i < 2; ++i, ++key)
         {
             byte length = lengths[(int)key];
-            if (length != 0 && TestStaticDictionaryItem(length, words[(int)key], data, maxLength, maxBackward, maxDistance, result.Score, out HasherSearchResult match))
+            if (length != 0 && TestStaticDictionaryItem(length, words[(int)key], data, maxLength, maxBackward, maxDistance, result->Score, out HasherSearchResult match))
             {
-                result = match;
+                *result = match;
                 matches++;
             }
         }
@@ -219,21 +202,19 @@ internal static class HasherCommon
     }
 }
 
-/// <summary>A hasher's arrays: grown when needed, kept from one stream to the next.</summary>
-internal sealed class HasherMemory
+/// <summary>A hasher's arrays: pinned, grown when needed, kept from one stream to the next.</summary>
+internal sealed unsafe class HasherMemory
 {
-    private readonly Array?[] _arrays = new Array?[5];
+    private readonly byte[][] _arrays = [[], [], [], []];
 
-    /// <summary>The array <paramref name="index"/>, of at least <paramref name="count"/> elements of <typeparamref name="T"/>.</summary>
-    public T[] Get<T>(int index, nuint count)
-        where T : unmanaged
+    /// <summary>The array <paramref name="index"/>, of at least <paramref name="size"/> bytes, aligned to 8.</summary>
+    public byte* Get(int index, nuint size)
     {
-        if (_arrays[index] is not T[] array || (nuint)array.Length < count)
+        if ((nuint)_arrays[index].Length < size)
         {
-            array = new T[checked((int)count)];
-            _arrays[index] = array;
+            _arrays[index] = GC.AllocateUninitializedArray<byte>(checked((int)size), pinned: true);
         }
 
-        return array;
+        return (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_arrays[index]));
     }
 }

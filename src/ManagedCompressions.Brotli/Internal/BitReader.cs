@@ -1,5 +1,3 @@
-using System;
-using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -9,11 +7,10 @@ namespace ManagedCompressions.Brotli.Internal;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The reader holds positions in the input, which each call passes again: <see cref="Next"/> is the
-/// first byte not yet in the accumulator, whose bits start at position <see cref="Count"/>. Bits above
-/// <see cref="Count"/> may hold the next bytes already, which a refill ORs in again unchanged. While
-/// eight bytes remain before <see cref="End"/>, a refill is one unaligned load
-/// (<see cref="RefillFast"/>); past that, <see cref="RefillCareful"/> loads byte by byte, and past
+/// <see cref="Next"/> is the first byte not yet in the accumulator: its bits start at position
+/// <see cref="Count"/>. Bits above <see cref="Count"/> may hold the next bytes already, which a refill
+/// ORs in again unchanged. While eight bytes remain before <see cref="End"/>, a refill is one unaligned
+/// load (<see cref="RefillFast"/>); past that, <see cref="RefillCareful"/> loads byte by byte, and past
 /// <see cref="End"/> it loads zeros and lets <see cref="Next"/> run on.
 /// </para>
 /// <para>
@@ -24,28 +21,21 @@ namespace ManagedCompressions.Brotli.Internal;
 /// discarded, and the verdict is brotli's: more input needed.
 /// </para>
 /// </remarks>
-internal struct BitReader
+internal unsafe struct BitReader
 {
     public ulong Bits;
     public int Count;
+    public byte* Next;
+    public byte* End;
+    public byte* Start;
 
-    /// <summary>The next byte to load, from the start of the input.</summary>
-    public int Next;
-
-    /// <summary>The end of the input.</summary>
-    public int End;
-
-    /// <summary>Where the reader started.</summary>
-    public int Start;
-
-    /// <summary>A reader at byte <paramref name="start"/> of an input of <paramref name="end"/> bytes.</summary>
-    public BitReader(int start, int end)
+    public BitReader(byte* start, int length)
     {
         Bits = 0;
         Count = 0;
         Next = start;
         Start = start;
-        End = end;
+        End = start + length;
     }
 
     /// <summary>Whether some of the zeros past <see cref="End"/> have been consumed.</summary>
@@ -58,41 +48,38 @@ internal struct BitReader
     /// <summary>The bits consumed since <see cref="Start"/>.</summary>
     public readonly long Position => ((long)(Next - Start) * 8) - Count;
 
-    /// <summary>The bits consumed since the start of the input.</summary>
-    public readonly long AbsolutePosition => ((long)Next * 8) - Count;
-
     /// <summary>Tops the accumulator up to at least 56 bits.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Refill(ReadOnlySpan<byte> input)
+    public void Refill()
     {
         if (End - Next >= 8)
         {
-            RefillFast(input);
+            RefillFast();
         }
         else
         {
-            RefillCareful(input);
+            RefillCareful();
         }
     }
 
     /// <summary>Tops the accumulator up to at least 56 bits; eight bytes must remain at <see cref="Next"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void RefillFast(ReadOnlySpan<byte> input)
+    public void RefillFast()
     {
-        Bits |= BinaryPrimitives.ReadUInt64LittleEndian(input.Slice(Next, 8)) << Count;
+        Bits |= Unsafe.ReadUnaligned<ulong>(Next) << Count;
         Next += (63 - Count) >> 3;
         Count |= 56;
     }
 
     /// <summary>Tops the accumulator up to at least 56 bits, byte by byte, with zeros past <see cref="End"/>.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public void RefillCareful(ReadOnlySpan<byte> input)
+    public void RefillCareful()
     {
         while (Count <= 56)
         {
             if (Next < End)
             {
-                Bits |= (ulong)input[Next] << Count;
+                Bits |= (ulong)*Next << Count;
             }
 
             Next++;
@@ -102,11 +89,11 @@ internal struct BitReader
 
     /// <summary>Reads <paramref name="n"/> bits, 0 to 56.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public uint Read(ReadOnlySpan<byte> input, int n)
+    public uint Read(int n)
     {
         if (Count < n)
         {
-            Refill(input);
+            Refill();
         }
 
         uint value = (uint)(Bits & ((1UL << n) - 1));
@@ -137,19 +124,19 @@ internal struct BitReader
     }
 
     /// <summary>
-    /// Decodes a symbol of the code whose table starts at <paramref name="tree"/> in
-    /// <paramref name="tables"/>; the accumulator must hold at least 15 bits.
+    /// Decodes a symbol of the code whose table is <paramref name="table"/>; the accumulator must
+    /// hold at least 15 bits.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int DecodeSymbol(ReadOnlySpan<uint> tables, int tree)
+    public int DecodeSymbol(uint* table)
     {
-        uint entry = tables[tree + (int)(Bits & 0xFF)];
+        uint entry = table[(int)(Bits & 0xFF)];
         int length = (int)(entry & 0xFF);
         if (length > Huffman.RootBits)
         {
             Bits >>= Huffman.RootBits;
             Count -= Huffman.RootBits;
-            entry = tables[tree + (int)(entry >> 16) + (int)(Bits & ((1UL << (length - Huffman.RootBits)) - 1))];
+            entry = table[(int)(entry >> 16) + (int)(Bits & ((1UL << (length - Huffman.RootBits)) - 1))];
             length = (int)(entry & 0xFF);
         }
 
@@ -160,13 +147,13 @@ internal struct BitReader
 
     /// <summary>Decodes a symbol, refilling first when the accumulator holds fewer than 15 bits.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int ReadSymbol(ReadOnlySpan<byte> input, ReadOnlySpan<uint> tables, int tree)
+    public int ReadSymbol(uint* table)
     {
         if (Count < Huffman.MaxCodeLength)
         {
-            Refill(input);
+            Refill();
         }
 
-        return DecodeSymbol(tables, tree);
+        return DecodeSymbol(table);
     }
 }

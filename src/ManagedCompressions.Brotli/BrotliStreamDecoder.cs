@@ -24,7 +24,7 @@ namespace ManagedCompressions.Brotli;
 /// thread-safe: use one per thread.
 /// </para>
 /// </remarks>
-public sealed class BrotliStreamDecoder : IDisposable
+public sealed unsafe class BrotliStreamDecoder : IDisposable
 {
     private const int CompactThreshold = 1 << 16;
 
@@ -136,7 +136,12 @@ public sealed class BrotliStreamDecoder : IDisposable
                 break;
             }
 
-            BrotliDecompressor.StreamResult result = _decoder.StreamStep(_input.AsSpan(0, (int)_inputLength), _history);
+            BrotliDecompressor.StreamResult result;
+            fixed (byte* input = _input)
+            fixed (byte* history = _history)
+            {
+                result = _decoder.StreamStep(input, _inputLength, history, _history.Length);
+            }
 
             if (result == BrotliDecompressor.StreamResult.Progress)
             {

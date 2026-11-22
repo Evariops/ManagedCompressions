@@ -21,7 +21,7 @@ namespace ManagedCompressions.Brotli.Internal;
 /// is indexed by the bit-reversed code. Codes of length 0 (a code of a single symbol) read nothing.
 /// </para>
 /// </remarks>
-internal static class Huffman
+internal static unsafe class Huffman
 {
     /// <summary>The width of every root table, brotli's <c>HUFFMAN_TABLE_BITS</c>.</summary>
     public const int RootBits = 8;
@@ -31,12 +31,6 @@ internal static class Huffman
 
     /// <summary>The longest code of the code length code.</summary>
     public const int MaxCodeLengthCodeLength = 5;
-
-    /// <summary>
-    /// Where the symbols start in a list of symbols by length: the heads of the lists, one per length, come
-    /// first, at their length.
-    /// </summary>
-    public const int ListHeads = MaxCodeLength + 1;
 
     /// <summary>
     /// The largest table a code of <paramref name="alphabetSize"/> symbols can need: brotli's bound,
@@ -79,7 +73,7 @@ internal static class Huffman
 
     /// <summary>Writes <paramref name="code"/> at <c>table[0]</c>, <c>table[step]</c>, ..., up to <paramref name="end"/>, a multiple of <paramref name="step"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void Replicate(Span<uint> table, int step, int end, uint code)
+    private static void Replicate(uint* table, int step, int end, uint code)
     {
         do
         {
@@ -90,7 +84,7 @@ internal static class Huffman
     }
 
     /// <summary>The width of the next second-level table, from the counts of the lengths left.</summary>
-    private static int NextTableBitSize(ReadOnlySpan<ushort> count, int length, int rootBits)
+    private static int NextTableBitSize(ushort* count, int length, int rootBits)
     {
         int left = 1 << (length - rootBits);
         while (length < MaxCodeLength)
@@ -112,11 +106,11 @@ internal static class Huffman
     /// The table of the code length code: 18 symbols of at most 5 bits, read with 5 bits of lookahead
     /// (32 entries). <paramref name="count"/> is the histogram of <paramref name="codeLengths"/>.
     /// </summary>
-    public static void BuildCodeLengthsTable(Span<uint> table, ReadOnlySpan<byte> codeLengths, ReadOnlySpan<ushort> count)
+    public static void BuildCodeLengthsTable(uint* table, byte* codeLengths, ushort* count)
     {
         const int Codes = 18;
-        Span<int> sorted = stackalloc int[Codes];
-        Span<int> offset = stackalloc int[MaxCodeLengthCodeLength + 1];
+        int* sorted = stackalloc int[Codes];
+        int* offset = stackalloc int[MaxCodeLengthCodeLength + 1];
 
         int symbol = -1;
         for (int bits = 1; bits <= MaxCodeLengthCodeLength; bits++)
@@ -151,6 +145,7 @@ internal static class Huffman
             return;
         }
 
+        ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
         uint k = 0;
         uint keyStep = ReverseBitsLowest;
         symbol = 0;
@@ -160,7 +155,7 @@ internal static class Huffman
             for (int n = count[bits]; n != 0; --n)
             {
                 uint code = Entry(bits, sorted[symbol++]);
-                Replicate(table.Slice(ReverseBits[(int)k]), step, TableSize, code);
+                Replicate(table + Unsafe.Add(ref reverse, (int)k), step, TableSize, code);
                 k += keyStep;
             }
 
@@ -173,14 +168,14 @@ internal static class Huffman
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint Reverse16(uint key)
     {
-        ReadOnlySpan<byte> reverse = ReverseBits;
-        return ((uint)reverse[(int)(key & 0xFF)] << 8) | reverse[(int)((key >> 8) & 0xFF)];
+        ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
+        return ((uint)Unsafe.Add(ref reverse, (int)(key & 0xFF)) << 8) | Unsafe.Add(ref reverse, (int)(key >> 8));
     }
 
     /// <summary>
     /// The table of a code given by its lengths: <paramref name="symbolLists"/> holds, for each length,
-    /// a list of the symbols of that length in increasing order (heads at <c>length</c>, links at
-    /// <c>ListHeads + symbol</c>, empty heads 0xFFFF), and <paramref name="count"/> the number of symbols of each
+    /// a list of the symbols of that length in increasing order (heads at <c>length - 16</c>, links at
+    /// the symbols, empty heads 0xFFFF), and <paramref name="count"/> the number of symbols of each
     /// length, of which this clears those longer than <paramref name="rootBits"/>. The code is
     /// complete. Returns the number of entries written.
     /// </summary>
@@ -192,14 +187,15 @@ internal static class Huffman
     /// tables. The second-level tables are brotli's algorithm, which picks up the key where the root
     /// codes leave it: their Kraft sum, over 16 bits.
     /// </remarks>
-    public static int BuildTable(Span<uint> table, int rootBits, ReadOnlySpan<ushort> symbolLists, Span<ushort> count)
+    public static int BuildTable(uint* table, int rootBits, ushort* symbolLists, ushort* count)
     {
-        int maxLength = MaxCodeLength;
+        int maxLength = -1;
         while (symbolLists[maxLength] == 0xFFFF)
         {
             maxLength--;
         }
 
+        maxLength += MaxCodeLength + 1;
         int rootSize = 1 << rootBits;
         int tableBits = Math.Min(rootBits, maxLength);
 
@@ -220,14 +216,14 @@ internal static class Huffman
                 int symbol = length - (MaxCodeLength + 1);
                 for (int n = count[length]; n != 0; --n)
                 {
-                    symbol = symbolLists[ListHeads + symbol];
-                    table[(int)codeword] = Entry(length, symbol);
+                    symbol = symbolLists[symbol];
+                    table[codeword] = Entry(length, symbol);
                     if (codeword == (uint)filled - 1)
                     {
                         // The last codeword, all ones: the code ends in the root table.
                         for (; filled < rootSize; filled <<= 1)
                         {
-                            table.Slice(0, filled).CopyTo(table.Slice(filled));
+                            Buffer.MemoryCopy(table, table + filled, (long)filled * sizeof(uint), (long)filled * sizeof(uint));
                         }
 
                         return rootSize;
@@ -244,7 +240,7 @@ internal static class Huffman
                     break;
                 }
 
-                table.Slice(0, filled).CopyTo(table.Slice(filled));
+                Buffer.MemoryCopy(table, table + filled, (long)filled * sizeof(uint), (long)filled * sizeof(uint));
                 filled <<= 1;
             }
         }
@@ -260,7 +256,7 @@ internal static class Huffman
         uint keyStep = Lowest >> (rootBits - 1);
         uint subKey = Lowest << 1;
         uint subKeyStep = Lowest;
-        int subTable = 0;
+        uint* subTable = table;
         int subTableSize = rootSize;
         int totalSize = rootSize;
         int step = 2;
@@ -277,13 +273,13 @@ internal static class Huffman
                     totalSize += subTableSize;
                     subKey = Reverse16(key);
                     key += keyStep;
-                    table[(int)subKey] = Entry(subTableBits + rootBits, subTable);
+                    table[subKey] = Entry(subTableBits + rootBits, (int)(subTable - table));
                     subKey = 0;
                 }
 
-                symbol = symbolLists[ListHeads + symbol];
+                symbol = symbolLists[symbol];
                 uint code = Entry(length - rootBits, symbol);
-                Replicate(table.Slice(subTable + (int)Reverse16(subKey)), step, subTableSize, code);
+                Replicate(subTable + Reverse16(subKey), step, subTableSize, code);
                 subKey += subKeyStep;
             }
 
@@ -299,7 +295,7 @@ internal static class Huffman
     /// symbol, 1 for 2, 2 for 3, 3 for 4 symbols of length 2 and 4 for 4 symbols of lengths 1, 2, 3, 3.
     /// The symbols may be reordered. Returns the number of entries written, the root table's.
     /// </summary>
-    public static int BuildSimpleTable(Span<uint> table, int rootBits, Span<ushort> val, int numSymbols)
+    public static int BuildSimpleTable(uint* table, int rootBits, ushort* val, int numSymbols)
     {
         int tableSize = 1;
         int goalSize = 1 << rootBits;
@@ -376,7 +372,7 @@ internal static class Huffman
 
         while (tableSize != goalSize)
         {
-            table.Slice(0, tableSize).CopyTo(table.Slice(tableSize));
+            Buffer.MemoryCopy(table, table + tableSize, (long)tableSize * sizeof(uint), (long)tableSize * sizeof(uint));
             tableSize <<= 1;
         }
 

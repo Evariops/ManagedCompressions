@@ -1,6 +1,6 @@
 using System;
-using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.X86;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -68,7 +68,7 @@ internal struct H54 : IQuicklyParams
 /// brotli's <c>HashLongestMatchQuickly</c> (<c>c/enc/hash_longest_match_quickly_inc.h</c>): a table of
 /// the last position of each hash, swept over a few neighbouring buckets.
 /// </summary>
-internal struct HashLongestMatchQuickly<TParams> : IHasher
+internal unsafe struct HashLongestMatchQuickly<TParams> : IHasher
     where TParams : struct, IQuicklyParams
 {
     private static int BucketSize => 1 << TParams.BucketBits;
@@ -79,94 +79,92 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
 
     private static uint BucketSweepMask => ((uint)BucketSweep - 1) << 3;
 
-    private uint[] _buckets;
+    private uint* _buckets;
     private nuint _dictNumLookups;
     private nuint _dictNumMatches;
-
-    /// <summary>Whether <see cref="Prefetch"/> hints anything for the input being prepared: see <see cref="HasherCommon.PrefetchMinInput"/>.</summary>
-    private bool _prefetch;
 
     public static int HashTypeLength => 8;
 
     public static int StoreLookahead => 8;
 
+    /// <summary>The bytes of the table.</summary>
+    public static nuint AllocSize => (nuint)(sizeof(uint) * BucketSize);
+
     /// <summary>brotli's <c>Initialize</c>, and <c>HasherSetup</c>'s counters.</summary>
     public void Initialize(HasherMemory memory)
     {
-        _buckets = memory.Get<uint>(0, (nuint)BucketSize);
+        _buckets = (uint*)memory.Get(0, AllocSize);
         _dictNumLookups = 0;
         _dictNumMatches = 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static uint HashBytes(ReadOnlySpan<byte> data, nuint at)
+    private static uint HashBytes(byte* data)
     {
-        ulong h = (BinaryPrimitives.ReadUInt64LittleEndian(data.Slice((int)at, 8)) << (64 - (8 * TParams.HashLen))) * HasherCommon.HashMul64;
+        ulong h = (Unsafe.ReadUnaligned<ulong>(data) << (64 - (8 * TParams.HashLen))) * HasherCommon.HashMul64;
         return (uint)(h >> (64 - TParams.BucketBits));
     }
 
-    public void Prepare(bool oneShot, nuint inputSize, ReadOnlySpan<byte> data)
+    public void Prepare(bool oneShot, nuint inputSize, byte* data)
     {
-        _prefetch = Internal.Prefetch.IsSupported && (!oneShot || inputSize >= HasherCommon.PrefetchMinInput);
-        Span<uint> buckets = _buckets;
+        uint* buckets = _buckets;
         nuint partialPrepareThreshold = (nuint)BucketSize >> 5;
         if (oneShot && inputSize <= partialPrepareThreshold)
         {
             for (nuint i = 0; i < inputSize; ++i)
             {
-                uint key = HashBytes(data, i);
+                uint key = HashBytes(data + i);
                 if (BucketSweep == 1)
                 {
-                    buckets[(int)key] = 0;
+                    buckets[key] = 0;
                 }
                 else
                 {
                     for (uint j = 0; j < BucketSweep; ++j)
                     {
-                        buckets[(int)((key + (j << 3)) & BucketMask)] = 0;
+                        buckets[(key + (j << 3)) & BucketMask] = 0;
                     }
                 }
             }
         }
         else
         {
-            buckets.Slice(0, BucketSize).Clear();
+            new Span<uint>(buckets, BucketSize).Clear();
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Store(ReadOnlySpan<byte> data, nuint mask, nuint ix)
+    public void Store(byte* data, nuint mask, nuint ix)
     {
-        uint key = HashBytes(data, ix & mask);
+        uint key = HashBytes(data + (ix & mask));
         if (BucketSweep == 1)
         {
-            _buckets.AsSpan(0, BucketSize)[(int)key] = (uint)ix;
+            _buckets[key] = (uint)ix;
         }
         else
         {
             uint off = (uint)ix & BucketSweepMask;
-            _buckets.AsSpan(0, BucketSize)[(int)((key + off) & BucketMask)] = (uint)ix;
+            _buckets[(key + off) & BucketMask] = (uint)ix;
         }
     }
 
     // The lines of the position's slots, the first ones a search reads, for the large tables: 512 KiB for H4,
     // which shares the L2 cache with the window and the commands, 4 MiB for H54.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
+    public void Prefetch(byte* data, nuint mask, nuint ix)
     {
-        // The large tables only, and not past the input, after a copy to its end: nothing ahead to fetch there.
-        if (_prefetch && TParams.BucketBits >= 17 && (ix & mask) <= (nuint)data.Length - 8)
+        if (Sse.IsSupported && TParams.BucketBits >= 17)
         {
-            uint key = HashBytes(data, ix & mask);
-            Internal.Prefetch.Element(_buckets, (int)key);
+            uint key = HashBytes(data + (ix & mask));
+            Sse.Prefetch0(_buckets + key);
             if (BucketSweep > 1)
             {
-                Internal.Prefetch.Element(_buckets, (int)((key + ((uint)(BucketSweep - 1) << 3)) & BucketMask));
+                Sse.Prefetch0(_buckets + ((key + ((uint)(BucketSweep - 1) << 3)) & BucketMask));
             }
         }
     }
 
-    public void StoreRange(ReadOnlySpan<byte> data, nuint mask, nuint ixStart, nuint ixEnd)
+    public void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd)
     {
         for (nuint i = ixStart; i < ixEnd; ++i)
         {
@@ -174,7 +172,7 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
         }
     }
 
-    public void StitchToPreviousBlock(nuint numBytes, nuint position, ReadOnlySpan<byte> ringBuffer, nuint ringBufferMask)
+    public void StitchToPreviousBlock(nuint numBytes, nuint position, byte* ringBuffer, nuint ringBufferMask)
     {
         if (numBytes >= (nuint)HashTypeLength - 1 && position >= 3)
         {
@@ -184,20 +182,19 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
         }
     }
 
-    public void PrepareDistanceCache(Span<int> distanceCache)
+    public void PrepareDistanceCache(int* distanceCache)
     {
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void FindLongestMatch(ReadOnlySpan<byte> data, nuint ringBufferMask, ReadOnlySpan<int> distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
+    public void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
-        // The table at its constant length: a key, shifted down to the table's bits, needs no bounds check.
-        Span<uint> buckets = _buckets.AsSpan(0, BucketSize);
+        uint* buckets = _buckets;
         nuint bestLenIn = result.Len;
         nuint curIxMasked = curIx & ringBufferMask;
         Prefetch(data, ringBufferMask, curIx + 1);
-        int compareChar = data[(int)(curIxMasked + bestLenIn)];
-        nuint key = HashBytes(data, curIxMasked);
+        int compareChar = data[curIxMasked + bestLenIn];
+        nuint key = HashBytes(data + curIxMasked);
         nuint keyOut = 0;
         nuint minScore = result.Score;
         nuint bestScore = result.Score;
@@ -208,9 +205,9 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
         if (prevIx < curIx)
         {
             prevIx &= (uint)ringBufferMask;
-            if (compareChar == data[(int)(prevIx + bestLen)])
+            if (compareChar == data[prevIx + bestLen])
             {
-                nuint len = FindMatchLength.WithLimit(data, prevIx, curIxMasked, maxLength);
+                nuint len = FindMatchLength.WithLimit(data + prevIx, data + curIxMasked, maxLength);
                 if (len >= 4)
                 {
                     nuint score = HasherCommon.BackwardReferenceScoreUsingLastDistance(len);
@@ -221,13 +218,13 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
                         result.Score = score;
                         if (BucketSweep == 1)
                         {
-                            buckets[(int)key] = (uint)curIx;
+                            buckets[key] = (uint)curIx;
                             return;
                         }
 
                         bestLen = len;
                         bestScore = score;
-                        compareChar = data[(int)(curIxMasked + len)];
+                        compareChar = data[curIxMasked + len];
                     }
                 }
             }
@@ -235,11 +232,11 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
 
         if (BucketSweep == 1)
         {
-            prevIx = buckets[(int)key];
-            buckets[(int)key] = (uint)curIx;
+            prevIx = buckets[key];
+            buckets[key] = (uint)curIx;
             nuint backward = curIx - prevIx;
             prevIx &= (uint)ringBufferMask;
-            if (compareChar != data[(int)(prevIx + bestLenIn)])
+            if (compareChar != data[prevIx + bestLenIn])
             {
                 return;
             }
@@ -249,7 +246,7 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
                 return;
             }
 
-            nuint len = FindMatchLength.WithLimit(data, prevIx, curIxMasked, maxLength);
+            nuint len = FindMatchLength.WithLimit(data + prevIx, data + curIxMasked, maxLength);
             if (len >= 4)
             {
                 nuint score = HasherCommon.BackwardReferenceScore(len, backward);
@@ -267,10 +264,10 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
             keyOut = (key + ((curIx & BucketSweepMask) >> 3 << 3)) & BucketMask;
             for (int i = 0; i < BucketSweep; ++i)
             {
-                prevIx = buckets[(int)((key + ((nuint)i << 3)) & BucketMask)];
+                prevIx = buckets[(key + ((nuint)i << 3)) & BucketMask];
                 nuint backward = curIx - prevIx;
                 prevIx &= (uint)ringBufferMask;
-                if (compareChar != data[(int)(prevIx + bestLen)])
+                if (compareChar != data[prevIx + bestLen])
                 {
                     continue;
                 }
@@ -280,7 +277,7 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
                     continue;
                 }
 
-                nuint len = FindMatchLength.WithLimit(data, prevIx, curIxMasked, maxLength);
+                nuint len = FindMatchLength.WithLimit(data + prevIx, data + curIxMasked, maxLength);
                 if (len >= 4)
                 {
                     nuint score = HasherCommon.BackwardReferenceScore(len, backward);
@@ -288,7 +285,7 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
                     {
                         bestLen = len;
                         result.Len = len;
-                        compareChar = data[(int)(curIxMasked + len)];
+                        compareChar = data[curIxMasked + len];
                         bestScore = score;
                         result.Score = score;
                         result.Distance = backward;
@@ -299,12 +296,12 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
 
         if (TParams.UseDictionary && minScore == result.Score)
         {
-            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data.Slice((int)curIxMasked), maxLength, dictionaryDistance, maxDistance, ref result, shallow: true);
+            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data + curIxMasked, maxLength, dictionaryDistance, maxDistance, ref result, shallow: true);
         }
 
         if (BucketSweep != 1)
         {
-            buckets[(int)keyOut] = (uint)curIx;
+            buckets[keyOut] = (uint)curIx;
         }
     }
 }

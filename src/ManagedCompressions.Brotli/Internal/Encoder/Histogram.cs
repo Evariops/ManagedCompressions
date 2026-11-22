@@ -1,160 +1,131 @@
 using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
 /// <summary>
-/// A histogram of <c>c/enc/histogram_inc.h</c>: its counts, its total and its cost, which the generic
-/// code reaches through the histogram's members.
+/// A histogram of <c>c/enc/histogram_inc.h</c>: its counts first, then its total and its cost, so that
+/// the generic code reaches them from a pointer to the histogram.
 /// </summary>
-internal interface IHistogram
+internal unsafe interface IHistogram
 {
     /// <summary>brotli's <c>DATA_SIZE</c>: the number of counts.</summary>
     static abstract int DataSize { get; }
-
-    /// <summary>The counts.</summary>
-    [UnscopedRef]
-    Span<uint> Data { get; }
-
-    nuint TotalCount { get; set; }
-
-    double BitCost { get; set; }
 }
 
-[InlineArray(Prefix.NumLiteralSymbols)]
-internal struct LiteralCounts
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct HistogramLiteral : IHistogram
 {
-    private uint _element;
-}
-
-[InlineArray(Prefix.NumCommandSymbols)]
-internal struct CommandCounts
-{
-    private uint _element;
-}
-
-[InlineArray(HistogramDistance.Symbols)]
-internal struct DistanceCounts
-{
-    private uint _element;
-}
-
-internal struct HistogramLiteral : IHistogram
-{
-    private LiteralCounts _data;
+    public fixed uint Data[Prefix.NumLiteralSymbols];
+    public nuint TotalCount;
+    public double BitCost;
 
     public static int DataSize => Prefix.NumLiteralSymbols;
-
-    [UnscopedRef]
-    public Span<uint> Data => _data;
-
-    public nuint TotalCount { get; set; }
-
-    public double BitCost { get; set; }
 }
 
-internal struct HistogramCommand : IHistogram
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct HistogramCommand : IHistogram
 {
-    private CommandCounts _data;
+    public fixed uint Data[Prefix.NumCommandSymbols];
+    public nuint TotalCount;
+    public double BitCost;
 
     public static int DataSize => Prefix.NumCommandSymbols;
-
-    [UnscopedRef]
-    public Span<uint> Data => _data;
-
-    public nuint TotalCount { get; set; }
-
-    public double BitCost { get; set; }
 }
 
-internal struct HistogramDistance : IHistogram
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct HistogramDistance : IHistogram
 {
     /// <summary>brotli's <c>BROTLI_NUM_HISTOGRAM_DISTANCE_SYMBOLS</c>.</summary>
     public const int Symbols = 544;
 
-    private DistanceCounts _data;
+    public fixed uint Data[Symbols];
+    public nuint TotalCount;
+    public double BitCost;
 
     public static int DataSize => Symbols;
-
-    [UnscopedRef]
-    public Span<uint> Data => _data;
-
-    public nuint TotalCount { get; set; }
-
-    public double BitCost { get; set; }
 }
 
 /// <summary>The functions of <c>c/enc/histogram_inc.h</c>, for the three histograms.</summary>
-internal static class Histogram
+internal static unsafe class Histogram
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Clear<T>(ref T h)
-        where T : struct, IHistogram
+    public static uint* Data<T>(T* h)
+        where T : unmanaged, IHistogram => (uint*)h;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static nuint* TotalCount<T>(T* h)
+        where T : unmanaged, IHistogram => (nuint*)((uint*)h + T.DataSize);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double* BitCost<T>(T* h)
+        where T : unmanaged, IHistogram => (double*)(TotalCount(h) + 1);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Clear<T>(T* h)
+        where T : unmanaged, IHistogram
     {
-        h.Data.Clear();
-        h.TotalCount = 0;
-        h.BitCost = double.PositiveInfinity;
+        new Span<uint>(h, T.DataSize).Clear();
+        *TotalCount(h) = 0;
+        *BitCost(h) = double.PositiveInfinity;
     }
 
-    public static void ClearAll<T>(Span<T> array)
-        where T : struct, IHistogram
+    public static void ClearAll<T>(T* array, nuint length)
+        where T : unmanaged, IHistogram
     {
-        for (int i = 0; i < array.Length; ++i)
+        for (nuint i = 0; i < length; ++i)
         {
-            Clear(ref array[i]);
+            Clear(array + i);
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Add<T>(ref T h, nuint value)
-        where T : struct, IHistogram
+    public static void Add<T>(T* h, nuint value)
+        where T : unmanaged, IHistogram
     {
-        ++h.Data[(int)value];
-        ++h.TotalCount;
+        ++((uint*)h)[value];
+        ++*TotalCount(h);
     }
 
     /// <summary>brotli's <c>HistogramAddHistogram</c>, a vector at a time.</summary>
-    public static void AddHistogram<T>(ref T self, ref T v)
-        where T : struct, IHistogram
+    public static void AddHistogram<T>(T* self, T* v)
+        where T : unmanaged, IHistogram
     {
-        self.TotalCount += v.TotalCount;
-        AddCounts(self.Data, self.Data, v.Data);
+        *TotalCount(self) += *TotalCount(v);
+        AddCounts((uint*)self, (uint*)self, (uint*)v, T.DataSize);
     }
 
     /// <summary>
     /// <c>*dst = *a</c> then <c>HistogramAddHistogram(dst, b)</c>, as brotli writes it, in one pass: the
     /// counts and the totals added, and <paramref name="a"/>'s cost.
     /// </summary>
-    public static void Sum<T>(ref T dst, ref T a, ref T b)
-        where T : struct, IHistogram
+    public static void Sum<T>(T* dst, T* a, T* b)
+        where T : unmanaged, IHistogram
     {
-        AddCounts(dst.Data, a.Data, b.Data);
-        dst.TotalCount = a.TotalCount + b.TotalCount;
-        dst.BitCost = a.BitCost;
+        AddCounts((uint*)dst, (uint*)a, (uint*)b, T.DataSize);
+        *TotalCount(dst) = *TotalCount(a) + *TotalCount(b);
+        *BitCost(dst) = *BitCost(a);
     }
 
-    /// <summary><c>dst[i] = a[i] + b[i]</c>, for counts of a multiple of 8.</summary>
+    /// <summary><c>dst[i] = a[i] + b[i]</c>, for <paramref name="n"/> counts, a multiple of 8.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AddCounts(Span<uint> dst, ReadOnlySpan<uint> a, ReadOnlySpan<uint> b)
+    private static void AddCounts(uint* dst, uint* a, uint* b, int n)
     {
-        int n = dst.Length;
-        a = a.Slice(0, n);
-        b = b.Slice(0, n);
         int i = 0;
         if (Vector256.IsHardwareAccelerated)
         {
-            for (; i <= n - 8; i += 8)
+            for (; i < n; i += 8)
             {
-                (Vector256.Create(a.Slice(i, 8)) + Vector256.Create(b.Slice(i, 8))).CopyTo(dst.Slice(i, 8));
+                (Vector256.Load(a + i) + Vector256.Load(b + i)).Store(dst + i);
             }
         }
         else if (Vector128.IsHardwareAccelerated)
         {
-            for (; i <= n - 4; i += 4)
+            for (; i < n; i += 4)
             {
-                (Vector128.Create(a.Slice(i, 4)) + Vector128.Create(b.Slice(i, 4))).CopyTo(dst.Slice(i, 4));
+                (Vector128.Load(a + i) + Vector128.Load(b + i)).Store(dst + i);
             }
         }
 

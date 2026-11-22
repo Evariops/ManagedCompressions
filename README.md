@@ -3,10 +3,9 @@
 **Zstandard, LZ4 and Brotli written entirely in C#.** No native library and no P/Invoke: the code runs
 wherever .NET runs on a little-endian processor, trims, and compiles with Native AOT.
 
-- **Brotli in safe code**, bounds-checked throughout, with brotli 1.1.1's bytes and brotli's verdict and
-  error code for every stream. On x64 against the brotli .NET ships, it decompresses 1.00 to 1.34× as
-  fast; it compresses 1.04 to 1.14× as fast at qualities 5 to 10 on large inputs and up to 18.6× on small
-  ones, and 0.81 to 0.95× at the fast qualities on large inputs ([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md)).
+- **Brotli at least as fast as the brotli .NET ships at every quality**, on x64: compression 1.00 to 1.29×
+  on large inputs and 1.03 to 21× on small ones, with brotli 1.1.1's bytes; decompression 1.07 to 1.37×,
+  with brotli's verdict and error code for every stream ([`src/ManagedCompressions.Brotli`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md)).
 
 - **Same bytes as the native libraries.** Every frame, block and stream is byte-for-byte what libzstd
   1.5.7, lz4 1.10.0 and brotli 1.1.1 write, at every level, so the compression ratios are theirs. The
@@ -249,30 +248,28 @@ and the table shows one of those
 ### Brotli
 
 On x64 (AMD Ryzen 9 7950X), against the brotli 1.1.1 .NET ships, through `BrotliEncoder.TryCompress`
-and `BrotliDecoder.TryDecompress`. The managed code is safe: no pointers, every access bounds-checked,
-and one unsafe file, a cache prefetch hint. The compressor writes brotli's bytes; it keeps its tables from
+and `BrotliDecoder.TryDecompress`. The managed compressor writes brotli's bytes; it keeps its tables from
 one stream to the next where brotli allocates and clears them at every call, fetches the lines of its hash
-tables ahead of the search on large inputs, writes its bits through a 64-bit accumulator, several codes at
-a time at the fast qualities, and runs the block splitter of qualities 10 and 11 on vectors. The decoder
-writes straight into the destination where brotli goes through a ring buffer, decodes literals in runs
-between its checks, and looks literals up in tables of 10 bits where brotli's have 8
+tables ahead of the search, writes its bits through a 64-bit accumulator, several codes at a time at the
+fast qualities, and runs the block splitter of qualities 10 and 11 on vectors. The decoder writes
+straight into the destination where brotli goes through a ring buffer, decodes literals in runs between
+its checks, and looks literals up in tables of 10 bits where brotli's have 8
 ([`src/ManagedCompressions.Brotli/README.md`](https://github.com/Evariops/ManagedCompressions/blob/main/src/ManagedCompressions.Brotli/README.md#how-it-is-fast)).
 
 | Compression | 0 | 1 | 4 | 5 | 9 | 10 | 11 |
 |:--|--:|--:|--:|--:|--:|--:|--:|
-| silesia.tar sample, one stream | 0.81× | 0.95× | 0.90× | 1.04× | **1.14×** | **1.06×** | 1.00× |
-| JSON records | 0.94× | 0.99× | 1.03× | **10.7×** | **18.6×** | 1.02× | 0.88× |
+| silesia.tar sample, one stream | 1.00× | **1.12×** | **1.08×** | **1.29×** | **1.18×** | **1.18×** | **1.15×** |
+| JSON records | **1.09×** | **1.06×** | **1.16×** | **12.4×** | **21.0×** | **1.13×** | 1.03× |
 
-Qualities 4 to 9 move by up to 20 % from one process to the next, on both sides. The fast qualities do the
-least work per byte, so the bounds checks weigh most there
+Qualities 4 to 9 move by up to 20 % from one process to the next, on both sides
 ([`bench/results/x64/brotli-compression.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/brotli-compression.md)
 has every quality).
 
 | Decompression | 1 | 4 | 5 | 9 | 11 |
 |:--|--:|--:|--:|--:|--:|
-| silesia.tar, one stream | **1.21×** | **1.34×** | 1.07× | 1.14× | **1.05×** |
-| silesia.tar, 64 KiB pages | **1.21×** | **1.17×** | **1.13×** | **1.13×** | **1.06×** |
-| JSON records | **1.04×** | 1.02× | 1.02× | 1.01× | 1.00× |
+| silesia.tar, one stream | **1.34×** | **1.37×** | **1.21×** | **1.25×** | 1.07× |
+| silesia.tar, 64 KiB pages | **1.34×** | **1.27×** | **1.25×** | **1.24×** | 1.08× |
+| JSON records | **1.10×** | 1.10× | 1.10× | 1.08× | 1.06× |
 
 ### Compression ratios
 

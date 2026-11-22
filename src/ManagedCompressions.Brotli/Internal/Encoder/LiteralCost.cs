@@ -6,13 +6,13 @@ namespace ManagedCompressions.Brotli.Internal;
 /// brotli's estimate of each literal's cost (<c>c/enc/literal_cost.c</c>), from a sliding window's
 /// histogram, by UTF-8 position for text; and its test of text (<c>c/enc/utf8_util.c</c>).
 /// </summary>
-internal static class LiteralCost
+internal static unsafe class LiteralCost
 {
     /// <summary>brotli's <c>kMinUTF8Ratio</c>.</summary>
     public const double MinUtf8Ratio = 0.75;
 
     /// <summary>brotli's <c>BrotliParseAsUTF8</c>: the bytes of a code point, or 1 and a symbol above Unicode's.</summary>
-    private static nuint ParseAsUtf8(out int symbol, ReadOnlySpan<byte> input, nuint size)
+    private static nuint ParseAsUtf8(out int symbol, byte* input, nuint size)
     {
         if ((input[0] & 0x80) == 0)
         {
@@ -55,13 +55,13 @@ internal static class LiteralCost
     }
 
     /// <summary>brotli's <c>BrotliIsMostlyUTF8</c>: whether <paramref name="minFraction"/> of the bytes are UTF-8.</summary>
-    public static bool IsMostlyUtf8(ReadOnlySpan<byte> data, nuint pos, nuint mask, nuint length, double minFraction)
+    public static bool IsMostlyUtf8(byte* data, nuint pos, nuint mask, nuint length, double minFraction)
     {
         nuint sizeUtf8 = 0;
         nuint i = 0;
         while (i < length)
         {
-            nuint bytesRead = ParseAsUtf8(out int symbol, data.Slice((int)((pos + i) & mask)), length - i);
+            nuint bytesRead = ParseAsUtf8(out int symbol, data + ((pos + i) & mask), length - i);
             i += bytesRead;
             if (symbol < 0x110000)
             {
@@ -87,16 +87,16 @@ internal static class LiteralCost
         return last < 0xE0 ? 0 : Math.Min(2, clamp);
     }
 
-    private static nuint DecideMultiByteStatsLevel(nuint pos, nuint len, nuint mask, ReadOnlySpan<byte> data)
+    private static nuint DecideMultiByteStatsLevel(nuint pos, nuint len, nuint mask, byte* data)
     {
-        Span<nuint> counts = stackalloc nuint[3];
+        nuint* counts = stackalloc nuint[3];
         counts[0] = counts[1] = counts[2] = 0;
         nuint maxUtf8 = 1;
         nuint lastC = 0;
         for (nuint i = 0; i < len; ++i)
         {
-            nuint c = data[(int)((pos + i) & mask)];
-            ++counts[(int)(Utf8Position(lastC, c, 2))];
+            nuint c = data[(pos + i) & mask];
+            ++counts[Utf8Position(lastC, c, 2)];
             lastC = c;
         }
 
@@ -113,22 +113,22 @@ internal static class LiteralCost
         return maxUtf8;
     }
 
-    private static void EstimateBitCostsForLiteralsUtf8(nuint pos, nuint len, nuint mask, ReadOnlySpan<byte> data, nuint[] histogram, Span<float> cost)
+    private static void EstimateBitCostsForLiteralsUtf8(nuint pos, nuint len, nuint mask, byte* data, nuint* histogram, float* cost)
     {
         nuint maxUtf8 = DecideMultiByteStatsLevel(pos, len, mask, data);
         const nuint windowHalf = 495;
         nuint inWindow = Math.Min(windowHalf, len);
-        Span<nuint> inWindowUtf8 = stackalloc nuint[3];
+        nuint* inWindowUtf8 = stackalloc nuint[3];
         inWindowUtf8[0] = inWindowUtf8[1] = inWindowUtf8[2] = 0;
-        histogram.AsSpan(0, 3 * 256).Clear();
+        new Span<nuint>(histogram, 3 * 256).Clear();
         {
             nuint lastC = 0;
             nuint utf8Pos = 0;
             for (nuint i = 0; i < inWindow; ++i)
             {
-                nuint c = data[(int)((pos + i) & mask)];
+                nuint c = data[(pos + i) & mask];
                 ++histogram[(256 * utf8Pos) + c];
-                ++inWindowUtf8[(int)(utf8Pos)];
+                ++inWindowUtf8[utf8Pos];
                 utf8Pos = Utf8Position(lastC, c, maxUtf8);
                 lastC = c;
             }
@@ -139,35 +139,35 @@ internal static class LiteralCost
             if (i >= windowHalf)
             {
                 // A byte out of the window, behind.
-                nuint c = i < windowHalf + 1 ? (nuint)0 : data[(int)((pos + i - windowHalf - 1) & mask)];
-                nuint lastC = i < windowHalf + 2 ? (nuint)0 : data[(int)((pos + i - windowHalf - 2) & mask)];
+                nuint c = i < windowHalf + 1 ? (nuint)0 : data[(pos + i - windowHalf - 1) & mask];
+                nuint lastC = i < windowHalf + 2 ? (nuint)0 : data[(pos + i - windowHalf - 2) & mask];
                 nuint utf8Pos2 = Utf8Position(lastC, c, maxUtf8);
-                --histogram[(256 * utf8Pos2) + data[(int)((pos + i - windowHalf) & mask)]];
-                --inWindowUtf8[(int)(utf8Pos2)];
+                --histogram[(256 * utf8Pos2) + data[(pos + i - windowHalf) & mask]];
+                --inWindowUtf8[utf8Pos2];
             }
 
             if (i + windowHalf < len)
             {
                 // A byte into the window, ahead.
-                nuint c = data[(int)((pos + i + windowHalf - 1) & mask)];
-                nuint lastC = data[(int)((pos + i + windowHalf - 2) & mask)];
+                nuint c = data[(pos + i + windowHalf - 1) & mask];
+                nuint lastC = data[(pos + i + windowHalf - 2) & mask];
                 nuint utf8Pos2 = Utf8Position(lastC, c, maxUtf8);
-                ++histogram[(256 * utf8Pos2) + data[(int)((pos + i + windowHalf) & mask)]];
-                ++inWindowUtf8[(int)(utf8Pos2)];
+                ++histogram[(256 * utf8Pos2) + data[(pos + i + windowHalf) & mask]];
+                ++inWindowUtf8[utf8Pos2];
             }
 
             {
-                nuint c = i < 1 ? (nuint)0 : data[(int)((pos + i - 1) & mask)];
-                nuint lastC = i < 2 ? (nuint)0 : data[(int)((pos + i - 2) & mask)];
+                nuint c = i < 1 ? (nuint)0 : data[(pos + i - 1) & mask];
+                nuint lastC = i < 2 ? (nuint)0 : data[(pos + i - 2) & mask];
                 nuint utf8Pos = Utf8Position(lastC, c, maxUtf8);
                 nuint maskedPos = (pos + i) & mask;
-                nuint histo = histogram[(256 * utf8Pos) + data[(int)(maskedPos)]];
+                nuint histo = histogram[(256 * utf8Pos) + data[maskedPos]];
                 if (histo == 0)
                 {
                     histo = 1;
                 }
 
-                double litCost = FastLog.FastLog2(inWindowUtf8[(int)(utf8Pos)]) - FastLog.FastLog2(histo);
+                double litCost = FastLog.FastLog2(inWindowUtf8[utf8Pos]) - FastLog.FastLog2(histo);
                 litCost += 0.02905;
                 if (litCost < 1.0)
                 {
@@ -181,13 +181,13 @@ internal static class LiteralCost
                     litCost += 0.7 - ((double)(2000 - i) / 2000.0 * 0.35);
                 }
 
-                cost[(int)i] = (float)litCost;
+                cost[i] = (float)litCost;
             }
         }
     }
 
     /// <summary>brotli's <c>BrotliEstimateBitCostsForLiterals</c>: <paramref name="histogram"/> holds 3 * 256 counts.</summary>
-    public static void EstimateBitCostsForLiterals(nuint pos, nuint len, nuint mask, ReadOnlySpan<byte> data, nuint[] histogram, Span<float> cost)
+    public static void EstimateBitCostsForLiterals(nuint pos, nuint len, nuint mask, byte* data, nuint* histogram, float* cost)
     {
         if (IsMostlyUtf8(data, pos, mask, len, MinUtf8Ratio))
         {
@@ -197,27 +197,27 @@ internal static class LiteralCost
 
         const nuint windowHalf = 2000;
         nuint inWindow = Math.Min(windowHalf, len);
-        histogram.AsSpan(0, 256).Clear();
+        new Span<nuint>(histogram, 256).Clear();
         for (nuint i = 0; i < inWindow; ++i)
         {
-            ++histogram[data[(int)((pos + i) & mask)]];
+            ++histogram[data[(pos + i) & mask]];
         }
 
         for (nuint i = 0; i < len; ++i)
         {
             if (i >= windowHalf)
             {
-                --histogram[data[(int)((pos + i - windowHalf) & mask)]];
+                --histogram[data[(pos + i - windowHalf) & mask]];
                 --inWindow;
             }
 
             if (i + windowHalf < len)
             {
-                ++histogram[data[(int)((pos + i + windowHalf) & mask)]];
+                ++histogram[data[(pos + i + windowHalf) & mask]];
                 ++inWindow;
             }
 
-            nuint histo = histogram[data[(int)((pos + i) & mask)]];
+            nuint histo = histogram[data[(pos + i) & mask]];
             if (histo == 0)
             {
                 histo = 1;
@@ -231,7 +231,7 @@ internal static class LiteralCost
                 litCost += 0.5;
             }
 
-            cost[(int)i] = (float)litCost;
+            cost[i] = (float)litCost;
         }
     }
 }
