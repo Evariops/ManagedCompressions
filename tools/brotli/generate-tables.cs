@@ -110,12 +110,26 @@ text.Clear();
 Header(text, "c/dec/prefix.h");
 text.AppendLine("internal static partial class Prefix");
 text.AppendLine("{");
+long[] packed = new long[704];
+for (int i = 0; i < 704; i++)
+{
+    long insertExtra = commands[(i * 6) + 0];
+    long copyExtra = commands[(i * 6) + 1];
+    long distanceCode = commands[(i * 6) + 2] & 0xFF;
+    long distanceContext = commands[(i * 6) + 3];
+    long insertOffset = commands[(i * 6) + 4];
+    long copyOffset = commands[(i * 6) + 5];
+    Check(insertExtra < 256 && copyExtra < 256 && distanceContext < 256 && insertOffset < 65536 && copyOffset < 65536, "the command codes fit");
+    packed[i] = insertExtra | (copyExtra << 8) | (distanceCode << 16) | (distanceContext << 24) | (insertOffset << 32) | (copyOffset << 48);
+}
+
 text.AppendLine("    /// <summary>");
-text.AppendLine("    /// Each of the 704 insert-and-copy codes, as six values: the insert length's extra bits, the copy");
-text.AppendLine("    /// length's extra bits, the distance code (0: the last distance, implicitly; -1: read one), the");
-text.AppendLine("    /// distance context, the insert length's offset and the copy length's offset.");
+text.AppendLine("    /// Each of the 704 insert-and-copy codes, packed into a word: from the lowest byte, the insert");
+text.AppendLine("    /// length's extra bits, the copy length's extra bits, the distance code (0: the last distance,");
+text.AppendLine("    /// implicitly; 0xFF: read one), the distance context, then the insert length's offset (16 bits) and");
+text.AppendLine("    /// the copy length's offset (16 bits).");
 text.AppendLine("    /// </summary>");
-Array(text, "public static ReadOnlySpan<short> CommandCodes", commands, 18);
+Array(text, "public static ReadOnlySpan<ulong> CommandCodes", packed.Select(v => v).ToArray(), 6, hex: true);
 text.AppendLine("}");
 Write("Prefix.Data.cs", text);
 
@@ -195,7 +209,7 @@ static void Header(StringBuilder text, string file)
     text.AppendLine();
 }
 
-static void Array(StringBuilder text, string declaration, long[] values, int perLine)
+static void Array(StringBuilder text, string declaration, long[] values, int perLine, bool hex = false)
 {
     text.AppendLine($"    {declaration} =>");
     text.AppendLine("    [");
@@ -205,7 +219,7 @@ static void Array(StringBuilder text, string declaration, long[] values, int per
         int end = Math.Min(values.Length, i + perLine);
         for (int j = i; j < end; j++)
         {
-            text.Append(values[j].ToString(CultureInfo.InvariantCulture)).Append(',');
+            text.Append(hex ? "0x" + values[j].ToString("X16", CultureInfo.InvariantCulture) : values[j].ToString(CultureInfo.InvariantCulture)).Append(',');
             if (j + 1 < end)
             {
                 text.Append(' ');
