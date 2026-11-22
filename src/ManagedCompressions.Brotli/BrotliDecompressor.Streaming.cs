@@ -262,8 +262,15 @@ public sealed unsafe partial class BrotliDecompressor
         // A bit reader at the last stop, which holds the rest of its byte and nothing else: the bits past it
         // come from the input as it is now.
         long start = _bitPosition >> 3;
-        _br = new BitReader(input + start, (int)(inputLength - start));
         int used = (int)(_bitPosition & 7);
+        if (used != 0 && start >= inputLength)
+        {
+            // The byte of the last stop went back to the caller with the input past it, as the output was
+            // full: nothing goes on without it.
+            return StreamResult.NeedInput;
+        }
+
+        _br = new BitReader(input + start, (int)(inputLength - start));
         if (used != 0)
         {
             _br.Bits = (ulong)(*_br.Next >> used);
