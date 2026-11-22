@@ -139,8 +139,103 @@ Array(text, "public static ReadOnlySpan<ulong> CommandCodes", packed.Select(v =>
 text.AppendLine("}");
 Write("Prefix.Data.cs", text);
 
+// The encoder's fixed tables: the static codes of entropy_encode_static.h, and fast_log.c's table of
+// log2, whose literals are floats.
+string staticC = File.ReadAllText(Path.Combine(source, "enc", "entropy_encode_static.h"));
+text.Clear();
+Header(text, "c/enc/entropy_encode_static.h and c/enc/fast_log.c");
+text.AppendLine("internal static partial class EncoderTables");
+text.AppendLine("{");
+EncoderTable("kCodeLengthDepth[18] =", "public static ReadOnlySpan<byte> CodeLengthDepth", 18, 18);
+EncoderTable("kCodeLengthBits[18] =", "public static ReadOnlySpan<uint> CodeLengthBits", 18, 18);
+EncoderTable("kZeroRepsBits[BROTLI_NUM_COMMAND_SYMBOLS] =", "public static ReadOnlySpan<ulong> ZeroRepsBits", 704, 8, hex: true);
+EncoderTable("kZeroRepsDepth[BROTLI_NUM_COMMAND_SYMBOLS] =", "public static ReadOnlySpan<uint> ZeroRepsDepth", 704, 24);
+EncoderTable("kNonZeroRepsBits[BROTLI_NUM_COMMAND_SYMBOLS] =", "public static ReadOnlySpan<ulong> NonZeroRepsBits", 704, 8, hex: true);
+EncoderTable("kNonZeroRepsDepth[BROTLI_NUM_COMMAND_SYMBOLS] =", "public static ReadOnlySpan<uint> NonZeroRepsDepth", 704, 24);
+EncoderTable("kStaticCommandCodeDepth[BROTLI_NUM_COMMAND_SYMBOLS] =", "public static ReadOnlySpan<byte> StaticCommandCodeDepth", 704, 32);
+EncoderTable("kStaticCommandCodeBits[BROTLI_NUM_COMMAND_SYMBOLS] =", "public static ReadOnlySpan<ushort> StaticCommandCodeBits", 704, 16);
+EncoderTable("kStaticDistanceCodeDepth[64] =", "public static ReadOnlySpan<byte> StaticDistanceCodeDepth", 64, 32);
+EncoderTable("kStaticDistanceCodeBits[64] =", "public static ReadOnlySpan<ushort> StaticDistanceCodeBits", 64, 16);
+string fastLogC = File.ReadAllText(Path.Combine(source, "enc", "fast_log.c"));
+string logBody = Body(fastLogC, "kBrotliLog2Table[BROTLI_LOG2_TABLE_SIZE] =");
+string[] logLiterals = Regex.Matches(logBody, @"\d+\.\d+f").Select(m => m.Value).ToArray();
+Check(logLiterals.Length == 256, "256 entries in the table of log2");
+text.AppendLine("    /// <summary>");
+text.AppendLine("    /// log2 of 0 to 255, as fast_log.c writes them: float literals, rounded to a float before they");
+text.AppendLine("    /// become the doubles brotli computes with.");
+text.AppendLine("    /// </summary>");
+text.AppendLine("    public static ReadOnlySpan<float> Log2 =>");
+text.AppendLine("    [");
+for (int i = 0; i < 256; i += 4)
+{
+    text.Append("        ").AppendLine(string.Join(" ", logLiterals.Skip(i).Take(4).Select(l => l + ",")));
+}
+
+text.AppendLine("    ];");
+text.AppendLine("}");
+Write(Path.Combine("Encoder", "EncoderTables.Data.cs"), text);
+
+// The encoder's hash table of the static dictionary, which qualities 2 to 9 look words up in: two slots
+// a 14-bit hash of a word's first four bytes, the first for words of 8 bytes and more.
+string dictionaryHashC = File.ReadAllText(Path.Combine(source, "enc", "dictionary_hash.c"));
+long[] hashWords = Numbers(dictionaryHashC, "kStaticDictionaryHashWords[32768] =");
+long[] hashLengths = Numbers(dictionaryHashC, "kStaticDictionaryHashLengths[32768] =");
+Check(hashWords.Length == 32768 && hashLengths.Length == 32768, "32768 slots in the dictionary's hash table");
+text.Clear();
+Header(text, "c/enc/dictionary_hash.c");
+text.AppendLine("internal static partial class DictionaryHash");
+text.AppendLine("{");
+text.AppendLine("    /// <summary>brotli's <c>kStaticDictionaryHashWords</c>: the index of a slot's word among those of its length.</summary>");
+Array(text, "public static ReadOnlySpan<ushort> Words", hashWords, 16);
+text.AppendLine();
+text.AppendLine("    /// <summary>brotli's <c>kStaticDictionaryHashLengths</c>: the length of a slot's word, 0 for none.</summary>");
+Array(text, "public static ReadOnlySpan<byte> Lengths", hashLengths, 32);
+text.AppendLine("}");
+Write(Path.Combine("Encoder", "DictionaryHash.Data.cs"), text);
+
+// The lookup table of the static dictionary's words and their transforms, which qualities 10 and 11 find
+// every dictionary match with: buckets by a 15-bit hash of 4 bytes, into lists of words.
+string lutC = File.ReadAllText(Path.Combine(source, "enc", "static_dict_lut.h"));
+long[] buckets = Numbers(lutC, "kStaticDictionaryBuckets[32768] =");
+long[] dictWords = Numbers(lutC, "kStaticDictionaryWords[31705] =");
+Check(buckets.Length == 32768, "32768 buckets in the static dictionary's lookup table");
+Check(dictWords.Length == 3 * 31705, "31705 words in the static dictionary's lookup table");
+long[] packedWords = new long[31705];
+for (int i = 0; i < packedWords.Length; i++)
+{
+    long len = dictWords[3 * i];
+    long transform = dictWords[(3 * i) + 1];
+    long idx = dictWords[(3 * i) + 2];
+    Check(len < 256 && transform < 256 && idx < 65536, "a DictWord's fields fit their types");
+    packedWords[i] = len | (transform << 8) | (idx << 16);
+}
+
+text.Clear();
+Header(text, "c/enc/static_dict_lut.h");
+text.AppendLine("internal static partial class StaticDictionaryLut");
+text.AppendLine("{");
+text.AppendLine("    /// <summary>brotli's <c>kStaticDictionaryBuckets</c>: the first word of a hash's list, 0 for none.</summary>");
+Array(text, "public static ReadOnlySpan<ushort> Buckets", buckets, 16);
+text.AppendLine();
+text.AppendLine("    /// <summary>");
+text.AppendLine("    /// brotli's <c>kStaticDictionaryWords</c>, a <c>DictWord</c> an entry as it lies in memory: the length");
+text.AppendLine("    /// in the low byte, its bit 7 set on a list's last word, then the transform, then the index in 16 bits.");
+text.AppendLine("    /// </summary>");
+Array(text, "public static ReadOnlySpan<uint> Words", packedWords, 8, hex: true);
+text.AppendLine("}");
+Write(Path.Combine("Encoder", "StaticDictionaryLut.Data.cs"), text);
+
 Console.WriteLine("done");
 return 0;
+
+void EncoderTable(string marker, string declaration, int count, int perLine, bool hex = false)
+{
+    long[] values = Numbers(staticC, marker);
+    Check(values.Length == count, $"{count} entries in {marker}");
+    text.AppendLine($"    /// <summary>brotli's <c>{marker[..marker.IndexOf('[')]}</c>.</summary>");
+    Array(text, declaration, values, perLine, hex);
+    text.AppendLine();
+}
 
 // The body of the initializer after `marker`, braces included.
 static string Body(string c, string marker)
@@ -225,7 +320,8 @@ static void Array(StringBuilder text, string declaration, long[] values, int per
         int end = Math.Min(values.Length, i + perLine);
         for (int j = i; j < end; j++)
         {
-            text.Append(hex ? "0x" + values[j].ToString("X16", CultureInfo.InvariantCulture) : values[j].ToString(CultureInfo.InvariantCulture)).Append(',');
+            string digits = declaration.Contains("<uint>", StringComparison.Ordinal) ? "X8" : "X16";
+            text.Append(hex ? "0x" + values[j].ToString(digits, CultureInfo.InvariantCulture) : values[j].ToString(CultureInfo.InvariantCulture)).Append(',');
             if (j + 1 < end)
             {
                 text.Append(' ');

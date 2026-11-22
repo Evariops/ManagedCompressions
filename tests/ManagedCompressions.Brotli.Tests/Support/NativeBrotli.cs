@@ -98,6 +98,23 @@ internal static unsafe class NativeBrotli
         return output.AsSpan(0, (int)size).ToArray();
     }
 
+    /// <summary><c>BrotliEncoderCompress</c> into <paramref name="capacity"/> bytes: the stream, or null when it refuses.</summary>
+    public static byte[]? TryCompress(ReadOnlySpan<byte> data, int quality, int window, int mode, int capacity)
+    {
+        byte[] output = new byte[Math.Max(capacity, 1)];
+        nuint size = (nuint)capacity;
+        fixed (byte* src = data)
+        fixed (byte* dst = output)
+        {
+            if (EncoderCompressFn(quality, window, mode, (nuint)data.Length, src, &size, dst) == 0)
+            {
+                return null;
+            }
+        }
+
+        return output.AsSpan(0, (int)size).ToArray();
+    }
+
     /// <summary>
     /// The streaming encoder, given the whole input at once and finished: the one-shot output of
     /// <c>BrotliEncoderCompress</c> but for quality 10, and the way to set the parameters it does not take.

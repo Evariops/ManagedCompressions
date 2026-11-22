@@ -7,7 +7,8 @@ using Xunit;
 namespace ManagedCompressions.Brotli.Tests;
 
 /// <summary>
-/// A ratchet: a warm decompressor allocates nothing per stream, and the bound below only ever goes down.
+/// A ratchet: a warm decompressor or compressor allocates nothing per stream, and the bound below only
+/// ever goes down.
 /// </summary>
 public sealed class AllocationTests
 {
@@ -53,6 +54,49 @@ public sealed class AllocationTests
             }
 
             perStream = Math.Min(perStream, (GC.GetAllocatedBytesForCurrentThread() - before) / Streams);
+        }
+
+        Assert.True(perStream <= MaxBytesPerStream, $"{kind} q{quality}: {perStream} bytes allocated per stream");
+    }
+
+    public static IEnumerable<TheoryDataRow<string, int, int>> Contents()
+    {
+        foreach (int quality in new[] { 0, 1, 2, 3, 4, 5, 7, 9, 10, 11 })
+        {
+            yield return new("text", quality >= 10 ? 100_000 : 400_000, quality);
+            yield return new("json", 2000, quality);
+        }
+
+        yield return new("mixed", 1 << 20, 4);
+        yield return new("mixed", 1 << 20, 6);
+    }
+
+    [Theory]
+    [MemberData(nameof(Contents))]
+    public void A_warm_compressor_allocates_nothing(string kind, int size, int quality)
+    {
+#if DEBUG
+        Assert.Skip("allocations are a property of the optimized build");
+#endif
+        byte[] data = DataKinds.Generate(kind, size);
+        var compressor = new BrotliCompressor(quality);
+        byte[] output = new byte[BrotliCompressor.GetMaxCompressedLength(size)];
+        for (int i = 0; i < 3; i++)
+        {
+            Assert.Equal(OperationStatus.Done, compressor.Compress(data, output, out _, out _));
+        }
+
+        int streams = quality >= 10 ? 2 : 10;
+        long perStream = long.MaxValue;
+        for (int round = 0; round < 3; round++)
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < streams; i++)
+            {
+                compressor.Compress(data, output, out _, out _);
+            }
+
+            perStream = Math.Min(perStream, (GC.GetAllocatedBytesForCurrentThread() - before) / streams);
         }
 
         Assert.True(perStream <= MaxBytesPerStream, $"{kind} q{quality}: {perStream} bytes allocated per stream");

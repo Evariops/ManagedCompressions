@@ -188,6 +188,9 @@ internal static unsafe class Candidates
         ];
     }
 
+    /// <summary>The highest quality ManagedCompressions.Brotli compresses at, so far.</summary>
+    private const int BrotliCompressorQualities = 11;
+
     /// <summary>
     /// brotli 1.1.1 as .NET ships it in System.IO.Compression, through the calls applications make:
     /// <c>BrotliEncoder.TryCompress</c> (<c>BrotliEncoderCompress</c>) at the quality and .NET's default
@@ -197,13 +200,14 @@ internal static unsafe class Candidates
     private static List<Candidate> Brotli(int quality)
     {
         var decompressor = new BrotliDecompressor();
+        BrotliCompressor? compressor = quality <= BrotliCompressorQualities ? new BrotliCompressor(quality) : null;
         return
         [
             new("native", "brotli 1.1.1 (System.IO.Compression)", true,
                 (s, d) => System.IO.Compression.BrotliEncoder.TryCompress(s, d, out int w, quality, 22) ? w : -1,
                 (s, d) => System.IO.Compression.BrotliDecoder.TryDecompress(s, d, out int w) ? w : -1),
             new("managed", $"ManagedCompressions.Brotli ({Runtime})", false,
-                null,
+                compressor is null ? null : (s, d) => compressor.Compress(s, d, out _, out int w) == System.Buffers.OperationStatus.Done ? w : -1,
                 (s, d) => decompressor.Decompress(s, d, out _, out int w) == System.Buffers.OperationStatus.Done ? w : -1),
         ];
     }

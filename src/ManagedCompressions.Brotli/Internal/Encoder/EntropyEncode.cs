@@ -1,0 +1,614 @@
+using System;
+using System.Runtime.CompilerServices;
+
+namespace ManagedCompressions.Brotli.Internal;
+
+/// <summary>A node of a Huffman tree, brotli's <c>HuffmanTree</c>.</summary>
+internal struct HuffmanTree
+{
+    public uint TotalCount;
+    public short IndexLeft;
+    public short IndexRightOrValue;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public HuffmanTree(uint count, short left, short right)
+    {
+        TotalCount = count;
+        IndexLeft = left;
+        IndexRightOrValue = right;
+    }
+}
+
+/// <summary>
+/// brotli's Huffman code construction (<c>c/enc/entropy_encode.c</c>), step for step: the same depths
+/// from the same counts, and the same RLE of the depths, hence the same bytes.
+/// </summary>
+internal static unsafe class EntropyEncode
+{
+    /// <summary>The order of a sort of Huffman tree nodes.</summary>
+    public interface IComparer
+    {
+        static abstract bool Less(in HuffmanTree a, in HuffmanTree b);
+    }
+
+    /// <summary>Least popular first, then the larger symbol first: <c>entropy_encode.c</c>'s order.</summary>
+    public struct ByCountThenValue : IComparer
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool Less(in HuffmanTree a, in HuffmanTree b) =>
+            a.TotalCount != b.TotalCount ? a.TotalCount < b.TotalCount : a.IndexRightOrValue > b.IndexRightOrValue;
+    }
+
+    /// <summary>Least popular first, ties left as the sort leaves them: <c>brotli_bit_stream.c</c>'s order.</summary>
+    public struct ByCount : IComparer
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool Less(in HuffmanTree a, in HuffmanTree b) => a.TotalCount < b.TotalCount;
+    }
+
+    private static ReadOnlySpan<byte> ShellGaps => [132, 57, 23, 10, 4, 1];
+
+    /// <summary>
+    /// brotli's <c>SortHuffmanTreeItems</c>: an insertion sort below 13 items, a Shell sort over its gaps
+    /// above. With <see cref="ByCount"/>, ties end where this very algorithm puts them, so it is kept as is.
+    /// </summary>
+    public static void Sort<TComparer>(HuffmanTree* items, int n)
+        where TComparer : struct, IComparer
+    {
+        if (n < 13)
+        {
+            for (int i = 1; i < n; ++i)
+            {
+                HuffmanTree tmp = items[i];
+                int k = i;
+                int j = i - 1;
+                while (TComparer.Less(tmp, items[j]))
+                {
+                    items[k] = items[j];
+                    k = j;
+                    if (j-- == 0)
+                    {
+                        break;
+                    }
+                }
+
+                items[k] = tmp;
+            }
+
+            return;
+        }
+
+        for (int g = n < 57 ? 2 : 0; g < 6; ++g)
+        {
+            int gap = ShellGaps[g];
+            for (int i = gap; i < n; ++i)
+            {
+                int j = i;
+                HuffmanTree tmp = items[i];
+                for (; j >= gap && TComparer.Less(tmp, items[j - gap]); j -= gap)
+                {
+                    items[j] = items[j - gap];
+                }
+
+                items[j] = tmp;
+            }
+        }
+    }
+
+    /// <summary>The depth of each leaf under <paramref name="p0"/>; false when one exceeds <paramref name="maxDepth"/>.</summary>
+    public static bool SetDepth(int p0, HuffmanTree* pool, byte* depth, int maxDepth)
+    {
+        int* stack = stackalloc int[16];
+        int level = 0;
+        int p = p0;
+        stack[0] = -1;
+        while (true)
+        {
+            if (pool[p].IndexLeft >= 0)
+            {
+                level++;
+                if (level > maxDepth)
+                {
+                    return false;
+                }
+
+                stack[level] = pool[p].IndexRightOrValue;
+                p = pool[p].IndexLeft;
+                continue;
+            }
+
+            depth[pool[p].IndexRightOrValue] = (byte)level;
+            while (level >= 0 && stack[level] == -1)
+            {
+                level--;
+            }
+
+            if (level < 0)
+            {
+                return true;
+            }
+
+            p = stack[level];
+            stack[level] = -1;
+        }
+    }
+
+    /// <summary>
+    /// brotli's <c>BrotliCreateHuffmanTree</c>: the depths of a Huffman code of at most
+    /// <paramref name="treeLimit"/> bits over <paramref name="data"/>'s counts, the smallest counts raised
+    /// until it fits. <paramref name="tree"/> holds 2 * <paramref name="length"/> + 1 nodes.
+    /// </summary>
+    public static void CreateHuffmanTree(uint* data, int length, int treeLimit, HuffmanTree* tree, byte* depth)
+    {
+        var sentinel = new HuffmanTree(uint.MaxValue, -1, -1);
+        for (uint countLimit = 1; ; countLimit *= 2)
+        {
+            int n = 0;
+            for (int i = length; i != 0;)
+            {
+                --i;
+                if (data[i] != 0)
+                {
+                    uint count = Math.Max(data[i], countLimit);
+                    tree[n++] = new HuffmanTree(count, -1, (short)i);
+                }
+            }
+
+            if (n == 1)
+            {
+                // A single symbol.
+                depth[tree[0].IndexRightOrValue] = 1;
+                break;
+            }
+
+            Sort<ByCountThenValue>(tree, n);
+
+            // The sorted leaves, a sentinel, the parents in increasing order, a sentinel.
+            tree[n] = sentinel;
+            tree[n + 1] = sentinel;
+            int leaf = 0;
+            int parent = n + 1;
+            for (int k = n - 1; k != 0; --k)
+            {
+                int left;
+                int right;
+                if (tree[leaf].TotalCount <= tree[parent].TotalCount)
+                {
+                    left = leaf++;
+                }
+                else
+                {
+                    left = parent++;
+                }
+
+                if (tree[leaf].TotalCount <= tree[parent].TotalCount)
+                {
+                    right = leaf++;
+                }
+                else
+                {
+                    right = parent++;
+                }
+
+                int end = (2 * n) - k;
+                tree[end].TotalCount = tree[left].TotalCount + tree[right].TotalCount;
+                tree[end].IndexLeft = (short)left;
+                tree[end].IndexRightOrValue = (short)right;
+                tree[end + 1] = sentinel;
+            }
+
+            if (SetDepth((2 * n) - 1, tree, depth, treeLimit))
+            {
+                break;
+            }
+        }
+    }
+
+    private static void Reverse(byte* v, int start, int end)
+    {
+        --end;
+        while (start < end)
+        {
+            (v[start], v[end]) = (v[end], v[start]);
+            ++start;
+            --end;
+        }
+    }
+
+    private static void WriteHuffmanTreeRepetitions(byte previousValue, byte value, int repetitions, ref int treeSize, byte* tree, byte* extraBitsData)
+    {
+        if (previousValue != value)
+        {
+            tree[treeSize] = value;
+            extraBitsData[treeSize] = 0;
+            ++treeSize;
+            --repetitions;
+        }
+
+        if (repetitions == 7)
+        {
+            tree[treeSize] = value;
+            extraBitsData[treeSize] = 0;
+            ++treeSize;
+            --repetitions;
+        }
+
+        if (repetitions < 3)
+        {
+            for (int i = 0; i < repetitions; ++i)
+            {
+                tree[treeSize] = value;
+                extraBitsData[treeSize] = 0;
+                ++treeSize;
+            }
+
+            return;
+        }
+
+        int start = treeSize;
+        repetitions -= 3;
+        while (true)
+        {
+            tree[treeSize] = Prefix.RepeatPreviousCodeLength;
+            extraBitsData[treeSize] = (byte)(repetitions & 0x3);
+            ++treeSize;
+            repetitions >>= 2;
+            if (repetitions == 0)
+            {
+                break;
+            }
+
+            --repetitions;
+        }
+
+        Reverse(tree, start, treeSize);
+        Reverse(extraBitsData, start, treeSize);
+    }
+
+    private static void WriteHuffmanTreeRepetitionsZeros(int repetitions, ref int treeSize, byte* tree, byte* extraBitsData)
+    {
+        if (repetitions == 11)
+        {
+            tree[treeSize] = 0;
+            extraBitsData[treeSize] = 0;
+            ++treeSize;
+            --repetitions;
+        }
+
+        if (repetitions < 3)
+        {
+            for (int i = 0; i < repetitions; ++i)
+            {
+                tree[treeSize] = 0;
+                extraBitsData[treeSize] = 0;
+                ++treeSize;
+            }
+
+            return;
+        }
+
+        int start = treeSize;
+        repetitions -= 3;
+        while (true)
+        {
+            tree[treeSize] = Prefix.RepeatZeroCodeLength;
+            extraBitsData[treeSize] = (byte)(repetitions & 0x7);
+            ++treeSize;
+            repetitions >>= 3;
+            if (repetitions == 0)
+            {
+                break;
+            }
+
+            --repetitions;
+        }
+
+        Reverse(tree, start, treeSize);
+        Reverse(extraBitsData, start, treeSize);
+    }
+
+    /// <summary>
+    /// brotli's <c>BrotliOptimizeHuffmanCountsForRle</c>: counts adjusted so that the code's depths
+    /// compress better with the RLE of the code length code. <paramref name="goodForRle"/> is scratch of
+    /// <paramref name="length"/> bytes.
+    /// </summary>
+    public static void OptimizeHuffmanCountsForRle(int length, uint* counts, byte* goodForRle)
+    {
+        int nonzeroCount = 0;
+        const int StreakLimit = 1240;
+        for (int i = 0; i < length; i++)
+        {
+            if (counts[i] != 0)
+            {
+                ++nonzeroCount;
+            }
+        }
+
+        if (nonzeroCount < 16)
+        {
+            return;
+        }
+
+        while (length != 0 && counts[length - 1] == 0)
+        {
+            --length;
+        }
+
+        if (length == 0)
+        {
+            return;
+        }
+
+        {
+            int nonzeros = 0;
+            uint smallestNonzero = 1u << 30;
+            for (int i = 0; i < length; ++i)
+            {
+                if (counts[i] != 0)
+                {
+                    ++nonzeros;
+                    if (smallestNonzero > counts[i])
+                    {
+                        smallestNonzero = counts[i];
+                    }
+                }
+            }
+
+            if (nonzeros < 5)
+            {
+                return;
+            }
+
+            if (smallestNonzero < 4)
+            {
+                int zeros = length - nonzeros;
+                if (zeros < 6)
+                {
+                    for (int i = 1; i < length - 1; ++i)
+                    {
+                        if (counts[i - 1] != 0 && counts[i] == 0 && counts[i + 1] != 0)
+                        {
+                            counts[i] = 1;
+                        }
+                    }
+                }
+            }
+
+            if (nonzeros < 28)
+            {
+                return;
+            }
+        }
+
+        // The counts that RLE codes already cover: runs of 5 zeros or more, of 7 other values or more.
+        new Span<byte>(goodForRle, length).Clear();
+        {
+            uint symbol = counts[0];
+            int step = 0;
+            for (int i = 0; i <= length; ++i)
+            {
+                if (i == length || counts[i] != symbol)
+                {
+                    if ((symbol == 0 && step >= 5) || (symbol != 0 && step >= 7))
+                    {
+                        for (int k = 0; k < step; ++k)
+                        {
+                            goodForRle[i - k - 1] = 1;
+                        }
+                    }
+
+                    step = 1;
+                    if (i != length)
+                    {
+                        symbol = counts[i];
+                    }
+                }
+                else
+                {
+                    ++step;
+                }
+            }
+        }
+
+        // The counts replaced where that makes more RLE codes, in 24.8 fixed point: brotli's arithmetic
+        // with its widths: 32 bits for the products of counts, size_t for the rest, all unsigned.
+        nuint stride = 0;
+        nuint limit = (256u * (counts[0] + counts[1] + counts[2]) / 3) + 420;
+        nuint sum = 0;
+        for (int i = 0; i <= length; ++i)
+        {
+            if (i == length || goodForRle[i] != 0 || (i != 0 && goodForRle[i - 1] != 0) ||
+                ((nuint)(256u * counts[i]) - limit + StreakLimit) >= 2 * StreakLimit)
+            {
+                if (stride >= 4 || (stride >= 3 && sum == 0))
+                {
+                    // The stride ends: what it has, if it has 4 or more, collapsed to their average.
+                    nuint count = (sum + (stride / 2)) / stride;
+                    if (count == 0)
+                    {
+                        count = 1;
+                    }
+
+                    if (sum == 0)
+                    {
+                        // An all-zero stride stays zeros.
+                        count = 0;
+                    }
+
+                    for (nuint k = 0; k < stride; ++k)
+                    {
+                        counts[i - (int)k - 1] = (uint)count;
+                    }
+                }
+
+                stride = 0;
+                sum = 0;
+                if (i < length - 2)
+                {
+                    limit = (256u * (counts[i] + counts[i + 1] + counts[i + 2]) / 3) + 420;
+                }
+                else if (i < length)
+                {
+                    limit = 256u * counts[i];
+                }
+                else
+                {
+                    limit = 0;
+                }
+            }
+
+            ++stride;
+            if (i != length)
+            {
+                sum += counts[i];
+                if (stride >= 4)
+                {
+                    limit = ((256 * sum) + (stride / 2)) / stride;
+                }
+
+                if (stride == 4)
+                {
+                    limit += 120;
+                }
+            }
+        }
+    }
+
+    private static void DecideOverRleUse(byte* depth, int length, out bool useRleForNonZero, out bool useRleForZero)
+    {
+        int totalRepsZero = 0;
+        int totalRepsNonZero = 0;
+        int countRepsZero = 1;
+        int countRepsNonZero = 1;
+        for (int i = 0; i < length;)
+        {
+            byte value = depth[i];
+            int reps = 1;
+            for (int k = i + 1; k < length && depth[k] == value; ++k)
+            {
+                ++reps;
+            }
+
+            if (reps >= 3 && value == 0)
+            {
+                totalRepsZero += reps;
+                ++countRepsZero;
+            }
+
+            if (reps >= 4 && value != 0)
+            {
+                totalRepsNonZero += reps;
+                ++countRepsNonZero;
+            }
+
+            i += reps;
+        }
+
+        useRleForNonZero = totalRepsNonZero > countRepsNonZero * 2;
+        useRleForZero = totalRepsZero > countRepsZero * 2;
+    }
+
+    /// <summary>
+    /// brotli's <c>BrotliWriteHuffmanTree</c>: the depths as code length code symbols, with the repeat
+    /// codes 16 and 17 and their extra bits.
+    /// </summary>
+    public static void WriteHuffmanTree(byte* depth, int length, ref int treeSize, byte* tree, byte* extraBitsData)
+    {
+        byte previousValue = Prefix.InitialRepeatedCodeLength;
+        bool useRleForNonZero = false;
+        bool useRleForZero = false;
+
+        // Without the trailing zeros.
+        int newLength = length;
+        for (int i = 0; i < length; ++i)
+        {
+            if (depth[length - i - 1] == 0)
+            {
+                --newLength;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // RLE only pays for the longer codes.
+        if (length > 50)
+        {
+            DecideOverRleUse(depth, newLength, out useRleForNonZero, out useRleForZero);
+        }
+
+        for (int i = 0; i < newLength;)
+        {
+            byte value = depth[i];
+            int reps = 1;
+            if ((value != 0 && useRleForNonZero) || (value == 0 && useRleForZero))
+            {
+                for (int k = i + 1; k < newLength && depth[k] == value; ++k)
+                {
+                    ++reps;
+                }
+            }
+
+            if (value == 0)
+            {
+                WriteHuffmanTreeRepetitionsZeros(reps, ref treeSize, tree, extraBitsData);
+            }
+            else
+            {
+                WriteHuffmanTreeRepetitions(previousValue, value, reps, ref treeSize, tree, extraBitsData);
+                previousValue = value;
+            }
+
+            i += reps;
+        }
+    }
+
+    private static ReadOnlySpan<byte> ReversedNibbles => [0x00, 0x08, 0x04, 0x0C, 0x02, 0x0A, 0x06, 0x0E, 0x01, 0x09, 0x05, 0x0D, 0x03, 0x0B, 0x07, 0x0F];
+
+    /// <summary>The <paramref name="numBits"/> low bits of <paramref name="bits"/>, reversed.</summary>
+    private static ushort ReverseBits(int numBits, ushort bits)
+    {
+        ReadOnlySpan<byte> lut = ReversedNibbles;
+        nuint result = lut[bits & 0x0F];
+        for (int i = 4; i < numBits; i += 4)
+        {
+            result <<= 4;
+            bits = (ushort)(bits >> 4);
+            result |= lut[bits & 0x0F];
+        }
+
+        result >>= (0 - numBits) & 0x03;
+        return (ushort)result;
+    }
+
+    /// <summary>brotli's <c>BrotliConvertBitDepthsToSymbols</c>: the canonical codes of the depths, bit-reversed.</summary>
+    public static void ConvertBitDepthsToSymbols(byte* depth, int length, ushort* bits)
+    {
+        const int MaxHuffmanBits = 16;
+        ushort* blCount = stackalloc ushort[MaxHuffmanBits];
+        ushort* nextCode = stackalloc ushort[MaxHuffmanBits];
+        new Span<ushort>(blCount, MaxHuffmanBits).Clear();
+        for (int i = 0; i < length; ++i)
+        {
+            ++blCount[depth[i]];
+        }
+
+        blCount[0] = 0;
+        nextCode[0] = 0;
+        int code = 0;
+        for (int i = 1; i < MaxHuffmanBits; ++i)
+        {
+            code = (code + blCount[i - 1]) << 1;
+            nextCode[i] = (ushort)code;
+        }
+
+        for (int i = 0; i < length; ++i)
+        {
+            if (depth[i] != 0)
+            {
+                bits[i] = ReverseBits(depth[i], nextCode[depth[i]]++);
+            }
+        }
+    }
+}
