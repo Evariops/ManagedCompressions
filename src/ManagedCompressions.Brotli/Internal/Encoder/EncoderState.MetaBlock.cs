@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -216,6 +217,15 @@ internal sealed unsafe partial class EncoderState
     }
 
     /// <summary>
+    /// Asserts that a meta-block of <paramref name="bytes"/> written up to bit <paramref name="storageIx"/> lies
+    /// in the storage brotli sizes for it, twice the content and 503 bytes, with its last eight-byte store:
+    /// the storage is the encoder's, or the caller's destination when it has that room.
+    /// </summary>
+    [Conditional("DEBUG")]
+    internal static void AssertWithinStorage(int storageIx, nuint bytes) =>
+        Debug.Assert((nuint)(storageIx >> 3) + sizeof(ulong) <= (2 * bytes) + 503, "a meta-block within its storage");
+
+    /// <summary>
     /// brotli's <c>WriteMetaBlockInternal</c>: the meta-block of <paramref name="bytes"/> bytes from
     /// <paramref name="lastFlushPos"/>, compressed, or stored when that is smaller or the data looks random.
     /// </summary>
@@ -275,6 +285,10 @@ internal sealed unsafe partial class EncoderState
             _greedy.OptimizeHistograms(blockDist.AlphabetSizeLimit, mb);
             BitStream.StoreMetaBlock(_metaBlockStorage, data, wrappedLastFlushPos, (int)bytes, mask, _prevByte, _prevByte2, isLast, blockDist, literalContextMode, commands, numCommands, mb, ref storageIx, storage);
         }
+
+        // The compressed meta-block, which may be dropped below, written within the storage all the same:
+        // brotli's bound, twice the content and 503 bytes, holds it with its last eight-byte store.
+        AssertWithinStorage(storageIx, bytes);
 
         if (bytes + 4 < (uint)(storageIx >> 3))
         {

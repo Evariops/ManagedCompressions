@@ -320,6 +320,7 @@ internal sealed unsafe partial class EncoderState
                 ? ContextModeSigned
                 : ContextModeUtf8;
             WriteMetaBlockInternal(data, mask, _lastFlushPos, metablockSize, isLast, literalContextMode, commandsBase, ref storageIx, storage);
+            AssertWithinStorage(storageIx, metablockSize);
             _lastBytes = storage[storageIx >> 3];
             _lastBytesBits = storageIx & 7;
             _lastFlushPos = _inputPos;
@@ -426,6 +427,7 @@ internal sealed unsafe partial class EncoderState
             ExtendLastCommand(commands, ref bytes, ref wrappedLastProcessedPos);
         }
 
+        _ringBuffer.AssertBlock(wrappedLastProcessedPos, bytes);
         BackwardReferences.Create(ref hasher, bytes, wrappedLastProcessedPos, data, mask, _quality, _lgwin, _dist, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);
     }
 
@@ -444,6 +446,7 @@ internal sealed unsafe partial class EncoderState
             ExtendLastCommand(commands, ref bytes, ref wrappedLastProcessedPos);
         }
 
+        _ringBuffer.AssertBlock(wrappedLastProcessedPos, bytes);
         if (_quality == 10)
         {
             _zopfli!.CreateBackwardReferences(bytes, wrappedLastProcessedPos, data, mask, _dist, ref _h10, _distCache, ref _lastInsertLen, commands + _numCommands, ref _numCommands, ref _numLiterals);

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -126,4 +127,16 @@ internal sealed unsafe class RingBuffer
     /// its hashing reads.
     /// </summary>
     public bool FirstLap => Pos <= Mask;
+
+    /// <summary>
+    /// Asserts that the hashers, which read without a check, read a block of <paramref name="bytes"/> from
+    /// <paramref name="position"/> within the buffer: a match runs from a position of the window to the end of
+    /// the block at most, through the tail, which copies the window's start, and eight bytes at a time into
+    /// the slack after it. A first buffer, of the first write's size, holds the block whole.
+    /// </summary>
+    [Conditional("DEBUG")]
+    public void AssertBlock(uint position, uint bytes) =>
+        Debug.Assert(
+            _curSize < _totalSize ? position + (ulong)bytes <= _curSize : bytes <= _tailSize,
+            "a block the hashers read within the ring buffer");
 }

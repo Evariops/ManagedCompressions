@@ -304,6 +304,7 @@ public sealed unsafe class BrotliStreamEncoder
                 storage[1] = (byte)(_fastLastBytes >> 8);
                 int storageIx = _fastLastBytesBits;
                 fast.CompressFragment(nextIn, (int)blockSize, isLast, ref storageIx, storage);
+                EncoderState.AssertWithinStorage(storageIx, (nuint)blockSize);
                 nextIn += blockSize;
                 availableIn -= blockSize;
                 nuint outBytes = (nuint)(storageIx >> 3);
