@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -460,6 +461,7 @@ public sealed unsafe partial class BrotliDecompressor
                     }
 
                     byte* word = dictionary + Unsafe.Add(ref offsets, copyLength) + ((address & ((1 << shift) - 1)) * copyLength);
+                    Debug.Assert(word >= dictionary && word + copyLength <= dictionary + StaticDictionary.Data.Length, "a word lies in the static dictionary");
                     int length = Transforms.ApplyFast(op, word, copyLength, ref Unsafe.Add(ref transforms, transform));
                     if (length == 0 && distance <= 120)
                     {
@@ -500,6 +502,7 @@ public sealed unsafe partial class BrotliDecompressor
                 _s.DistRb[_distRbIndex & 3] = distance;
                 ++_distRbIndex;
                 remaining -= copyLength;
+                Debug.Assert(op - distance >= dst && op + copyLength <= opEnd, "a match is copied from the output, within it");
                 CopyMatch(op, distance, copyLength, opEnd);
                 op += copyLength;
             }
@@ -757,6 +760,7 @@ public sealed unsafe partial class BrotliDecompressor
         }
 
         byte* word = DictionaryData + offset;
+        Debug.Assert(offset >= 0 && offset + length <= StaticDictionary.Data.Length, "a word lies in the static dictionary");
         if (transform == Transforms.Identity)
         {
             if (length > remaining)
