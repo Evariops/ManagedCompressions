@@ -119,6 +119,44 @@ public sealed class StreamDecoderTests
         }
     }
 
+    /// <summary>
+    /// A metadata block can be the stream's last meta-block: "hello" uncompressed at window 16, then the
+    /// last one, metadata of no byte or of three, then bytes past the end, which the decoder must leave.
+    /// </summary>
+    [Theory]
+    [InlineData(new byte[] { 0x0D })]
+    [InlineData(new byte[] { 0x2D, 0x01, 0x61, 0x62, 0x63 })]
+    public void EndsAtALastMetadataBlock(byte[] last)
+    {
+        byte[] stream = [0x40, 0x00, 0x10, .. "hello"u8, .. last];
+        var native = NativeBrotli.Decompress([.. stream, 0xFF, 0xFF], 100);
+        Assert.Equal(1, native.Result);
+        Assert.Equal(stream.Length, native.Consumed);
+        Assert.Equal("hello"u8.ToArray(), native.Output);
+
+        foreach (int pieceSize in new[] { 1, 3, stream.Length + 2 })
+        {
+            byte[] source = [.. stream, 0xFF, 0xFF];
+            var decoder = new BrotliStreamDecoder();
+            var content = new MemoryStream();
+            byte[] buffer = new byte[64];
+            int position = 0;
+            OperationStatus status;
+            do
+            {
+                int piece = Math.Min(pieceSize, source.Length - position);
+                status = decoder.Decompress(source.AsSpan(position, piece), buffer, out int consumed, out int written);
+                content.Write(buffer, 0, written);
+                position += consumed;
+            }
+            while (status == OperationStatus.NeedMoreData && position < source.Length);
+
+            Assert.Equal(OperationStatus.Done, status);
+            Assert.Equal(stream.Length, position);
+            Assert.Equal("hello"u8.ToArray(), content.ToArray());
+        }
+    }
+
     [Fact]
     public void RefusesWhatTheOneShotDecoderRefuses()
     {
