@@ -7,10 +7,11 @@
   lz4 1.10.0 write, at every level, so the compression ratios are theirs. The tests check this.
 - **Faster where it counts.** Zstandard decompresses **1.3 to 1.5× faster** than native libzstd on arm64,
   and 1.0 to 1.2× on x64, where native libzstd has hand-written assembly. LZ4 decompresses 2 to 4 % faster
-  than native lz4 on arm64, and within 2 % of it on x64. On small records, compression is up to **1.5×
+  than native lz4 on arm64. On x64 it is within 2 % of it on large blocks, and on 64 KiB pages at its
+  speed or 10 to 14 % slower, depending on the process. On small records, compression is up to **1.5×
   faster** with Zstandard and up to **5.7×** with LZ4.
 - **At native speed elsewhere.** Zstandard compresses large inputs from 6 % slower to 10 % faster than
-  libzstd. LZ4 compresses 2 to 6 % slower at level 1, and up to 15 % slower at its high-compression levels.
+  libzstd. LZ4 compresses 3 to 6 % slower at level 1, and up to 15 % slower at its high-compression levels.
 - **No allocation per call.** A compressor or decompressor is created once and reused.
 
 The speeds are measured against [NativeCompressions](https://github.com/Cysharp/NativeCompressions),
@@ -52,14 +53,14 @@ zstd, NativeCompressions and .NET; 9; and 19, the highest before zstd's `--ultra
 
 | | Level | Native, MB/s | JIT, MB/s | JIT × | AOT, MB/s | AOT × |
 |:--|--:|--:|--:|--:|--:|--:|
-| **Decompression** | 1 | 2,109 | 2,151 | 1.02× | 2,132 | 1.01× |
-|  | 3 | 1,841 | 1,982 | 1.08× | 2,022 | **1.10×** |
-|  | 9 | 2,000 | 2,192 | **1.10×** | 2,206 | **1.11×** |
-|  | 19 | 1,840 | 1,992 | 1.08× | 2,058 | **1.12×** |
-| **Compression** | 1 | 691 | 703 | 1.02× | 698 | 1.01× |
-|  | 3 | 438 | 424 | 0.97× | 423 | 0.97× |
-|  | 9 | 112 | 106 | 0.94× | 111 | 1.00× |
-|  | 19 | 5.4 | 5.9 | 1.09× | 5.8 | 1.07× |
+| **Decompression** | 1 | 2,105 | 2,149 | 1.02× | 2,171 | 1.03× |
+|  | 3 | 1,835 | 1,982 | 1.08× | 2,022 | **1.10×** |
+|  | 9 | 1,989 | 2,176 | 1.09× | 2,200 | **1.11×** |
+|  | 19 | 1,830 | 1,988 | 1.09× | 2,032 | **1.10×** |
+| **Compression** | 1 | 690 | 709 | 1.03× | 696 | 1.01× |
+|  | 3 | 435 | 425 | 0.98× | 421 | 0.97× |
+|  | 9 | 112 | 109 | 0.97× | 112 | 1.03× |
+|  | 19 | 5.4 | 5.7 | 1.06× | 5.7 | 1.08× |
 
 ### LZ4
 
@@ -78,12 +79,12 @@ zstd, NativeCompressions and .NET; 9; and 19, the highest before zstd's `--ultra
 
 | | Level | Native, MB/s | JIT, MB/s | JIT × | AOT, MB/s | AOT × |
 |:--|--:|--:|--:|--:|--:|--:|
-| **Decompression** | 1 | 6,241 | 6,394 | 1.02× | 6,254 | 1.00× |
-|  | 9 | 5,967 | 6,057 | 1.02× | 5,922 | 0.99× |
-|  | 12 | 6,129 | 6,167 | 1.01× | 6,082 | 0.99× |
-| **Compression** | 1 | 1,000 | 952 | 0.95× | 955 | 0.96× |
-|  | 9 | 55 | 53 | 0.95× | 51 | 0.92× |
-|  | 12 | 18.4 | 17.1 | 0.93× | 16.5 | 0.89× |
+| **Decompression** | 1 | 6,265 | 6,407 | 1.02× | 6,276 | 1.00× |
+|  | 9 | 5,989 | 6,059 | 1.01× | 5,924 | 1.00× |
+|  | 12 | 6,161 | 6,168 | 1.00× | 6,097 | 0.99× |
+| **Compression** | 1 | 997 | 954 | 0.96× | 961 | 0.96× |
+|  | 9 | 56 | 53 | 0.95× | 51 | 0.91× |
+|  | 12 | 18.4 | 16.8 | 0.91× | 16.4 | 0.89× |
 
 .NET 11's own Zstandard (`ZstandardEncoder`, `ZstandardDecoder`) is the same libzstd. On arm64 it runs at
 NativeCompressions' speed: 0.98× to 1.02× of it, except for level 19's compression under the JIT (0.93×).
@@ -91,7 +92,7 @@ That exception is noise. Zstandard's level 19 and LZ4's level 12 take 11 to 45 s
 measured on three calls instead of ten, and at level 19 NativeCompressions' own time varied by 5 % from one
 job to the other (43.0 s, then 45.5 s) where .NET's and the managed code's varied by 1 to 2 %: read level
 19's compression row as on par. On x64, .NET's libzstd is slower than NativeCompressions': 0.82× to 1.03×
-of it. At level 19 there, NativeCompressions took 39.4 s, then 39.2 s, and .NET 39.9 s, then 38.2 s. The
+of it. At level 19 there, NativeCompressions took 39.2 s, then 39.7 s, and .NET 40.2 s, then 38.6 s. The
 full BenchmarkDotNet tables, with Brotli and GZip for scale, are in
 [`bench/results/arm64/benchmarkdotnet-silesia.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/arm64/benchmarkdotnet-silesia.md) and
 [`bench/results/x64/benchmarkdotnet-silesia.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/benchmarkdotnet-silesia.md).
@@ -157,24 +158,24 @@ with its context reused), on that machine. **Bold** means at least 10 % faster. 
 | Decompression | | 1 | 3 | 5 | 7 | 9 | 13 | 16 | 19 |
 |:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|
 | silesia.tar, one frame | arm64 | **1.29×** | **1.47×** | **1.48×** | **1.46×** | **1.44×** | **1.43×** | **1.39×** | **1.47×** |
-|  | x64 | 1.01× | 1.09× | **1.10×** | 1.09× | 1.09× | 1.08× | 1.07× | 1.09× |
+|  | x64 | 1.01× | 1.08× | **1.10×** | **1.10×** | 1.09× | 1.08× | 1.08× | 1.09× |
 | silesia.tar, 64 KiB pages | arm64 | **1.26×** | **1.36×** | **1.46×** | **1.42×** | **1.42×** | **1.40×** | **1.47×** | **1.48×** |
-|  | x64 | 1.02× | 1.05× | 1.08× | 1.06× | 1.07× | 1.06× | 1.07× | 1.08× |
+|  | x64 | 1.01× | 1.05× | 1.08× | 1.05× | 1.06× | 1.05× | 1.07× | 1.06× |
 | JSON records | arm64 | **1.49×** | **1.50×** | **1.51×** | **1.50×** | **1.51×** | **1.50×** | **1.48×** | **1.50×** |
-|  | x64 | **1.19×** | **1.12×** | **1.12×** | **1.12×** | **1.12×** | **1.11×** | **1.12×** | **1.13×** |
+|  | x64 | **1.19×** | **1.13×** | **1.13×** | **1.13×** | **1.13×** | **1.15×** | **1.14×** | **1.15×** |
 | JSON records + dictionary | arm64 | **1.44×** | **1.46×** | **1.49×** | **1.42×** | **1.42×** | **1.41×** | **1.53×** | **1.52×** |
-|  | x64 | **1.13×** | 1.04× | **1.16×** | **1.13×** | **1.12×** | **1.12×** | **1.16×** | **1.16×** |
+|  | x64 | **1.15×** | **1.12×** | **1.20×** | **1.14×** | **1.16×** | **1.14×** | **1.18×** | **1.20×** |
 
 | Compression | | 1 | 3 | 5 | 7 | 9 | 13 | 16 | 19 |
 |:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|
 | silesia.tar, one frame | arm64 | 1.00× | 1.01× | 0.96× | 0.96× | 0.98× | 0.97× | 1.01× | 1.08× |
-|  | x64 | 1.01× | 0.97× | 0.99× | 1.00× | 1.00× | 1.03× | 1.08× | 0.98× |
+|  | x64 | 1.02× | 0.97× | 0.99× | 1.01× | 1.00× | 1.01× | 1.02× | 1.07× |
 | silesia.tar, 64 KiB pages | arm64 | 1.01× | 1.01× | 0.96× | 0.96× | 0.95× | 1.04× | 1.00× | 0.98× |
-|  | x64 | 1.02× | 0.96× | 0.96× | 0.98× | 0.99× | 1.01× | 1.09× | **1.10×** |
+|  | x64 | 1.01× | 0.96× | 0.97× | 0.98× | 1.00× | 1.01× | **1.10×** | **1.10×** |
 | JSON records | arm64 | **1.29×** | **1.19×** | **1.12×** | 1.09× | **1.17×** | **1.24×** | **1.16×** | **1.14×** |
-|  | x64 | **1.28×** | **1.16×** | 1.06× | 1.08× | **1.18×** | 1.08× | **1.10×** | **1.10×** |
+|  | x64 | **1.32×** | **1.17×** | 1.07× | 1.07× | **1.17×** | **1.11×** | **1.12×** | **1.12×** |
 | JSON records + dictionary | arm64 | **1.31×** | **1.35×** | 0.97× | 0.93× | 0.93× | **1.39×** | **1.33×** | **1.31×** |
-|  | x64 | **1.43×** | **1.46×** | 0.97× | 1.00× | 0.99× | **1.21×** | **1.14×** | **1.13×** |
+|  | x64 | **1.44×** | **1.45×** | 0.99× | 0.99× | 1.02× | **1.22×** | **1.15×** | **1.15×** |
 
 Decompression is faster everywhere: 1.3 to 1.5× on arm64, 1.0 to 1.2× on x64. The native side is
 stronger on x64. NativeCompressions builds its win-x64 libzstd with GCC, which compiles zstd's
@@ -191,26 +192,32 @@ has a smaller fixed cost per frame.
 | silesia.tar, one block | arm64 | 1.03× | 1.04× | 1.03× | 1.04× | 1.04× | 1.03× |
 |  | x64 | 1.02× | 1.02× | 1.02× | 1.02× | 1.02× | 1.01× |
 | silesia.tar, 64 KiB pages | arm64 | 1.04× | 1.03× | 1.02× | 1.02× | 1.02× | 1.02× |
-|  | x64 | 1.00× | 0.98× | 0.99× | 0.99× | 0.99× | 0.99× |
+|  | x64 | 0.90× | 0.89× | 0.88× | 0.86× | 0.87× | 0.88× |
 | JSON records | arm64 | **1.10×** | **1.11×** | **1.10×** | **1.10×** | **1.10×** | 1.08× |
-|  | x64 | 1.06× | 1.05× | 1.04× | 1.03× | 1.04× | 1.04× |
+|  | x64 | 1.07× | 1.05× | 1.04× | 1.04× | 1.04× | 1.05× |
 
 | Compression | | 1 | 2 | 3 | 6 | 9 | 12 |
 |:--|:--|--:|--:|--:|--:|--:|--:|
 | silesia.tar, one block | arm64 | 0.96× | 0.92× | 1.00× | 0.93× | 0.88× | 1.00× |
-|  | x64 | 0.98× | 1.00× | 0.95× | 0.95× | 0.95× | 0.93× |
+|  | x64 | 0.97× | 0.99× | 0.96× | 0.96× | 0.95× | 0.93× |
 | silesia.tar, 64 KiB pages | arm64 | 0.95× | 0.92× | 0.95× | 0.92× | 0.87× | 0.86× |
-|  | x64 | 0.94× | 1.01× | 0.96× | 0.95× | 0.92× | 0.93× |
+|  | x64 | 0.94× | 1.02× | 0.97× | 0.96× | 0.92× | 0.93× |
 | JSON records | arm64 | **1.24×** | **5.66×** | **3.87×** | **3.88×** | **3.38×** | **1.51×** |
-|  | x64 | **1.16×** | **3.40×** | **2.20×** | **2.18×** | **1.72×** | 1.06× |
+|  | x64 | **1.16×** | **3.42×** | **2.20×** | **2.20×** | **1.73×** | 1.05× |
 
 lz4 clears its whole state before every block: 16 KiB for levels 1 and below, 256 KiB for levels 2 to 12.
 The managed compressor keeps its state from one block to the next, and numbers each block's positions
 past the last block's, so that whatever earlier blocks left reads exactly as a cleared entry. The bytes
 are unchanged, and small blocks skip that cost. The gain is smaller on x64, where native lz4 compresses
-these records up to 1.7× as fast as on arm64, and the managed code at the same speed.
+these records up to 1.7× as fast as on arm64, and the managed code at 0.72 to 1.05 times its arm64 speed.
 On large blocks the high-compression levels are slower, by up to 14 % on arm64 and 8 % on x64: their
 search through the hash chains is bound by memory latency.
+
+On x64, the decompression of the 64 KiB pages depends on the process. A process that decodes only the
+pages, or that ran levels 1, 3 and 9 alone before them, runs at the native speed (0.98× to 1.01×); three
+of the four that ran every level of silesia.tar whole first, as the table does, ran 10 to 14 % slower,
+and the table shows one of those
+([`bench/results/x64/levels.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/levels.md)).
 
 ### Compression ratios
 
@@ -253,7 +260,8 @@ constructors throw `PlatformNotSupportedException`. WebAssembly has not been tri
   processor (`--core 2`), as macOS keeps it on a performance core.
 - **.NET 10:** the figures are .NET 11's, and .NET 10 runs the managed codecs at nearly the same speed.
   On the Ryzen 9 7950X, at levels 1, 3 and 9 of every level-by-level workload, its speed against the
-  native side is 0.99 of .NET 11's on average, and one case is more than 5 % slower, by 10 %
+  native side is 0.99 of .NET 11's on average, and two cases are more than 5 % slower, by 7 %, as much as
+  they vary from one process to the next on one runtime
   ([`bench/results/x64/dotnet10`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/dotnet10/README.md)).
   The arm64 machine has yet to measure it.
 - **Native side:** NativeCompressions.Zstandard 1.3.0 and NativeCompressions.LZ4 1.2.0, which ship zstd
@@ -265,9 +273,9 @@ constructors throw `PlatformNotSupportedException`. WebAssembly has not been tri
   shows. On x64, NativeCompressions' libraries are built with GCC 16.2 (MSYS2). That libzstd has zstd's
   assembly Huffman decoder and its BMI2 code, which only exist for x86-64.
 - **Level-by-level tables:** `bench/ManagedCompressions.Bench` times the native and the managed side in
-  alternating rounds and reports each one's median, after a warm-up that gives the JIT its final, profiled
-  code. Its first round checks that the managed output matches the native output byte for byte, and that
-  everything decodes back. The raw results are in
+  alternating rounds and reports each one's median (and on x64 the managed speedup taken round by round),
+  after a warm-up that gives the JIT its final, profiled code. Its first round checks that the managed
+  output matches the native output byte for byte, and that everything decodes back. The raw results are in
   [`bench/results/arm64/levels.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/arm64/levels.md) and
   [`bench/results/x64/levels.md`](https://github.com/Evariops/ManagedCompressions/blob/main/bench/results/x64/levels.md).
 - **At-a-glance tables:** `bench/ManagedCompressions.Benchmarks` runs BenchmarkDotNet the way
