@@ -194,16 +194,20 @@ internal static unsafe class Candidates
     /// window, 22, and <c>BrotliDecoder.TryDecompress</c> (<c>BrotliDecoderDecompress</c>). Each creates
     /// and frees brotli's state, as these calls always do.
     /// </summary>
+    /// <summary>The highest quality ManagedCompressions.Brotli compresses at, so far.</summary>
+    private const int BrotliCompressorQualities = 1;
+
     private static List<Candidate> Brotli(int quality)
     {
         var decompressor = new BrotliDecompressor();
+        BrotliCompressor? compressor = quality <= BrotliCompressorQualities ? new BrotliCompressor(quality) : null;
         return
         [
             new("native", "brotli 1.1.1 (System.IO.Compression)", true,
                 (s, d) => System.IO.Compression.BrotliEncoder.TryCompress(s, d, out int w, quality, 22) ? w : -1,
                 (s, d) => System.IO.Compression.BrotliDecoder.TryDecompress(s, d, out int w) ? w : -1),
             new("managed", $"ManagedCompressions.Brotli ({Runtime})", false,
-                null,
+                compressor is null ? null : (s, d) => compressor.Compress(s, d, out _, out int w) == System.Buffers.OperationStatus.Done ? w : -1,
                 (s, d) => decompressor.Decompress(s, d, out _, out int w) == System.Buffers.OperationStatus.Done ? w : -1),
         ];
     }
