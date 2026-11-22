@@ -73,7 +73,7 @@ internal static unsafe partial class BitStream
 
     /// <summary>brotli's <c>StoreCommandExtra</c>: the extra bits of the insert and copy lengths.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void StoreCommandExtra(Command* cmd, ref int storageIx, byte* storage)
+    private static void StoreCommandExtra(Command* cmd, ref BitSink sink)
     {
         uint copyLenCode = Commands.CopyLenCode(cmd);
         uint insCode = Commands.GetInsertLengthCode(cmd->InsertLen);
@@ -82,7 +82,7 @@ internal static unsafe partial class BitStream
         ulong insExtraVal = cmd->InsertLen - Commands.GetInsertBase(insCode);
         ulong copyExtraVal = copyLenCode - Commands.GetCopyBase(copyCode);
         ulong bits = (copyExtraVal << (int)insNumExtra) | insExtraVal;
-        BitWriter.Write((int)(insNumExtra + Commands.GetCopyExtra(copyCode)), bits, ref storageIx, storage);
+        sink.Write((int)(insNumExtra + Commands.GetCopyExtra(copyCode)), bits);
     }
 
     /// <summary>
@@ -391,19 +391,19 @@ internal static unsafe partial class BitStream
     }
 
     /// <summary>brotli's <c>StoreBlockSwitch</c>.</summary>
-    private static void StoreBlockSwitch(ref BlockEncoder code, uint blockLen, byte blockType, bool isFirstBlock, ref int storageIx, byte* storage)
+    private static void StoreBlockSwitch(ref BlockEncoder code, uint blockLen, byte blockType, bool isFirstBlock, ref BitSink sink)
     {
         nuint typeCode = code.NextBlockTypeCode(blockType);
         if (!isFirstBlock)
         {
-            BitWriter.Write(code.TypeDepths[typeCode], code.TypeBits[typeCode], ref storageIx, storage);
+            sink.Write(code.TypeDepths[typeCode], code.TypeBits[typeCode]);
         }
 
         int lenCode = BlockLengthPrefixCode(blockLen);
         int lenNumExtra = Prefix.BlockLengthBits[lenCode];
         uint lenExtra = blockLen - (uint)Prefix.BlockLengthOffset[lenCode];
-        BitWriter.Write(code.LengthDepths[lenCode], code.LengthBits[lenCode], ref storageIx, storage);
-        BitWriter.Write(lenNumExtra, lenExtra, ref storageIx, storage);
+        sink.Write(code.LengthDepths[lenCode], code.LengthBits[lenCode]);
+        sink.Write(lenNumExtra, lenExtra);
     }
 
     /// <summary>brotli's <c>BuildAndStoreBlockSplitCode</c>: the codes of the block types and lengths, and the first block's length.</summary>
@@ -435,7 +435,9 @@ internal static unsafe partial class BitStream
         {
             BuildAndStoreHuffmanTree(typeHisto, (int)numTypes + 2, (int)numTypes + 2, tree, self.TypeDepths, self.TypeBits, ref storageIx, storage);
             BuildAndStoreHuffmanTree(lengthHisto, Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, tree, self.LengthDepths, self.LengthBits, ref storageIx, storage);
-            StoreBlockSwitch(ref self, self.BlockLengths[0], self.BlockTypes[0], true, ref storageIx, storage);
+            var sink = new BitSink(storageIx, storage);
+            StoreBlockSwitch(ref self, self.BlockLengths[0], self.BlockTypes[0], true, ref sink);
+            storageIx = sink.Finish();
         }
     }
 
@@ -455,7 +457,7 @@ internal static unsafe partial class BitStream
 
     /// <summary>brotli's <c>StoreSymbol</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void StoreSymbol(ref BlockEncoder self, nuint symbol, ref int storageIx, byte* storage)
+    private static void StoreSymbol(ref BlockEncoder self, nuint symbol, ref BitSink sink)
     {
         if (self.BlockLen == 0)
         {
@@ -464,17 +466,17 @@ internal static unsafe partial class BitStream
             byte blockType = self.BlockTypes[blockIx];
             self.BlockLen = blockLen;
             self.EntropyIx = blockType * self.HistogramLength;
-            StoreBlockSwitch(ref self, blockLen, blockType, false, ref storageIx, storage);
+            StoreBlockSwitch(ref self, blockLen, blockType, false, ref sink);
         }
 
         --self.BlockLen;
         nuint ix = self.EntropyIx + symbol;
-        BitWriter.Write(self.Depths[ix], self.Bits[ix], ref storageIx, storage);
+        sink.Write(self.Depths[ix], self.Bits[ix]);
     }
 
     /// <summary>brotli's <c>StoreSymbolWithContext</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void StoreSymbolWithContext(ref BlockEncoder self, nuint symbol, nuint context, uint* contextMap, ref int storageIx, byte* storage, int contextBits)
+    private static void StoreSymbolWithContext(ref BlockEncoder self, nuint symbol, nuint context, uint* contextMap, ref BitSink sink, int contextBits)
     {
         if (self.BlockLen == 0)
         {
@@ -483,16 +485,17 @@ internal static unsafe partial class BitStream
             byte blockType = self.BlockTypes[blockIx];
             self.BlockLen = blockLen;
             self.EntropyIx = (nuint)blockType << contextBits;
-            StoreBlockSwitch(ref self, blockLen, blockType, false, ref storageIx, storage);
+            StoreBlockSwitch(ref self, blockLen, blockType, false, ref sink);
         }
 
         --self.BlockLen;
         nuint histoIx = contextMap[self.EntropyIx + context];
         nuint ix = (histoIx * self.HistogramLength) + symbol;
-        BitWriter.Write(self.Depths[ix], self.Bits[ix], ref storageIx, storage);
+        sink.Write(self.Depths[ix], self.Bits[ix]);
     }
 
     /// <summary>brotli's <c>BrotliStoreMetaBlock</c>: a meta-block with its block splits and context maps.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void StoreMetaBlock(MetaBlockStorage arena, byte* input, nuint startPos, int length, nuint mask, byte prevByte, byte prevByte2, bool isLast, in DistanceParams dist, int literalContextMode, Command* commands, nuint numCommands, MetaBlockSplit mb, ref int storageIx, byte* storage)
     {
         nuint pos = startPos;
@@ -539,16 +542,17 @@ internal static unsafe partial class BitStream
         BuildAndStoreEntropyCodes(ref commandEnc, arena, 1, mb.CommandHistograms, mb.CommandHistogramsSize, Prefix.NumCommandSymbols, tree, ref storageIx, storage);
         BuildAndStoreEntropyCodes(ref distanceEnc, arena, 2, mb.DistanceHistograms, mb.DistanceHistogramsSize, numDistanceSymbols, tree, ref storageIx, storage);
 
+        var sink = new BitSink(storageIx, storage);
         for (nuint i = 0; i < numCommands; ++i)
         {
             Command* cmd = commands + i;
-            StoreSymbol(ref commandEnc, cmd->CmdPrefix, ref storageIx, storage);
-            StoreCommandExtra(cmd, ref storageIx, storage);
+            StoreSymbol(ref commandEnc, cmd->CmdPrefix, ref sink);
+            StoreCommandExtra(cmd, ref sink);
             if (mb.LiteralContextMapSize == 0)
             {
                 for (nuint j = cmd->InsertLen; j != 0; --j)
                 {
-                    StoreSymbol(ref literalEnc, input[pos & mask], ref storageIx, storage);
+                    StoreSymbol(ref literalEnc, input[pos & mask], ref sink);
                     ++pos;
                 }
             }
@@ -558,7 +562,7 @@ internal static unsafe partial class BitStream
                 {
                     nuint context = (nuint)(literalContextLut[prevByte] | literalContextLut[256 + prevByte2]);
                     byte literal = input[pos & mask];
-                    StoreSymbolWithContext(ref literalEnc, literal, context, mb.LiteralContextMap, ref storageIx, storage, Prefix.LiteralContextBits);
+                    StoreSymbolWithContext(ref literalEnc, literal, context, mb.LiteralContextMap, ref sink, Prefix.LiteralContextBits);
                     prevByte2 = prevByte;
                     prevByte = literal;
                     ++pos;
@@ -578,19 +582,20 @@ internal static unsafe partial class BitStream
                     ulong distExtra = cmd->DistExtra;
                     if (mb.DistanceContextMapSize == 0)
                     {
-                        StoreSymbol(ref distanceEnc, distCode, ref storageIx, storage);
+                        StoreSymbol(ref distanceEnc, distCode, ref sink);
                     }
                     else
                     {
                         nuint context = Commands.DistanceContext(cmd);
-                        StoreSymbolWithContext(ref distanceEnc, distCode, context, mb.DistanceContextMap, ref storageIx, storage, Prefix.DistanceContextBits);
+                        StoreSymbolWithContext(ref distanceEnc, distCode, context, mb.DistanceContextMap, ref sink, Prefix.DistanceContextBits);
                     }
 
-                    BitWriter.Write(distNumExtra, distExtra, ref storageIx, storage);
+                    sink.Write(distNumExtra, distExtra);
                 }
             }
         }
 
+        storageIx = sink.Finish();
         if (isLast)
         {
             BitWriter.JumpToByteBoundary(ref storageIx, storage);
@@ -621,19 +626,20 @@ internal static unsafe partial class BitStream
     }
 
     /// <summary>brotli's <c>StoreDataWithHuffmanCodes</c>: the commands, literals and distances, a code each.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void StoreDataWithHuffmanCodes(byte* input, nuint startPos, nuint mask, Command* commands, nuint numCommands, byte* litDepth, ushort* litBits, byte* cmdDepth, ushort* cmdBits, byte* distDepth, ushort* distBits, ref int storageIx, byte* storage)
     {
         nuint pos = startPos;
+        var sink = new BitSink(storageIx, storage);
         for (nuint i = 0; i < numCommands; ++i)
         {
             Command* cmd = commands + i;
             nuint cmdCode = cmd->CmdPrefix;
-            BitWriter.Write(cmdDepth[cmdCode], cmdBits[cmdCode], ref storageIx, storage);
-            StoreCommandExtra(cmd, ref storageIx, storage);
+            sink.Write(cmdDepth[cmdCode], cmdBits[cmdCode]);
+            StoreCommandExtra(cmd, ref sink);
             for (nuint j = cmd->InsertLen; j != 0; --j)
             {
-                byte literal = input[pos & mask];
-                BitWriter.Write(litDepth[literal], litBits[literal], ref storageIx, storage);
+                BitWriter.WriteLiteral(ref sink, input[pos & mask], litDepth, litBits);
                 ++pos;
             }
 
@@ -644,10 +650,12 @@ internal static unsafe partial class BitStream
                 nuint distCode = (nuint)(cmd->DistPrefix & 0x3FF);
                 int distNumExtra = cmd->DistPrefix >> 10;
                 uint distExtra = cmd->DistExtra;
-                BitWriter.Write(distDepth[distCode], distBits[distCode], ref storageIx, storage);
-                BitWriter.Write(distNumExtra, distExtra, ref storageIx, storage);
+                sink.Write(distDepth[distCode], distBits[distCode]);
+                sink.Write(distNumExtra, distExtra);
             }
         }
+
+        storageIx = sink.Finish();
     }
 
     /// <summary>brotli's <c>BrotliStoreMetaBlockTrivial</c>: quality 3, a code a category.</summary>

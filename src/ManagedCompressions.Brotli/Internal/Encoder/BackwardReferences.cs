@@ -57,7 +57,7 @@ internal static unsafe class BackwardReferences
     /// <paramref name="commands"/>; the literals past the last copy are left in <paramref name="lastInsertLen"/>.
     /// </summary>
     public static void Create<THasher>(
-        ref THasher hasher,
+        ref THasher hasherRef,
         nuint numBytes,
         nuint position,
         byte* ringBuffer,
@@ -69,9 +69,12 @@ internal static unsafe class BackwardReferences
         ref nuint lastInsertLen,
         Command* commands,
         ref nuint numCommands,
-        ref nuint numLiterals)
+        ref nuint numLiteralsRef)
         where THasher : struct, IHasher
     {
+        // The hasher and the count in locals, which the JIT keeps in registers.
+        THasher hasher = hasherRef;
+        nuint numLiterals = numLiteralsRef;
         nuint maxBackwardLimit = ((nuint)1 << lgwin) - Prefix.WindowGap;
         Command* origCommands = commands;
         nuint insertLength = lastInsertLen;
@@ -193,5 +196,7 @@ internal static unsafe class BackwardReferences
         insertLength += posEnd - position;
         lastInsertLen = insertLength;
         numCommands += (nuint)(commands - origCommands);
+        numLiteralsRef = numLiterals;
+        hasherRef = hasher;
     }
 }
