@@ -106,14 +106,7 @@ public sealed partial class BrotliDecompressor
     private int _distContextMapSlice;
 
     /// <summary>The code of each of the 64 literal contexts of the current block type: offsets in the literal group's tables.</summary>
-    private ContextTreeArray _contextTrees;
-
-    /// <summary>The 64 codes of <see cref="_contextTrees"/>, inline in the decoder: the loop reaches them from <c>this</c>, without a register of their own.</summary>
-    [InlineArray(1 << Prefix.LiteralContextBits)]
-    private struct ContextTreeArray
-    {
-        private int _element;
-    }
+    private readonly int[] _contextTrees = new int[1 << Prefix.LiteralContextBits];
 
     private BrotliError DecodeCompressedMetaBlock(ReadOnlySpan<byte> src, Span<byte> dst)
     {
@@ -141,48 +134,20 @@ public sealed partial class BrotliDecompressor
         return (BrotliError)result;
     }
 
+    /// <summary>
+    /// The commands of the meta-block from <paramref name="resume"/>. Only the bit reader and the output
+    /// position live in locals: the rest of the state stays in the decoder's fields, read where a command,
+    /// a run of literals or a distance needs it, so that the literal loops keep their values in registers.
+    /// </summary>
     private int Commands<TMode, TRoot>(ReadOnlySpan<byte> src, Span<byte> dst, int resume)
         where TMode : struct, IMode
         where TRoot : struct, IRoot
     {
         bool careful = typeof(TMode) == typeof(CarefulMode);
-
-        // The bit reader.
         ulong bits = _br.Bits;
         int count = _br.Count;
         int next = _br.Next;
-        int end = _br.End;
-        int guard = end - FastInputSlack;
-
-        // The output, and the meta-block's counters.
         int op = _pos;
-        int remaining = _metaBlockRemaining;
-        int insert = _insertRemaining;
-        int blockLength0 = _s.BlockLength[0];
-        int blockLength1 = _s.BlockLength[1];
-        int blockLength2 = _s.BlockLength[2];
-
-        // The command.
-        int copyLength = _copyLength;
-        int distanceCode = _distanceCode;
-        int distanceContext = _distanceContext;
-        uint[] commandTables = _commandGroup.Codes;
-        int commandTree = _commandTree;
-        int distContextMapSlice = _distContextMapSlice;
-
-        // The literals.
-        bool trivial = _trivialLiteralContext;
-        uint[] literalTables = _literalGroup.Codes;
-        int literalTree = _literalTree;
-        // The context lookup of the block type's mode: an offset into the table of the four modes, a constant.
-        ReadOnlySpan<byte> contextLookup = Context.Lookup;
-        int lut = _contextLookup;
-
-        ReadOnlySpan<ulong> commandCodes = Prefix.CommandCodes;
-        ReadOnlySpan<byte> sizeBits = StaticDictionary.SizeBitsByLength;
-        ReadOnlySpan<int> offsets = StaticDictionary.OffsetsByLength;
-        Transforms.Info[] transforms = Transforms.Infos;
-        ReadOnlySpan<byte> dictionary = StaticDictionary.Data;
         int result;
 
         if (resume == AtLiterals)
@@ -191,13 +156,13 @@ public sealed partial class BrotliDecompressor
         }
 
     CommandBegin:
-        if (!careful && next > guard)
+        if (!careful && next > src.Length - FastInputSlack)
         {
             _resume = AtCommandBegin;
             goto Suspend;
         }
 
-        if (blockLength1 == 0)
+        if (_s.BlockLength[1] == 0)
         {
             _br.Bits = bits;
             _br.Count = count;
@@ -211,9 +176,8 @@ public sealed partial class BrotliDecompressor
                 goto Fail;
             }
 
-            blockLength1 = _s.BlockLength[1];
-            commandTree = _commandGroup.Trees[_s.BlockTypeRb[3]];
-            if (careful && Overrun(next, end, count))
+            _commandTree = _commandGroup.Trees[_s.BlockTypeRb[3]];
+            if (careful && Overrun(next, src.Length, count))
             {
                 goto Truncated;
             }
@@ -224,51 +188,52 @@ public sealed partial class BrotliDecompressor
         {
             if (count < Huffman.MaxCodeLength)
             {
-                Refill<TMode>(src, ref bits, ref count, ref next, end);
+                Refill<TMode>(src, ref bits, ref count, ref next);
             }
 
-            int command = DecodeSymbol(commandTables, commandTree, ref bits, ref count, CommandRootBits);
-            ulong code = commandCodes[command];
+            int command = DecodeSymbol(_commandGroup.Codes, _commandTree, ref bits, ref count, CommandRootBits);
+            ulong code = Prefix.CommandCodes[command];
             int insertExtraBits = (int)(code & 0xFF);
             int copyExtraBits = (int)((code >> 8) & 0xFF);
-            distanceCode = (sbyte)(byte)(code >> 16);
-            distanceContext = (int)((code >> 24) & 0xFF);
-            insert = (int)((code >> 32) & 0xFFFF);
-            copyLength = (int)(code >> 48);
             if (count < insertExtraBits + copyExtraBits)
             {
-                Refill<TMode>(src, ref bits, ref count, ref next, end);
+                Refill<TMode>(src, ref bits, ref count, ref next);
             }
 
-            insert += (int)(bits & ((1UL << insertExtraBits) - 1));
+            int insert = (int)((code >> 32) & 0xFFFF) + (int)(bits & ((1UL << insertExtraBits) - 1));
             bits >>= insertExtraBits;
-            copyLength += (int)(bits & ((1UL << copyExtraBits) - 1));
+            _copyLength = (int)(code >> 48) + (int)(bits & ((1UL << copyExtraBits) - 1));
             bits >>= copyExtraBits;
             count -= insertExtraBits + copyExtraBits;
-            blockLength1--;
-            if (careful && Overrun(next, end, count))
+            _distanceCode = (sbyte)(byte)(code >> 16);
+            _distanceContext = (int)((code >> 24) & 0xFF);
+            _s.BlockLength[1]--;
+            if (careful && Overrun(next, src.Length, count))
             {
                 goto Truncated;
             }
-        }
 
-        if (insert == 0)
-        {
-            goto Distance;
-        }
+            if (insert == 0)
+            {
+                goto Distance;
+            }
 
-        if (insert > remaining)
-        {
-            // brotli inserts the literals in its ring buffer, then refuses the meta-block for its length.
-            result = (int)BrotliError.BlockLength;
-            goto Fail;
-        }
+            if (insert > _metaBlockRemaining)
+            {
+                // brotli inserts the literals in its ring buffer, then refuses the meta-block for its length.
+                _insertRemaining = insert;
+                result = (int)BrotliError.BlockLength;
+                goto Fail;
+            }
 
-        remaining -= insert;
+            _metaBlockRemaining -= insert;
+            _insertRemaining = insert;
+        }
 
     Literals:
         while (true)
         {
+            int blockLength0 = _s.BlockLength[0];
             if (blockLength0 == 0)
             {
                 goto LiteralBlockSwitch;
@@ -276,10 +241,11 @@ public sealed partial class BrotliDecompressor
 
             // The literals before the next block switch or the end of the command; in the fast loop,
             // no more than the input left can hold at 15 bits each.
+            int insert = _insertRemaining;
             int n = insert < blockLength0 ? insert : blockLength0;
             if (!careful)
             {
-                long margin = guard - next;
+                long margin = src.Length - FastInputSlack - (long)next;
                 long safe = margin * 8 / Huffman.MaxCodeLength;
                 if (safe < n)
                 {
@@ -293,37 +259,42 @@ public sealed partial class BrotliDecompressor
                 }
             }
 
-            insert -= n;
-            blockLength0 -= n;
-            if (trivial)
+            _insertRemaining = insert - n;
+            _s.BlockLength[0] = blockLength0 - n;
+            uint[] literalTables = _literalGroup.Codes;
+
+            // The run's output, which shrinks as the literals are written: no position nor count to keep, and
+            // its bounds, once checked, hold for every write.
+            Span<byte> run = dst.Slice(op, n);
+            if (_trivialLiteralContext)
             {
+                int tree = _literalTree;
                 if (!careful)
                 {
                     // Three literals of at most 15 bits each per refill of at least 56.
-                    for (; n >= 3; n -= 3)
+                    while (run.Length >= 3)
                     {
                         if (count < 3 * Huffman.MaxCodeLength)
                         {
-                            Refill<TMode>(src, ref bits, ref count, ref next, end);
+                            Refill<TMode>(src, ref bits, ref count, ref next);
                         }
 
-                        Span<byte> three = dst.Slice(op, 3);
-                        three[0] = (byte)DecodeSymbol(literalTables, literalTree, ref bits, ref count, TRoot.Bits);
-                        three[1] = (byte)DecodeSymbol(literalTables, literalTree, ref bits, ref count, TRoot.Bits);
-                        three[2] = (byte)DecodeSymbol(literalTables, literalTree, ref bits, ref count, TRoot.Bits);
-                        op += 3;
+                        run[0] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
+                        run[1] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
+                        run[2] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
+                        run = run.Slice(3);
                     }
                 }
 
-                for (; n != 0; n--)
+                for (int i = 0; i < run.Length; i++)
                 {
                     if (count < Huffman.MaxCodeLength)
                     {
-                        Refill<TMode>(src, ref bits, ref count, ref next, end);
+                        Refill<TMode>(src, ref bits, ref count, ref next);
                     }
 
-                    dst[op++] = (byte)DecodeSymbol(literalTables, literalTree, ref bits, ref count, TRoot.Bits);
-                    if (careful && Overrun(next, end, count))
+                    run[i] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
+                    if (careful && Overrun(next, src.Length, count))
                     {
                         goto Truncated;
                     }
@@ -331,61 +302,67 @@ public sealed partial class BrotliDecompressor
             }
             else
             {
+                // The context lookup of the block type's mode: an offset into the constant table of the four modes,
+                // read straight from its address each time rather than kept in a register.
+                int lut = _contextLookup;
+                int[] contextTrees = _contextTrees;
                 byte p1 = op > 0 ? dst[op - 1] : (byte)0;
                 byte p2 = op > 1 ? dst[op - 2] : (byte)0;
                 if (!careful)
                 {
-                    for (; n >= 3; n -= 3)
+                    while (run.Length >= 3)
                     {
                         if (count < 3 * Huffman.MaxCodeLength)
                         {
-                            Refill<TMode>(src, ref bits, ref count, ref next, end);
+                            Refill<TMode>(src, ref bits, ref count, ref next);
                         }
 
-                        Span<byte> three = dst.Slice(op, 3);
-                        p2 = (byte)DecodeSymbol(literalTables, _contextTrees[(contextLookup[(lut + p1) & 0x7FF] | contextLookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
-                        three[0] = p2;
-                        p1 = (byte)DecodeSymbol(literalTables, _contextTrees[(contextLookup[(lut + p2) & 0x7FF] | contextLookup[(lut + 256 + p1) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
-                        three[1] = p1;
-                        p2 = (byte)DecodeSymbol(literalTables, _contextTrees[(contextLookup[(lut + p1) & 0x7FF] | contextLookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
-                        three[2] = p2;
-                        op += 3;
+                        p2 = (byte)DecodeSymbol(literalTables, contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
+                        run[0] = p2;
+                        p1 = (byte)DecodeSymbol(literalTables, contextTrees[(Context.Lookup[(lut + p2) & 0x7FF] | Context.Lookup[(lut + 256 + p1) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
+                        run[1] = p1;
+                        p2 = (byte)DecodeSymbol(literalTables, contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
+                        run[2] = p2;
+                        run = run.Slice(3);
                         (p1, p2) = (p2, p1);
                     }
                 }
 
-                for (; n != 0; n--)
+                for (int i = 0; i < run.Length; i++)
                 {
                     if (count < Huffman.MaxCodeLength)
                     {
-                        Refill<TMode>(src, ref bits, ref count, ref next, end);
+                        Refill<TMode>(src, ref bits, ref count, ref next);
                     }
 
-                    int tree = _contextTrees[(contextLookup[(lut + p1) & 0x7FF] | contextLookup[(lut + 256 + p2) & 0x7FF]) & 63];
+                    int tree = contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63];
                     p2 = p1;
                     p1 = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
-                    dst[op++] = p1;
-                    if (careful && Overrun(next, end, count))
+                    run[i] = p1;
+                    if (careful && Overrun(next, src.Length, count))
                     {
                         goto Truncated;
                     }
                 }
             }
 
-            if (insert == 0)
+            op += n;
+
+            if (_insertRemaining == 0)
             {
                 break;
             }
         }
 
-        if (remaining <= 0)
+        if (_metaBlockRemaining <= 0)
         {
             goto MetaBlockDone;
         }
 
     Distance:
         int distance;
-        if (distanceCode >= 0)
+        int distanceContext = _distanceContext;
+        if (_distanceCode >= 0)
         {
             // The implicit distance of codes 0 to 127: the last one, which is not pushed again.
             distanceContext = 1;
@@ -394,7 +371,7 @@ public sealed partial class BrotliDecompressor
         }
         else
         {
-            if (blockLength2 == 0)
+            if (_s.BlockLength[2] == 0)
             {
                 _br.Bits = bits;
                 _br.Count = count;
@@ -408,17 +385,16 @@ public sealed partial class BrotliDecompressor
                     goto Fail;
                 }
 
-                blockLength2 = _s.BlockLength[2];
-                distContextMapSlice = _s.BlockTypeRb[5] << Prefix.DistanceContextBits;
+                _distContextMapSlice = _s.BlockTypeRb[5] << Prefix.DistanceContextBits;
             }
 
             if (count < Huffman.MaxCodeLength + Prefix.MaxDistanceBits)
             {
-                Refill<TMode>(src, ref bits, ref count, ref next, end);
+                Refill<TMode>(src, ref bits, ref count, ref next);
             }
 
-            int code = DecodeSymbol(_distanceGroup.Codes, _distanceGroup.Trees[_distContextMap[distContextMapSlice + distanceContext]], ref bits, ref count, DistanceRootBits);
-            blockLength2--;
+            int code = DecodeSymbol(_distanceGroup.Codes, _distanceGroup.Trees[_distContextMap[_distContextMapSlice + distanceContext]], ref bits, ref count, DistanceRootBits);
+            _s.BlockLength[2]--;
             distanceContext = 0;
             if ((code & ~0xF) == 0)
             {
@@ -432,13 +408,17 @@ public sealed partial class BrotliDecompressor
                 count -= extraBits;
             }
 
-            if (careful && Overrun(next, end, count))
+            if (careful && Overrun(next, src.Length, count))
             {
+                _distanceContext = distanceContext;
                 goto Truncated;
             }
         }
 
+        _distanceContext = distanceContext;
         {
+            int copyLength = _copyLength;
+            int remaining = _metaBlockRemaining;
             int maxBackwardDistance = _maxBackwardDistance;
             int maxDistance = op < maxBackwardDistance ? op : maxBackwardDistance;
             if (distance > maxDistance)
@@ -446,7 +426,7 @@ public sealed partial class BrotliDecompressor
                 if (dst.Length - op >= DictionarySlack && distance <= Prefix.MaxAllowedDistance && (uint)(copyLength - 4) <= 20)
                 {
                     // A word of the static dictionary, with room for wide stores: brotli's checks, inline.
-                    int shift = sizeBits[copyLength];
+                    int shift = StaticDictionary.SizeBitsByLength[copyLength];
                     int address = distance - maxDistance - 1;
                     int transform = address >> shift;
                     _distRbIndex += distanceContext;
@@ -456,8 +436,8 @@ public sealed partial class BrotliDecompressor
                         goto Fail;
                     }
 
-                    int word = offsets[copyLength] + ((address & ((1 << shift) - 1)) * copyLength);
-                    int length = Transforms.ApplyFast(dst.Slice(op, DictionarySlack), dictionary.Slice(word), copyLength, in transforms[transform]);
+                    int word = StaticDictionary.OffsetsByLength[copyLength] + ((address & ((1 << shift) - 1)) * copyLength);
+                    int length = Transforms.ApplyFast(dst.Slice(op, DictionarySlack), StaticDictionary.Data.Slice(word), copyLength, in Transforms.Infos[transform]);
                     if (length == 0 && distance <= 120)
                     {
                         result = (int)BrotliError.Transform;
@@ -471,7 +451,7 @@ public sealed partial class BrotliDecompressor
                     }
 
                     op += length;
-                    remaining -= length;
+                    _metaBlockRemaining = remaining - length;
                     goto Copied;
                 }
 
@@ -483,7 +463,7 @@ public sealed partial class BrotliDecompressor
                 }
 
                 op += result;
-                remaining -= result;
+                _metaBlockRemaining = remaining - result;
             }
             else
             {
@@ -496,14 +476,14 @@ public sealed partial class BrotliDecompressor
 
                 _s.DistRb[_distRbIndex & 3] = distance;
                 ++_distRbIndex;
-                remaining -= copyLength;
+                _metaBlockRemaining = remaining - copyLength;
                 CopyMatch(dst, op, distance, copyLength);
                 op += copyLength;
             }
         }
 
     Copied:
-        if (remaining <= 0)
+        if (_metaBlockRemaining <= 0)
         {
             goto MetaBlockDone;
         }
@@ -523,12 +503,8 @@ public sealed partial class BrotliDecompressor
             goto Fail;
         }
 
-        blockLength0 = _s.BlockLength[0];
         PrepareLiteralDecoding();
-        trivial = _trivialLiteralContext;
-        literalTree = _literalTree;
-        lut = _contextLookup;
-        if (careful && Overrun(next, end, count))
+        if (careful && Overrun(next, src.Length, count))
         {
             goto Truncated;
         }
@@ -548,7 +524,7 @@ public sealed partial class BrotliDecompressor
         goto Exit;
 
     Fail:
-        if (Overrun(next, end, count))
+        if (Overrun(next, src.Length, count))
         {
             result = (int)BrotliError.Truncated;
         }
@@ -558,16 +534,6 @@ public sealed partial class BrotliDecompressor
         _br.Count = count;
         _br.Next = next;
         _pos = op;
-        _metaBlockRemaining = remaining;
-        _insertRemaining = insert;
-        _s.BlockLength[0] = blockLength0;
-        _s.BlockLength[1] = blockLength1;
-        _s.BlockLength[2] = blockLength2;
-        _copyLength = copyLength;
-        _distanceCode = distanceCode;
-        _distanceContext = distanceContext;
-        _commandTree = commandTree;
-        _distContextMapSlice = distContextMapSlice;
         return result;
     }
 
@@ -580,10 +546,10 @@ public sealed partial class BrotliDecompressor
     /// the input; byte by byte near the end, with zeros past it.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void Refill<TMode>(ReadOnlySpan<byte> src, ref ulong bits, ref int count, ref int next, int end)
+    private static void Refill<TMode>(ReadOnlySpan<byte> src, ref ulong bits, ref int count, ref int next)
         where TMode : struct, IMode
     {
-        if (typeof(TMode) == typeof(FastMode) || end - next >= 8)
+        if (typeof(TMode) == typeof(FastMode) || src.Length - next >= 8)
         {
             bits |= BinaryPrimitives.ReadUInt64LittleEndian(src.Slice(next, 8)) << count;
             next += (63 - count) >> 3;
@@ -591,16 +557,16 @@ public sealed partial class BrotliDecompressor
         }
         else
         {
-            RefillCareful(src, ref bits, ref count, ref next, end);
+            RefillCareful(src, ref bits, ref count, ref next);
         }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void RefillCareful(ReadOnlySpan<byte> src, ref ulong bits, ref int count, ref int next, int end)
+    private static void RefillCareful(ReadOnlySpan<byte> src, ref ulong bits, ref int count, ref int next)
     {
         while (count <= 56)
         {
-            if (next < end)
+            if (next < src.Length)
             {
                 bits |= (ulong)src[next] << count;
             }
