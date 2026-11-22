@@ -62,6 +62,8 @@ Thumbs.db
 # Binary files, written rather than kept.
 tools/native-ref/out/
 tests/ManagedCompressions.Zstd.Tests/testdata/
+# brotli's test data at v1.1.1 (tools/native-ref/brotli-testdata.sh).
+tests/ManagedCompressions.Brotli.Tests/testdata/
 
 # ---- Benchmark logs (the rendered .md results are kept) ----
 bench/results/**/*.log
