@@ -269,21 +269,15 @@ public sealed partial class BrotliDecompressor
             if (_trivialLiteralContext)
             {
                 int tree = _literalTree;
-                if (!careful)
+                if (!careful && run.Length >= 3)
                 {
-                    // Three literals of at most 15 bits each per refill of at least 56.
-                    while (run.Length >= 3)
-                    {
-                        if (count < 3 * Huffman.MaxCodeLength)
-                        {
-                            Refill<TMode>(src, ref bits, ref count, ref next);
-                        }
-
-                        run[0] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
-                        run[1] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
-                        run[2] = (byte)DecodeSymbol(literalTables, tree, ref bits, ref count, TRoot.Bits);
-                        run = run.Slice(3);
-                    }
+                    // The whole triples in a method of their own, whose few values the JIT keeps in registers.
+                    int whole = run.Length - (run.Length % 3);
+                    Cursor cursor = TrivialLiterals<TRoot>(new Cursor(bits, count, next), src, run.Slice(0, whole), tree);
+                    bits = cursor.Bits;
+                    count = cursor.Count;
+                    next = cursor.Next;
+                    run = run.Slice(whole);
                 }
 
                 for (int i = 0; i < run.Length; i++)
@@ -308,24 +302,17 @@ public sealed partial class BrotliDecompressor
                 int[] contextTrees = _contextTrees;
                 byte p1 = op > 0 ? dst[op - 1] : (byte)0;
                 byte p2 = op > 1 ? dst[op - 2] : (byte)0;
-                if (!careful)
+                if (!careful && run.Length >= 3)
                 {
-                    while (run.Length >= 3)
-                    {
-                        if (count < 3 * Huffman.MaxCodeLength)
-                        {
-                            Refill<TMode>(src, ref bits, ref count, ref next);
-                        }
-
-                        p2 = (byte)DecodeSymbol(literalTables, contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
-                        run[0] = p2;
-                        p1 = (byte)DecodeSymbol(literalTables, contextTrees[(Context.Lookup[(lut + p2) & 0x7FF] | Context.Lookup[(lut + 256 + p1) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
-                        run[1] = p1;
-                        p2 = (byte)DecodeSymbol(literalTables, contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
-                        run[2] = p2;
-                        run = run.Slice(3);
-                        (p1, p2) = (p2, p1);
-                    }
+                    // The whole triples in a method of their own, whose few values the JIT keeps in registers.
+                    int whole = run.Length - (run.Length % 3);
+                    Cursor cursor = ContextLiterals<TRoot>(new Cursor(bits, count, next), src, run.Slice(0, whole), p1, p2);
+                    bits = cursor.Bits;
+                    count = cursor.Count;
+                    next = cursor.Next;
+                    p1 = run[whole - 1];
+                    p2 = run[whole - 2];
+                    run = run.Slice(whole);
                 }
 
                 for (int i = 0; i < run.Length; i++)
@@ -535,6 +522,85 @@ public sealed partial class BrotliDecompressor
         _br.Next = next;
         _pos = op;
         return result;
+    }
+
+    /// <summary>The bit reader's state, into and out of the methods of the literal loops.</summary>
+    private readonly struct Cursor
+    {
+        public readonly ulong Bits;
+        public readonly int Count;
+        public readonly int Next;
+
+        public Cursor(ulong bits, int count, int next)
+        {
+            Bits = bits;
+            Count = count;
+            Next = next;
+        }
+    }
+
+    /// <summary>
+    /// The literals of a block type whose contexts share one code, three per refill, into <paramref name="run"/>,
+    /// whose length is a multiple of 3; the fast loop's input slack covers every read.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private Cursor TrivialLiterals<TRoot>(Cursor cursor, ReadOnlySpan<byte> src, Span<byte> run, int tree)
+        where TRoot : struct, IRoot
+    {
+        ulong bits = cursor.Bits;
+        int count = cursor.Count;
+        int next = cursor.Next;
+        uint[] tables = _literalGroup.Codes;
+        while (run.Length >= 3)
+        {
+            if (count < 3 * Huffman.MaxCodeLength)
+            {
+                Refill<FastMode>(src, ref bits, ref count, ref next);
+            }
+
+            run[0] = (byte)DecodeSymbol(tables, tree, ref bits, ref count, TRoot.Bits);
+            run[1] = (byte)DecodeSymbol(tables, tree, ref bits, ref count, TRoot.Bits);
+            run[2] = (byte)DecodeSymbol(tables, tree, ref bits, ref count, TRoot.Bits);
+            run = run.Slice(3);
+        }
+
+        return new Cursor(bits, count, next);
+    }
+
+    /// <summary>
+    /// The literals of a block type with context modeling, three per refill, into <paramref name="run"/>, whose
+    /// length is a multiple of 3, after the bytes <paramref name="p1"/> and <paramref name="p2"/>; the fast
+    /// loop's input slack covers every read. The context lookup is read from its constant table, the codes
+    /// of the contexts and the tables from the decoder's fields, once.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private Cursor ContextLiterals<TRoot>(Cursor cursor, ReadOnlySpan<byte> src, Span<byte> run, byte p1, byte p2)
+        where TRoot : struct, IRoot
+    {
+        ulong bits = cursor.Bits;
+        int count = cursor.Count;
+        int next = cursor.Next;
+        uint[] tables = _literalGroup.Codes;
+        ReadOnlySpan<int> contextTrees = _contextTrees.AsSpan(0, 1 << Prefix.LiteralContextBits);
+        int lut = _contextLookup;
+        while (run.Length >= 3)
+        {
+            if (count < 3 * Huffman.MaxCodeLength)
+            {
+                Refill<FastMode>(src, ref bits, ref count, ref next);
+            }
+
+            p2 = (byte)DecodeSymbol(tables, contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
+            run[0] = p2;
+            p1 = (byte)DecodeSymbol(tables, contextTrees[(Context.Lookup[(lut + p2) & 0x7FF] | Context.Lookup[(lut + 256 + p1) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
+            run[1] = p1;
+            p2 = (byte)DecodeSymbol(tables, contextTrees[(Context.Lookup[(lut + p1) & 0x7FF] | Context.Lookup[(lut + 256 + p2) & 0x7FF]) & 63], ref bits, ref count, TRoot.Bits);
+            run[2] = p2;
+            run = run.Slice(3);
+            (p1, p2) = (p2, p1);
+        }
+
+        return new Cursor(bits, count, next);
     }
 
     /// <summary>Whether the reader has consumed some of the zeros past the end of the input.</summary>
