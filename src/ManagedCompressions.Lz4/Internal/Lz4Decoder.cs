@@ -99,7 +99,11 @@ internal static class Lz4Decoder
     /// no further than <paramref name="opStop"/>. Leaves <paramref name="ipRef"/> and
     /// <paramref name="opRef"/> at the start of the next sequence; false when the block is corrupt.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    /// <remarks>
+    /// A method of its own, compiled with an inlining budget of its own: inlined into <see cref="Decode"/>, twice,
+    /// the loops ran out of it, and called their reads and copies.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool FastLoop<TCheck>(ReadOnlySpan<byte> src, Span<byte> dst, ref int ipRef, ref int opRef, int ipLimit, int opStop)
         where TCheck : struct, IOffsetCheck
     {
@@ -111,8 +115,12 @@ internal static class Lz4Decoder
             // a shift, one add to ip + 3, which does not wait on the load.
             int sequence = ip;
             int sequenceOutput = op;
-            int afterToken = ip + 3;
-            nuint token = src[ip];
+
+            // The sequence's 32 bytes of input and 32 of output, both within the margins: the token, up to
+            // 14 literals copied 16 at once and the offset are read at short offsets into the one, and the
+            // literals and a short match written into the other, with no check of their own.
+            ReadOnlySpan<byte> input = src.Slice(ip, InputMargin);
+            nuint token = input[0];
             nuint literals = token >> 4;
             nuint length = token & 15;
             nuint offset;
@@ -122,13 +130,34 @@ internal static class Lz4Decoder
                 goto LongLiterals;
             }
 
-            Copy16(dst, op, src, afterToken - 2);
-            ip = afterToken + (int)literals;
-            op += (int)literals;
+            {
+                int literalCount = (int)literals;
+                Span<byte> output = dst.Slice(op, 32);
+                Vector128.Create(input.Slice(1, 16)).CopyTo(output);
+                offset = BinaryPrimitives.ReadUInt16LittleEndian(input.Slice(1 + literalCount, 2));
+                ip += 3 + literalCount;
+                op += literalCount;
+                match = op - (int)offset;
+                if (length != 15 && offset >= 8 && (!TCheck.NearStart || match >= 0))
+                {
+                    // Three words, each read after the one before it is written.
+                    ReadOnlySpan<byte> from = dst.Slice(match, 18);
+                    Span<byte> to = output.Slice(literalCount, 18);
+                    BinaryPrimitives.WriteUInt64LittleEndian(to, BinaryPrimitives.ReadUInt64LittleEndian(from));
+                    BinaryPrimitives.WriteUInt64LittleEndian(to.Slice(8), BinaryPrimitives.ReadUInt64LittleEndian(from.Slice(8)));
+                    BinaryPrimitives.WriteUInt16LittleEndian(to.Slice(16), BinaryPrimitives.ReadUInt16LittleEndian(from.Slice(16)));
+                    op += (int)length + MinMatch;
+                    continue;
+                }
+
+                goto Match;
+            }
 
         Offset:
             offset = BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(ip - 2, 2));
             match = op - (int)offset;
+
+        Match:
             if (length == 15)
             {
                 goto LongMatch;
@@ -139,9 +168,10 @@ internal static class Lz4Decoder
             {
                 // Three words, each read after the one before it is written.
                 Span<byte> words = dst.Slice(op, 18);
-                BinaryPrimitives.WriteUInt64LittleEndian(words, BinaryPrimitives.ReadUInt64LittleEndian(dst.Slice(match, 8)));
-                BinaryPrimitives.WriteUInt64LittleEndian(words.Slice(8), BinaryPrimitives.ReadUInt64LittleEndian(dst.Slice(match + 8, 8)));
-                BinaryPrimitives.WriteUInt16LittleEndian(words.Slice(16), BinaryPrimitives.ReadUInt16LittleEndian(dst.Slice(match + 16, 2)));
+                ReadOnlySpan<byte> from = dst.Slice(match, 18);
+                BinaryPrimitives.WriteUInt64LittleEndian(words, BinaryPrimitives.ReadUInt64LittleEndian(from));
+                BinaryPrimitives.WriteUInt64LittleEndian(words.Slice(8), BinaryPrimitives.ReadUInt64LittleEndian(from.Slice(8)));
+                BinaryPrimitives.WriteUInt16LittleEndian(words.Slice(16), BinaryPrimitives.ReadUInt16LittleEndian(from.Slice(16)));
                 op += (int)length;
                 continue;
             }
@@ -212,6 +242,7 @@ internal static class Lz4Decoder
     }
 
     /// <summary>The careful loop: sequences copied exactly, every length checked against both ends.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Careful(ReadOnlySpan<byte> src, Span<byte> dst, int ip, int op)
     {
         while (true)
