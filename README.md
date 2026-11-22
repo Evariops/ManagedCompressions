@@ -314,11 +314,13 @@ block size), and big-endian processors (IBM Z), where the constructors throw
 
 The codecs' hot loops read and write through pointers and `Unsafe`, without the bounds checks of spans:
 on x64, ports of the LZ4 and Zstandard decoders to safe code ran at 74 to 87 % of their speed with the
-JIT, and the Zstandard one at half of it under Native AOT. Instead, the decoders, which read untrusted input, state the bounds of each access they
-make without a check, as Microsoft's
+JIT, and the Zstandard one at half of it under Native AOT. Instead, the code states the bounds it relies
+on, as Microsoft's
 [unsafe code best practices](https://learn.microsoft.com/dotnet/standard/unsafe-code/best-practices)
-recommend: the Debug build asserts them, and the Release build drops the assertions with their arguments,
-so that its machine code is the same as without them
+recommend: the decoders, which read untrusted input, those of each access they make without a check; the
+compressors, those of their writes, to the destination and to their own buffers, and of what they read
+in those buffers. The Debug build asserts them, and the Release build drops the assertions
+with their arguments, so that its machine code is the same as without them
 ([`src/Shared/Bounds.cs`](https://github.com/Evariops/ManagedCompressions/blob/main/src/Shared/Bounds.cs)).
 What checks them, on every pull request:
 
