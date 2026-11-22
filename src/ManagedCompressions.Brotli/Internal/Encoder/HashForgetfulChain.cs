@@ -131,6 +131,10 @@ internal unsafe struct HashForgetfulChain<TParams> : IHasher
         _head[key] = (ushort)idx;
     }
 
+    public void Prefetch(byte* data, nuint mask, nuint ix)
+    {
+    }
+
     public void StoreRange(byte* data, nuint mask, nuint ixStart, nuint ixEnd)
     {
         for (nuint i = ixStart; i < ixEnd; ++i)
@@ -151,16 +155,16 @@ internal unsafe struct HashForgetfulChain<TParams> : IHasher
 
     public void PrepareDistanceCache(int* distanceCache) => HasherCommon.PrepareDistanceCache(distanceCache, TParams.NumLastDistancesToCheck);
 
-    public void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, HasherSearchResult* result)
+    public void FindLongestMatch(byte* data, nuint ringBufferMask, int* distanceCache, nuint curIx, nuint maxLength, nuint maxBackward, nuint dictionaryDistance, nuint maxDistance, ref HasherSearchResult result)
     {
         nuint curIxMasked = curIx & ringBufferMask;
-        nuint minScore = result->Score;
-        nuint bestScore = result->Score;
-        nuint bestLen = result->Len;
+        nuint minScore = result.Score;
+        nuint bestScore = result.Score;
+        nuint bestLen = result.Len;
         nuint key = HashBytes(data + curIxMasked);
         byte tinyHash = (byte)key;
-        result->Len = 0;
-        result->LenCodeDelta = 0;
+        result.Len = 0;
+        result.LenCodeDelta = 0;
 
         for (nuint i = 0; i < (nuint)TParams.NumLastDistancesToCheck; ++i)
         {
@@ -194,9 +198,9 @@ internal unsafe struct HashForgetfulChain<TParams> : IHasher
                     {
                         bestScore = score;
                         bestLen = len;
-                        result->Len = bestLen;
-                        result->Distance = backward;
-                        result->Score = bestScore;
+                        result.Len = bestLen;
+                        result.Distance = backward;
+                        result.Score = bestScore;
                     }
                 }
             }
@@ -235,9 +239,9 @@ internal unsafe struct HashForgetfulChain<TParams> : IHasher
                     {
                         bestScore = score;
                         bestLen = len;
-                        result->Len = bestLen;
-                        result->Distance = backward;
-                        result->Score = bestScore;
+                        result.Len = bestLen;
+                        result.Distance = backward;
+                        result.Score = bestScore;
                     }
                 }
             }
@@ -245,9 +249,9 @@ internal unsafe struct HashForgetfulChain<TParams> : IHasher
             Store(data, ringBufferMask, curIx);
         }
 
-        if (result->Score == minScore)
+        if (result.Score == minScore)
         {
-            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data + curIxMasked, maxLength, dictionaryDistance, maxDistance, result, shallow: false);
+            HasherCommon.SearchInStaticDictionary(ref _dictNumLookups, ref _dictNumMatches, data + curIxMasked, maxLength, dictionaryDistance, maxDistance, ref result, shallow: false);
         }
     }
 }
