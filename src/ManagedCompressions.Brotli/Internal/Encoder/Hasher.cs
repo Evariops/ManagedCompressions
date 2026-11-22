@@ -53,6 +53,12 @@ internal static class HasherCommon
     public const ulong HashMul64 = 0x1FE35A7BD3579BD3;
 
     /// <summary>
+    /// The one-shot input below which the hashers do not prefetch: the table lines its positions reach stay in
+    /// the caches, and the hints only cost their instructions (7 to 8 % at qualities 7 and 9 on small records).
+    /// </summary>
+    public const nuint PrefetchMinInput = 1 << 16;
+
+    /// <summary>
     /// Appends <paramref name="ix"/> to the bucket of <paramref name="key"/>: a ring of <c>1 &lt;&lt; blockBits</c>
     /// positions in <paramref name="buckets"/>, whose count <paramref name="num"/> keeps (H5's and H6's).
     /// </summary>

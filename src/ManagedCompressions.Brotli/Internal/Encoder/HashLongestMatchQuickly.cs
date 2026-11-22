@@ -83,6 +83,9 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
     private nuint _dictNumLookups;
     private nuint _dictNumMatches;
 
+    /// <summary>Whether <see cref="Prefetch"/> hints anything for the input being prepared: see <see cref="HasherCommon.PrefetchMinInput"/>.</summary>
+    private bool _prefetch;
+
     public static int HashTypeLength => 8;
 
     public static int StoreLookahead => 8;
@@ -104,6 +107,7 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
 
     public void Prepare(bool oneShot, nuint inputSize, ReadOnlySpan<byte> data)
     {
+        _prefetch = Internal.Prefetch.IsSupported && (!oneShot || inputSize >= HasherCommon.PrefetchMinInput);
         Span<uint> buckets = _buckets;
         nuint partialPrepareThreshold = (nuint)BucketSize >> 5;
         if (oneShot && inputSize <= partialPrepareThreshold)
@@ -151,7 +155,7 @@ internal struct HashLongestMatchQuickly<TParams> : IHasher
     public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
         // The large tables only, and not past the input, after a copy to its end: nothing ahead to fetch there.
-        if (Internal.Prefetch.IsSupported && TParams.BucketBits >= 17 && (ix & mask) <= (nuint)data.Length - 8)
+        if (_prefetch && TParams.BucketBits >= 17 && (ix & mask) <= (nuint)data.Length - 8)
         {
             uint key = HashBytes(data, ix & mask);
             Internal.Prefetch.Element(_buckets, (int)key);

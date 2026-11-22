@@ -22,6 +22,9 @@ internal struct HashLongestMatch : IHasher
     private nuint _dictNumLookups;
     private nuint _dictNumMatches;
 
+    /// <summary>Whether <see cref="Prefetch"/> hints anything for the input being prepared: see <see cref="HasherCommon.PrefetchMinInput"/>.</summary>
+    private bool _prefetch;
+
     public static int HashTypeLength => 4;
 
     public static int StoreLookahead => 4;
@@ -45,6 +48,7 @@ internal struct HashLongestMatch : IHasher
 
     public void Prepare(bool oneShot, nuint inputSize, ReadOnlySpan<byte> data)
     {
+        _prefetch = Internal.Prefetch.IsSupported && (!oneShot || inputSize >= HasherCommon.PrefetchMinInput);
         Span<ushort> num = _num;
         nuint partialPrepareThreshold = _bucketSize >> 6;
         if (oneShot && inputSize <= partialPrepareThreshold)
@@ -70,7 +74,7 @@ internal struct HashLongestMatch : IHasher
     public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
         // Nothing to fetch without the instruction, nor past the input, after a copy to its end.
-        if (!Internal.Prefetch.IsSupported || (ix & mask) > (nuint)data.Length - 4)
+        if (!_prefetch || (ix & mask) > (nuint)data.Length - 4)
         {
             return;
         }
@@ -249,6 +253,9 @@ internal struct HashLongestMatch64 : IHasher
     private nuint _dictNumLookups;
     private nuint _dictNumMatches;
 
+    /// <summary>Whether <see cref="Prefetch"/> hints anything for the input being prepared: see <see cref="HasherCommon.PrefetchMinInput"/>.</summary>
+    private bool _prefetch;
+
     public static int HashTypeLength => 8;
 
     public static int StoreLookahead => 8;
@@ -272,6 +279,7 @@ internal struct HashLongestMatch64 : IHasher
 
     public void Prepare(bool oneShot, nuint inputSize, ReadOnlySpan<byte> data)
     {
+        _prefetch = Internal.Prefetch.IsSupported && (!oneShot || inputSize >= HasherCommon.PrefetchMinInput);
         Span<ushort> num = _num;
         nuint partialPrepareThreshold = _bucketSize >> 6;
         if (oneShot && inputSize <= partialPrepareThreshold)
@@ -296,7 +304,7 @@ internal struct HashLongestMatch64 : IHasher
     public void Prefetch(ReadOnlySpan<byte> data, nuint mask, nuint ix)
     {
         // Nothing to fetch without the instruction, nor past the input, after a copy to its end.
-        if (!Internal.Prefetch.IsSupported || (ix & mask) > (nuint)data.Length - 8)
+        if (!_prefetch || (ix & mask) > (nuint)data.Length - 8)
         {
             return;
         }
