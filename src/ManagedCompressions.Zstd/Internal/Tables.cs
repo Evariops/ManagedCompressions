@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -39,5 +40,18 @@ internal static unsafe class Tables
 
         nuint start = (nuint)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(table));
         return (T*)((start + (Alignment - 1)) & ~(nuint)(Alignment - 1));
+    }
+
+    /// <summary>
+    /// Asserts that <paramref name="table"/>, which <see cref="Reserve"/> took in <paramref name="array"/>, holds
+    /// <paramref name="count"/> entries: those the match finders index it with, by hashes of the parameters'
+    /// widths and masks of their logs, without a check.
+    /// </summary>
+    [Conditional("DEBUG")]
+    public static void AssertHolds<T>(T[] array, T* table, int count)
+        where T : unmanaged
+    {
+        T* start = (T*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(array));
+        Debug.Assert(count == 0 || (table >= start && table + count <= start + array.Length), "a match finder's table of its parameters' size");
     }
 }

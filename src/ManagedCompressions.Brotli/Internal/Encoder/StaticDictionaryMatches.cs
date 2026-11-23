@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -34,11 +36,19 @@ internal static unsafe partial class StaticDictionaryLut
     private static uint Transform(uint word) => (word >> 8) & 0xFF;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static byte* Word(nuint length, nuint id) => DictionaryData + (nuint)StaticDictionary.OffsetsByLength[(int)length] + (length * id);
+    private static byte* Word(nuint length, nuint id)
+    {
+        // SAFETY: the words' table is constant, its ids below the count of words of their length.
+        Debug.Assert(id < (nuint)1 << SizeBits(length) && (nuint)StaticDictionary.OffsetsByLength[(int)length] + (length * (id + 1)) <= StaticDictionary.Size, "a word of the static dictionary");
+        return DictionaryData + (nuint)StaticDictionary.OffsetsByLength[(int)length] + (length * id);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void AddMatch(nuint distance, nuint len, nuint lenCode, uint* matches)
     {
+        // SAFETY: a match is no longer than the longest word with the longest suffix, and the table holds one
+        // entry for each length up to it (HashToBinaryTree).
+        Bounds.Index((nint)len, MaxStaticDictionaryMatchLen + 1);
         uint match = (uint)((distance << 5) + lenCode);
         matches[len] = Math.Min(matches[len], match);
     }
