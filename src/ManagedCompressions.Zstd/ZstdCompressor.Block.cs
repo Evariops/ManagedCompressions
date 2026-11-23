@@ -436,6 +436,7 @@ public sealed unsafe partial class ZstdCompressor
     {
         _store.Reset();
         MatchFinder.EnterWindow(_matchState);
+        AssertTables();
 
         // A limited update after a very long match.
         uint current = (uint)(source - _matchState.Base);
@@ -493,6 +494,22 @@ public sealed unsafe partial class ZstdCompressor
         _store.AssertWithin((nuint)size);
         MatchFinder.LeaveWindow();
         SkipJobSequences(size);
+    }
+
+    /// <summary>
+    /// Asserts that the match finder's tables hold what its parameters index: the hash table, the chain or
+    /// binary tree, the row tags, the hash table of three-byte matches. They were reserved for the frame's
+    /// parameters, or for a dictionary's whose tables were copied: those the match state carries.
+    /// </summary>
+    [Conditional("DEBUG")]
+    private void AssertTables()
+    {
+        CompressionParameters parameters = _matchState.Parameters;
+        bool rows = parameters.UsesRowMatchFinder;
+        Tables.AssertHolds(_hashTable, _matchState.HashTable, 1 << parameters.HashLog);
+        Tables.AssertHolds(_chainTable, _matchState.ChainTable, parameters.Strategy == Strategy.Fast || rows ? 0 : 1 << parameters.ChainLog);
+        Tables.AssertHolds(_tagTable, _matchState.TagTable, rows ? 1 << parameters.HashLog : 0);
+        Tables.AssertHolds(_hashTable3, _matchState.HashTable3, _matchState.HashLog3 == 0 ? 0 : 1 << _matchState.HashLog3);
     }
 
     /// <summary>
