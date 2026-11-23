@@ -187,6 +187,42 @@ public sealed class ZstdStreamCompressionTests
         Assert.Equal(small.Length * ((large.Length + 49_999) / 50_000), Decompress(second.ToArray()).Length);
     }
 
+    /// <summary>
+    /// A prepared dictionary whose streams have all ended is the pool's no longer once its codecs are
+    /// released, two gen 2 collections later: the pool kept the settings of every codec it had held,
+    /// the dictionary among them, for good.
+    /// </summary>
+    [Fact]
+    public void The_pool_lets_go_of_a_dictionary_its_streams_are_done_with()
+    {
+        WeakReference dictionary = StreamWithADictionary();
+        for (int i = 0; i < 6 && dictionary.IsAlive; i++)
+        {
+            // The pool trims at a gen 2 collection, from a finalizer.
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+
+        Assert.False(dictionary.IsAlive);
+    }
+
+    /// <summary>A stream compressing and one decompressing with a dictionary prepared here, which nothing else holds.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference StreamWithADictionary()
+    {
+        byte[] data = DataKinds.Generate("json", 20_000, 3);
+        var dictionary = ZstdDictionary.Create(DataKinds.Generate("json", 8000, 4), 3);
+        byte[] frame = Compress(data, s => new ZstdStream(s, new ZstdCompressionOptions { PreparedDictionary = dictionary }, leaveOpen: true));
+        using (var reader = new ZstdStream(new MemoryStream(frame), new ZstdDecompressionOptions { PreparedDictionary = dictionary }))
+        {
+            var content = new MemoryStream();
+            reader.CopyTo(content);
+            Assert.Equal(data, content.ToArray());
+        }
+
+        return new WeakReference(dictionary);
+    }
+
     [Fact]
     public void A_stream_refused_at_its_end_leaves_no_failed_encoder_behind()
     {
