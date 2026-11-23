@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -369,6 +370,7 @@ public sealed partial class ZstdDecompressor
                 lengthsA = (ulong)SeqEntry.LengthBase(llEntryA) | ((ulong)SeqEntry.LengthBase(mlEntryA) << 32);
                 streamA = ref Unsafe.Subtract(ref streamA, (consumedA >> 3) & 0x1F);
                 bcA = consumedA & 7;
+                Bounds.After(ref streamA, ref a.Bits);
                 containerA = Unsafe.ReadUnaligned<ulong>(ref streamA);
             }
             else
@@ -389,6 +391,7 @@ public sealed partial class ZstdDecompressor
                 lengthsB = (ulong)SeqEntry.LengthBase(llEntryB) | ((ulong)SeqEntry.LengthBase(mlEntryB) << 32);
                 streamB = ref Unsafe.Subtract(ref streamB, (consumedB >> 3) & 0x1F);
                 bcB = consumedB & 7;
+                Bounds.After(ref streamB, ref b.Bits);
                 containerB = Unsafe.ReadUnaligned<ulong>(ref streamB);
             }
             else
@@ -400,6 +403,7 @@ public sealed partial class ZstdDecompressor
                 streamB = ref Unsafe.Add(ref b.Bits, ptrB);
             }
 
+            Bounds.Within(ref output, RecordStride, ref records, ref Unsafe.Add(ref records, RecordStride * count));
             output = lengthsA;
             Unsafe.Add(ref output, 1) = offBaseA;
             Unsafe.Add(ref output, 2) = lengthsB;
@@ -420,14 +424,17 @@ public sealed partial class ZstdDecompressor
             nint consumedB = CommonNextStates(llEntryB, mlEntryB, ofEntryB, bcB, containerB, ref llB, ref mlB, ref ofB);
             streamA = ref Unsafe.Subtract(ref streamA, (consumedA >> 3) & 0x1F);
             bcA = consumedA & 7;
+            Bounds.After(ref streamA, ref a.Bits);
             containerA = Unsafe.ReadUnaligned<ulong>(ref streamA);
             streamB = ref Unsafe.Subtract(ref streamB, (consumedB >> 3) & 0x1F);
             bcB = consumedB & 7;
+            Bounds.After(ref streamB, ref b.Bits);
             containerB = Unsafe.ReadUnaligned<ulong>(ref streamB);
             ulong lengthsA = (ulong)SeqEntry.LengthBase(llEntryA) | ((ulong)SeqEntry.LengthBase(mlEntryA) << 32);
             ulong offBaseA = OffBase(offsetBitsA, ofEntryA);
             ulong lengthsB = (ulong)SeqEntry.LengthBase(llEntryB) | ((ulong)SeqEntry.LengthBase(mlEntryB) << 32);
             ulong offBaseB = OffBase(offsetBitsB, ofEntryB);
+            Bounds.Within(ref output, RecordStride, ref records, ref Unsafe.Add(ref records, RecordStride * count));
             output = lengthsA;
             Unsafe.Add(ref output, 1) = offBaseA;
             Unsafe.Add(ref output, 2) = lengthsB;
@@ -511,6 +518,12 @@ public sealed partial class ZstdDecompressor
         nint fastRoom = Math.Min((nint)blockStart + blockSizeMax, destination.Length - WildCopyOverlength);
         state.HistoryEnd = ref Unsafe.Add(ref MemoryMarshal.GetReference(history), history.Length);
         state.HistoryLength = history.Length;
+
+        // The fast loop's limits within the buffers, as RunSequences asserts them.
+        Debug.Assert(
+            Unsafe.ByteOffset(ref frameStart, ref state.Dst) >= fastRoom || fastRoom + WildCopyOverlength <= destination.Length,
+            "the fast limit's slack within the destination");
+        Debug.Assert(literals.Length - literalCount >= LiteralsMargin, "the literals' margin within their buffer");
         nint done = ExecuteRecordsFast(
             ref state, ref records, count, ref frameStart,
             ref Unsafe.Add(ref frameStart, Math.Max(fastRoom, Unsafe.ByteOffset(ref frameStart, ref state.Dst))),
@@ -563,6 +576,8 @@ public sealed partial class ZstdDecompressor
 
     Loop:
         // The lengths as the two halves of their word: no instruction to separate them.
+        // SAFETY: a batch never takes more records than are left.
+        Bounds.Within(ref record, 2, ref records, ref end);
         litLength = (nint)Unsafe.As<ulong, uint>(ref record);
         matchLength = (nint)Unsafe.Add(ref Unsafe.As<ulong, uint>(ref record), 1);
         offBase = (nuint)Unsafe.Add(ref record, 1);
@@ -579,6 +594,8 @@ public sealed partial class ZstdDecompressor
             ref byte matchStart = ref Unsafe.Add(ref dst, litLength);
             if (IsShortRecord(ref frameStart, ref matchStart, ref litEnd, ref Unsafe.Add(ref lit, litLength), litLength, matchLength, offset))
             {
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, 16);
+                AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref Unsafe.Subtract(ref matchStart, offset), 16);
                 Copy16(ref dst, ref lit);
                 Copy16(ref matchStart, ref Unsafe.Subtract(ref matchStart, offset));
                 dst = ref Unsafe.Add(ref matchStart, matchLength);
@@ -603,6 +620,8 @@ public sealed partial class ZstdDecompressor
             ref byte matchStart = ref Unsafe.Add(ref dst, litLength);
             if (IsShortRecord(ref frameStart, ref matchStart, ref litEnd, ref Unsafe.Add(ref lit, litLength), litLength, matchLength, offset))
             {
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, 16);
+                AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref Unsafe.Subtract(ref matchStart, offset), 16);
                 Copy16(ref dst, ref lit);
                 Copy16(ref matchStart, ref Unsafe.Subtract(ref matchStart, offset));
                 dst = ref Unsafe.Add(ref matchStart, matchLength);
@@ -640,6 +659,8 @@ public sealed partial class ZstdDecompressor
                     goto Pending;
                 }
 
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, Wide(litLength, 16));
+                AssertHistoryCopy(ref s, ref frameStart, ref fastLimit, ref matchStart, ref Unsafe.Subtract(ref s.HistoryEnd, back), Wide(matchLength, 32));
                 WildCopy16(ref dst, ref lit, litLength);
                 WildCopy32(ref matchStart, ref Unsafe.Subtract(ref s.HistoryEnd, back), matchLength);
                 dst = ref matchEnd;
@@ -659,19 +680,24 @@ public sealed partial class ZstdDecompressor
             if (((nuint)litLength < 17) & ((nuint)matchLength < 33) & (offset > 15))
             {
                 // A match of up to 32 bytes: two copies straight, no loop whose exit mispredicts.
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, 16);
+                AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref match, 32);
                 Copy16(ref dst, ref lit);
                 Copy16(ref matchStart, ref match);
                 Copy16(ref Unsafe.Add(ref matchStart, 16), ref Unsafe.Add(ref match, 16));
             }
             else
             {
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, Wide(litLength, 16));
                 WildCopy16(ref dst, ref lit, litLength);
                 if (offset >= 16)
                 {
+                    AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref match, Wide(matchLength, 16));
                     WildCopy16(ref matchStart, ref match, matchLength);
                 }
                 else
                 {
+                    AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref match, matchLength + 15);
                     OverlapCopy(ref matchStart, ref match, offset, matchLength);
                 }
             }

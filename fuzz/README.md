@@ -9,7 +9,10 @@ the one it ships, with the error codes .NET's own library does not export on Lin
 
 The sources and destinations lie against inaccessible pages on Linux and macOS, so a single byte read or
 written past either end faults. A target fails an input by throwing, and libFuzzer keeps the input. A
-fault or a hang (`-timeout`) fails it the same way.
+fault or a hang (`-timeout`) fails it the same way. So does, in the Debug build, a failed bounds
+assertion: each access the libraries make without a bounds check asserts its bounds there
+([`src/Shared/Bounds.cs`](../src/Shared/Bounds.cs)): their own tables, and the regions of a buffer
+an access may use, which the pages around the buffer cannot tell apart.
 
 | Target | Input | Guarantee |
 |:--|:--|:--|
@@ -46,9 +49,11 @@ a content overflow its declared size (`regressions/zstd-stream-decompress/conten
 ## In CI
 
 `.github/workflows/fuzz.yml` runs each target for two minutes on every pull request, and for 50 minutes
-each night. The corpus is kept from run to run in the Actions cache, so pull requests start from what the
-nightly runs found. Before fuzzing, every input of the corpus and of `regressions/<target>/` runs once. A
-failing input is uploaded as the `findings-<target>` artifact.
+each night. Pull requests fuzz the Release build, the one that ships; the nightly runs fuzz the Debug
+build, with its bounds assertions, optimized as the Release one is. A manual run takes either. The corpus
+is kept from run to run in the Actions cache, so pull requests start from what the nightly runs found.
+Before fuzzing, every input of the corpus and of `regressions/<target>/` runs once. A failing input is
+uploaded as the `findings-<target>` artifact.
 
 ## Locally
 
@@ -66,7 +71,8 @@ dotnet sharpfuzz out/ManagedCompressions.Lz4.dll
 ```
 
 The seeds come first: instrumented, the libraries report each branch to memory that libFuzzer sets up,
-and outside libFuzzer they fault on the first one.
+and outside libFuzzer they fault on the first one. To fuzz with the bounds assertions, publish with
+`-c Debug -p:Optimize=true` instead.
 
 Without libFuzzer, on any system, an uninstrumented build runs inputs directly:
 

@@ -2,9 +2,11 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -121,6 +123,10 @@ public sealed unsafe partial class ZstdDecompressor
             places[i] = place;
             place += frames[i].Skippable ? 0 : frames[i].ContentSize;
         }
+
+        // What the workers rely on to decode a frame into its place without a check: the places end with
+        // the destination's room or before it.
+        Debug.Assert(place == total && total <= destination.Length, "the frames' places within the destination");
 
         var shared = new SharedFrames(frames, places);
         using MemoryHandle sourcePin = source.Pin();
@@ -240,6 +246,9 @@ public sealed unsafe partial class ZstdDecompressor
                 continue;
             }
 
+            // SAFETY: the scan found every frame within the source, and the caller placed the contents
+            // within the destination, as the sizes the frames declare add up.
+            Bounds.Within((byte*)source + frame.Offset, frame.Length, (byte*)source, (byte*)source + sourceLength);
             var input = new ReadOnlySpan<byte>((byte*)source + frame.Offset, frame.Length);
             var output = new Span<byte>((byte*)destination + shared.Places[index], (int)frame.ContentSize);
             if (Decompress(input, output, out int consumed, out int written) != OperationStatus.Done

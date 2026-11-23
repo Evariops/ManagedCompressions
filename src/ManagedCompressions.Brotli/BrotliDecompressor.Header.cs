@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -177,17 +178,20 @@ public sealed unsafe partial class BrotliDecompressor
                 continue;
             }
 
-            BrotliError error = ReadHuffmanCode(types + 2, types + 2, _blockTypeTrees + (i * BlockTypeTableSize), out _);
+            BrotliError error = ReadHuffmanCode(types + 2, types + 2, _blockTypeTrees + (i * BlockTypeTableSize), out int tableSize);
             if (error != BrotliError.None)
             {
                 return error;
             }
 
-            error = ReadHuffmanCode(Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, _blockLengthTrees + (i * BlockLengthTableSize), out _);
+            Debug.Assert(tableSize <= BlockTypeTableSize, "a block type code within its table");
+            error = ReadHuffmanCode(Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, _blockLengthTrees + (i * BlockLengthTableSize), out tableSize);
             if (error != BrotliError.None)
             {
                 return error;
             }
+
+            Debug.Assert(tableSize <= BlockLengthTableSize, "a block length code within its table");
 
             _s.BlockLength[i] = ReadBlockLength(_blockLengthTrees + (i * BlockLengthTableSize));
         }
@@ -277,6 +281,8 @@ public sealed unsafe partial class BrotliDecompressor
                 return error;
             }
 
+            Debug.Assert(tableSize <= maxTableSize, "a code within the room of its table");
+
             group.Trees[i] = (nint)table;
             used += tableSize;
         }
@@ -342,7 +348,9 @@ public sealed unsafe partial class BrotliDecompressor
         Huffman.BuildCodeLengthsTable(codeLengthTable, codeLengthCodeLengths, histogram);
         new Span<ushort>(histogram, Huffman.MaxCodeLength + 1).Clear();
 
-        // The lists of symbols of each length, through their heads at length - 16.
+        // The lists of symbols of each length, through their heads at length - 16. They link the symbols,
+        // all below the limit, and hold those of the largest alphabet.
+        Debug.Assert(alphabetSizeLimit <= Prefix.NumCommandSymbols, "an alphabet the symbol lists hold");
         ushort* symbolLists = _symbolLists;
         int* nextSymbol = stackalloc int[Huffman.MaxCodeLength + 1];
         for (int i = 0; i <= Huffman.MaxCodeLength; i++)
@@ -480,9 +488,13 @@ public sealed unsafe partial class BrotliDecompressor
         return BrotliError.None;
     }
 
-    /// <summary>A context map (RFC 7932, section 7.3): its number of codes, then its runs and values.</summary>
+    /// <summary>
+    /// A context map (RFC 7932, section 7.3): its number of codes, then its runs and values, each below
+    /// the number of codes, which the command loop relies on to pick a code without a check.
+    /// </summary>
     private BrotliError DecodeContextMap(int contextMapSize, out int numTrees, byte* contextMap)
     {
+        Debug.Assert(contextMapSize <= Prefix.MaxBlockTypes << Prefix.LiteralContextBits, "a context map within its table");
         numTrees = DecodeVarLenUint8() + 1;
         if (numTrees <= 1)
         {
@@ -511,11 +523,13 @@ public sealed unsafe partial class BrotliDecompressor
         }
 
         int alphabetSize = numTrees + maxRunLengthPrefix;
-        BrotliError error = ReadHuffmanCode(alphabetSize, alphabetSize, _contextMapTree, out _);
+        BrotliError error = ReadHuffmanCode(alphabetSize, alphabetSize, _contextMapTree, out int tableSize);
         if (error != BrotliError.None)
         {
             return error;
         }
+
+        Debug.Assert(tableSize <= ContextMapTableSize, "a context map code within its table");
 
         int index = 0;
         while (index < contextMapSize)
@@ -548,6 +562,9 @@ public sealed unsafe partial class BrotliDecompressor
             InverseMoveToFront(contextMap, contextMapSize);
         }
 
+        // The values are the symbols past the runs, below the number of codes, and the move to front
+        // permutes the values below it among themselves.
+        Debug.Assert(new ReadOnlySpan<byte>(contextMap, contextMapSize).IndexOfAnyExceptInRange((byte)0, (byte)(numTrees - 1)) < 0, "a context map's values below its number of codes");
         return BrotliError.None;
     }
 
@@ -608,6 +625,9 @@ public sealed unsafe partial class BrotliDecompressor
         int bits = 1;
         int half = 0;
         int i = Prefix.NumDistanceShortCodes;
+
+        // The alphabet ends on a multiple of the postfix past the direct codes: the last run fills it.
+        Debug.Assert(_distanceAlphabetSize <= MaxDistanceAlphabet && (_distanceAlphabetSize - Prefix.NumDistanceShortCodes - ndirect) % postfix == 0, "a distance alphabet within its tables");
         for (int j = 0; j < ndirect; ++j)
         {
             _distExtraBits[i] = 0;

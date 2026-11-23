@@ -453,9 +453,7 @@ public sealed class ZstdDecoderTests
     [Fact]
     public void A_warm_decoder_allocates_nothing()
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         byte[] content = DataKinds.Generate("text", 200_000, 8);
         byte[] sized = NativeZstd.Compress(content, new NativeZstdOptions { Quality = 3, AppendChecksum = true });
         byte[] unsized = NativeZstd.Compress(content, new NativeZstdOptions { Quality = 3, AppendChecksum = true }, noContentSize: true);

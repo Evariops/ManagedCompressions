@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -123,10 +125,12 @@ internal static unsafe class Huffman
         offset[0] = Codes - 1;
 
         // Sorted by length, and within a length by symbol.
+        // SAFETY: the offsets come from the histogram of the lengths, each slot taken once.
         symbol = Codes;
         do
         {
             symbol--;
+            Bounds.Index(offset[codeLengths[symbol]], Codes);
             sorted[offset[codeLengths[symbol]]--] = symbol;
         }
         while (symbol != 0);
@@ -154,7 +158,11 @@ internal static unsafe class Huffman
         {
             for (int n = count[bits]; n != 0; --n)
             {
+                // SAFETY: the code is complete, so k stays below 256 while symbols remain; a code's first
+                // slot is its codeword reversed, below its stride, and its slots lie within the table.
                 uint code = Entry(bits, sorted[symbol++]);
+                Bounds.Index((nint)k, 256);
+                Debug.Assert(Unsafe.Add(ref reverse, (int)k) < step, "a code's first slot below its stride");
                 Replicate(table + Unsafe.Add(ref reverse, (int)k), step, TableSize, code);
                 k += keyStep;
             }
@@ -168,6 +176,7 @@ internal static unsafe class Huffman
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint Reverse16(uint key)
     {
+        Debug.Assert(key <= 0xFFFF, "a 16-bit key");
         ref byte reverse = ref Unsafe.AsRef(in ReverseBits[0]);
         return ((uint)Unsafe.Add(ref reverse, (int)(key & 0xFF)) << 8) | Unsafe.Add(ref reverse, (int)(key >> 8));
     }
@@ -189,10 +198,12 @@ internal static unsafe class Huffman
     /// </remarks>
     public static int BuildTable(uint* table, int rootBits, ushort* symbolLists, ushort* count)
     {
+        // SAFETY: the code is complete, so some length from 1 to 15 has symbols.
         int maxLength = -1;
         while (symbolLists[maxLength] == 0xFFFF)
         {
             maxLength--;
+            Debug.Assert(maxLength > -(MaxCodeLength + 1), "a code with symbols");
         }
 
         maxLength += MaxCodeLength + 1;
@@ -217,6 +228,7 @@ internal static unsafe class Huffman
                 for (int n = count[length]; n != 0; --n)
                 {
                     symbol = symbolLists[symbol];
+                    Bounds.Index((nint)codeword, filled);
                     table[codeword] = Entry(length, symbol);
                     if (codeword == (uint)filled - 1)
                     {
@@ -271,14 +283,19 @@ internal static unsafe class Huffman
                     int subTableBits = NextTableBitSize(count, length, rootBits);
                     subTableSize = 1 << subTableBits;
                     totalSize += subTableSize;
+                    // SAFETY: key is the Kraft sum of the codes so far, in steps of a root slot, and below
+                    // 1 while longer codes remain: reversed, a slot of the root table. A long code's first
+                    // slot is below its stride, as above, and its slots lie within its second-level table.
                     subKey = Reverse16(key);
                     key += keyStep;
+                    Bounds.Index((nint)subKey, rootSize);
                     table[subKey] = Entry(subTableBits + rootBits, (int)(subTable - table));
                     subKey = 0;
                 }
 
                 symbol = symbolLists[symbol];
                 uint code = Entry(length - rootBits, symbol);
+                Debug.Assert(Reverse16(subKey) < (uint)step && subTableSize % step == 0, "a code's slots within its table");
                 Replicate(subTable + Reverse16(subKey), step, subTableSize, code);
                 subKey += subKeyStep;
             }

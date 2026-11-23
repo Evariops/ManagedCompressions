@@ -29,9 +29,7 @@ public sealed class AllocationTests
     [MemberData(nameof(Frames))]
     public void A_warm_decoder_allocates_nothing(string name)
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         CorpusCase @case = CorpusCase.Parse(name);
         byte[] data = @case.Data;
         byte[] frame = @case.Compress(data);
@@ -83,9 +81,7 @@ public sealed class AllocationTests
     [MemberData(nameof(SmallRecordLevels))]
     public void A_compressor_of_small_records_stays_small(int level, long maxBytes)
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         byte[] record = DataKinds.Generate("json", 1 << 10, 5);
         byte[] frame = new byte[ZstdCompressor.GetMaxCompressedLength(record.Length)];
         new ZstdCompressor(level).Compress(record, frame, out _, out _);
@@ -107,9 +103,7 @@ public sealed class AllocationTests
     [InlineData("repeats", 50_000, 1)]
     public void A_cut_frame_or_a_small_destination_is_refused_without_allocating(string kind, int size, int level)
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         byte[] data = DataKinds.Generate(kind, size, level);
         byte[] frame = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
         new ZstdCompressor(level) { AppendChecksum = true }.Compress(data, frame, out _, out int length);
@@ -147,9 +141,7 @@ public sealed class AllocationTests
     [Fact]
     public void A_decompressor_of_small_records_stays_small()
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         byte[] record = DataKinds.Generate("json", 1 << 10, 5);
         byte[] frame = new byte[ZstdCompressor.GetMaxCompressedLength(record.Length)];
         new ZstdCompressor(3).Compress(record, frame, out _, out int length);

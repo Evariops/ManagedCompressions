@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -97,6 +98,7 @@ internal sealed class HuffmanTable
         ref byte weight = ref MemoryMarshal.GetReference(weights);
         ref int next = ref MemoryMarshal.GetReference(nextSlot);
         ref byte order = ref MemoryMarshal.GetReference(sorted);
+        Debug.Assert(symbolCount <= weights.Length, "the weights of the symbols within their buffer");
         for (nint s = 0; s < symbolCount; s++)
         {
             nint w = Unsafe.Add(ref weight, s);
@@ -105,13 +107,18 @@ internal sealed class HuffmanTable
                 continue;
             }
 
+            // SAFETY: ReadWeights refused any weight above MaxTableLog; a slot counts the symbols before it.
+            Bounds.Index(w, MaxTableLog + 1);
             ref int at = ref Unsafe.Add(ref next, w);
             int a = at;
+            Bounds.Index(a, MaxSymbols);
             Unsafe.Add(ref order, a) = (byte)s;
             at = a + 1;
         }
 
-        // ---- the entries, in table order
+        // ---- the entries, in table order. SAFETY: the weights make a complete code, checked by
+        // ReadWeights, whose entries fill the 2^tableLog of the table exactly; a store of four entries
+        // runs at most three past them, into the four the table keeps after its widest.
         ref ushort table = ref MemoryMarshal.GetArrayDataReference(Entries);
         nint symbol = 0;
         nint position = 0;
@@ -126,6 +133,7 @@ internal sealed class HuffmanTable
                 for (; symbol < end; symbol++)
                 {
                     ulong entry = ((ulong)Unsafe.Add(ref order, symbol) << 8) | nbBits;
+                    Bounds.Range(position, 4, Entries.Length);
                     Unsafe.WriteUnaligned(ref Unsafe.As<ushort, byte>(ref Unsafe.Add(ref table, position)), entry * 0x0001000100010001UL);
                     position += length;
                 }
@@ -137,6 +145,7 @@ internal sealed class HuffmanTable
                     var entries = Vector128.Create((ushort)((Unsafe.Add(ref order, symbol) << 8) | (int)nbBits));
                     for (nint i = 0; i < length; i += 8)
                     {
+                        Bounds.Range(position + i, 8, Entries.Length);
                         Unsafe.WriteUnaligned(ref Unsafe.As<ushort, byte>(ref Unsafe.Add(ref table, position + i)), entries);
                     }
 
@@ -163,6 +172,9 @@ internal sealed class HuffmanTable
         // The weights past the last symbol read as 0, which no weight searched for is.
         weights.Slice((int)symbolCount).Clear();
         nint chunks = (symbolCount + 31) >> 5;
+
+        // SAFETY: as Read's, the entries fill the table exactly; the chunks of 32 weights end within the
+        // 256 of the buffer.
         ref byte weight = ref MemoryMarshal.GetReference(weights);
         ref ushort table = ref MemoryMarshal.GetArrayDataReference(Entries);
         nint position = 0;
@@ -178,6 +190,7 @@ internal sealed class HuffmanTable
             Vector256<byte> wanted = Vector256.Create((byte)w);
             for (nint c = 0; c < chunks; c++)
             {
+                Bounds.Range(c << 5, 32, weights.Length);
                 uint matches = Vector256.Equals(Vector256.LoadUnsafe(ref weight, (nuint)(c << 5)), wanted).ExtractMostSignificantBits();
                 while (matches != 0)
                 {
@@ -187,6 +200,7 @@ internal sealed class HuffmanTable
                     if (length <= 4)
                     {
                         // Four entries in one store: the next symbol's overwrite the excess.
+                        Bounds.Range(position, 4, Entries.Length);
                         Unsafe.WriteUnaligned(ref at, (((ulong)s << 8) | nbBits) * 0x0001000100010001UL);
                     }
                     else
@@ -194,6 +208,7 @@ internal sealed class HuffmanTable
                         var entries = Vector128.Create((ushort)((s << 8) | (nint)nbBits));
                         for (nint i = 0; i < length; i += 8)
                         {
+                            Bounds.Range(position + i, 8, Entries.Length);
                             Unsafe.WriteUnaligned(ref Unsafe.Add(ref at, 2 * i), entries);
                         }
                     }
@@ -254,6 +269,8 @@ internal sealed class HuffmanTable
         }
 
         // Four histograms of 16 counters; a weight above 12 is refused below, and counted modulo 16.
+        // SAFETY: a counter's index is a weight masked to 4 bits in its histogram of 16.
+        Debug.Assert(count <= weights.Length, "the weights within their buffer");
         Span<int> histograms = stackalloc int[4 * 16];
         histograms.Clear();
         ref int h = ref MemoryMarshal.GetReference(histograms);
@@ -441,6 +458,13 @@ internal sealed class HuffmanTable
             Op2 = ref Unsafe.Add(ref first, 2 * segment),
             Op3 = ref Unsafe.Add(ref first, 3 * segment),
         };
+
+        // SAFETY: each stream's container starts eight bytes before its end, the fast path's streams being
+        // eight bytes or more.
+        Bounds.Within(ref streams.Ip0, sizeof(ulong), ref input, ref Unsafe.Add(ref input, start2));
+        Bounds.Within(ref streams.Ip1, sizeof(ulong), ref Unsafe.Add(ref input, start2), ref Unsafe.Add(ref input, start3));
+        Bounds.Within(ref streams.Ip2, sizeof(ulong), ref Unsafe.Add(ref input, start3), ref Unsafe.Add(ref input, start4));
+        Bounds.Within(ref streams.Ip3, sizeof(ulong), ref Unsafe.Add(ref input, start4), ref Unsafe.Add(ref input, source.Length));
         streams.Bits0 = InitFastStream(ref streams.Ip0);
         streams.Bits1 = InitFastStream(ref streams.Ip1);
         streams.Bits2 = InitFastStream(ref streams.Ip2);
@@ -562,6 +586,11 @@ internal sealed class HuffmanTable
                 break;
             }
 
+            // SAFETY: an entry is looked up with the top 64 - shift bits, TableLog, in a table of 2^TableLog.
+            // The rounds were counted so that the last quarter's five symbols a round fit before the
+            // output's end, the four quarters written at the same offsets, a quarter apart, from within
+            // the output. A round moves each stream back by less than seven bytes, the rounds were
+            // counted on the lowest one, and a stream's container never goes past its end.
             ref byte olimit = ref Unsafe.Add(ref op0, rounds * 5);
             nint entry0 = Unsafe.Add(ref table, (nint)(bits0 >> shift));
             nint entry1 = Unsafe.Add(ref table, (nint)(bits1 >> shift));
@@ -569,6 +598,7 @@ internal sealed class HuffmanTable
             nint entry3 = Unsafe.Add(ref table, (nint)(bits3 >> shift));
             do
             {
+                Bounds.Before(ref Unsafe.Add(ref op2, quarter), 5, ref oend);
                 Next(ref table, shift, ref bits0, ref entry0, ref op0, 0);
                 Next(ref table, shift, ref bits1, ref entry1, ref op0, quarter);
                 Next(ref table, shift, ref bits2, ref entry2, ref op2, 0);
@@ -597,6 +627,10 @@ internal sealed class HuffmanTable
                 entry2 = Unsafe.Add(ref table, (nint)(bits2 >> shift));
                 ip3 = ref ReloadFast(ref bits3, ref ip3);
                 entry3 = Unsafe.Add(ref table, (nint)(bits3 >> shift));
+                Bounds.After(ref ip0, ref input);
+                Bounds.After(ref ip1, ref input);
+                Bounds.After(ref ip2, ref input);
+                Bounds.After(ref ip3, ref input);
                 op0 = ref Unsafe.Add(ref op0, 5);
                 op2 = ref Unsafe.Add(ref op2, 5);
             }
@@ -658,12 +692,19 @@ internal sealed class HuffmanTable
                 break;
             }
 
+            // SAFETY: an entry is looked up with the top DoubleLog bits, in a table of 2^DoubleLog. The
+            // rounds were counted so that ten bytes a round fit in each quarter, five lookups of two, and
+            // the streams move back as in RunFourStreams.
             ulong entry0 = Unsafe.Add(ref table, (nint)(bits0 >> (64 - DoubleLog)));
             ulong entry1 = Unsafe.Add(ref table, (nint)(bits1 >> (64 - DoubleLog)));
             ulong entry2 = Unsafe.Add(ref table, (nint)(bits2 >> (64 - DoubleLog)));
             ulong entry3 = Unsafe.Add(ref table, (nint)(bits3 >> (64 - DoubleLog)));
             do
             {
+                Bounds.Before(ref op0, 10, ref end0);
+                Bounds.Before(ref op1, 10, ref end1);
+                Bounds.Before(ref op2, 10, ref end2);
+                Bounds.Before(ref op3, 10, ref end3);
                 op0 = ref PairNext(ref table, ref bits0, ref entry0, ref op0);
                 op1 = ref PairNext(ref table, ref bits1, ref entry1, ref op1);
                 op2 = ref PairNext(ref table, ref bits2, ref entry2, ref op2);
@@ -692,6 +733,10 @@ internal sealed class HuffmanTable
                 entry2 = Unsafe.Add(ref table, (nint)(bits2 >> (64 - DoubleLog)));
                 ip3 = ref ReloadFast(ref bits3, ref ip3);
                 entry3 = Unsafe.Add(ref table, (nint)(bits3 >> (64 - DoubleLog)));
+                Bounds.After(ref ip0, ref input);
+                Bounds.After(ref ip1, ref input);
+                Bounds.After(ref ip2, ref input);
+                Bounds.After(ref ip3, ref input);
             }
             while (--rounds > 0);
         }
@@ -827,11 +872,13 @@ internal sealed class HuffmanTable
             uint firstSymbol = (uint)runSymbol[j] << 8;
             int fitting = firstFitting[room];
             int alone = (fitting < runs ? runStart[fitting] : 1 << DoubleLog) >> firstBits;
+            AssertFill(runStart[j], alone, table.Length);
             Fill(ref row, alone, (uint)firstBits | firstSymbol | (1u << 30));
             for (int f = fitting; f < runs; f++)
             {
                 int secondBits = runBits[f];
                 uint pair = (uint)(firstBits + secondBits) | firstSymbol | ((uint)runSymbol[f] << 16) | (2u << 30);
+                AssertFill(runStart[j] + (runStart[f] >> firstBits), 1 << (room - secondBits), table.Length);
                 Fill(ref Unsafe.Add(ref row, runStart[f] >> firstBits), 1 << (room - secondBits), pair);
             }
         }
@@ -852,6 +899,14 @@ internal sealed class HuffmanTable
             while (i < count);
         }
     }
+
+    /// <summary>
+    /// Asserts the entries a fill of <paramref name="count"/> from <paramref name="at"/> writes, four a
+    /// store and at least one store: within the double-symbol table and the four entries past it.
+    /// </summary>
+    [Conditional("DEBUG")]
+    private static void AssertFill(nint at, nint count, int tableLength) =>
+        Bounds.Range(at, Math.Max((count + 3) & ~3, 4), tableLength);
 
     /// <summary>libzstd's <c>HUF_initFastDStream</c>: the last eight bytes, the marker made the sentinel.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

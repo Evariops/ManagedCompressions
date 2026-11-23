@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using ManagedCompressions.Brotli.Internal;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli;
 
@@ -257,6 +258,8 @@ public sealed unsafe partial class BrotliDecompressor
             return BrotliError.Truncated;
         }
 
+        // SAFETY: the callers checked the meta-block's length against the room left in the destination.
+        Bounds.Within(_br.Next, length, _br.Start, _br.End);
         Buffer.MemoryCopy(_br.Next, dst + _pos, length, length);
         _br.Next += length;
         _pos += length;

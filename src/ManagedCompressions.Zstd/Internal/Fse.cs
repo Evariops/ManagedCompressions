@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -278,6 +279,10 @@ internal static class Fse
             int nbBits = tableLog - BackwardBitReader.HighBit((uint)nextState);
             table[u].NbBits = (byte)nbBits;
             table[u].NewState = (ushort)((nextState << nbBits) - tableSize);
+
+            // What DecodeTwoStates relies on to look a state up without a check: the states an entry
+            // leads to, its base plus nbBits bits, all lie in the table.
+            Debug.Assert(table[u].NewState + (1 << nbBits) <= tableSize, "an entry's next states within the table");
         }
 
         return fast;
@@ -322,6 +327,11 @@ internal static class Fse
             bits = ref MemoryMarshal.GetReference(padded);
         }
 
+        // SAFETY: the container starts eight bytes before the end of the stream (or of the eight bytes it
+        // was copied into), and the reloads only move it back, never below the start. A state indexes the
+        // table: the first two are tableLog bits, and an entry's next states lie in it (BuildTable). At
+        // most 255 weights are written, into 256 or more.
+        Bounds.Range(position, sizeof(ulong), Math.Max(source.Length, 8));
         ulong container = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bits, position));
         ref uint entries = ref Unsafe.As<FseEntry, uint>(ref MemoryMarshal.GetReference(table));
         ref byte op = ref MemoryMarshal.GetReference(output);

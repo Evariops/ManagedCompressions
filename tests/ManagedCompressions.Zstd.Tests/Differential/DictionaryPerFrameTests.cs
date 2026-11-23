@@ -183,9 +183,7 @@ public sealed class DictionaryPerFrameTests
     [Fact]
     public void From_one_dictionary_to_another_a_warm_decompressor_allocates_nothing()
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         List<Given> dictionaries = Givens();
         var frames = new (byte[] Dictionary, byte[] Frame, int Size)[dictionaries.Count];
         for (int d = 0; d < dictionaries.Count; d++)

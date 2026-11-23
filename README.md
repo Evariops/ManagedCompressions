@@ -310,6 +310,26 @@ stream them), the LZ4 frame format, libzstd's finer parameters (strategy, hash a
 block size), and big-endian processors (IBM Z), where the constructors throw
 `PlatformNotSupportedException`. WebAssembly has not been tried.
 
+## Unsafe code, and what checks it
+
+The codecs' hot loops read and write through pointers and `Unsafe`, without the bounds checks of spans:
+on x64, ports of the LZ4 and Zstandard decoders to safe code ran at 74 to 87 % of their speed with the
+JIT, and the Zstandard one at half of it under Native AOT. Instead, the decoders, which read untrusted input, state the bounds of each access they
+make without a check, as Microsoft's
+[unsafe code best practices](https://learn.microsoft.com/dotnet/standard/unsafe-code/best-practices)
+recommend: the Debug build asserts them, and the Release build drops the assertions with their arguments,
+so that its machine code is the same as without them
+([`src/Shared/Bounds.cs`](https://github.com/Evariops/ManagedCompressions/blob/main/src/Shared/Bounds.cs)).
+What checks them, on every pull request:
+
+- **The whole test suite in Debug**, where an access past its bounds fails its test.
+- **Sources and destinations against inaccessible pages**, in the tests and the fuzzing, on Linux and
+  macOS: a byte read or written past either end faults.
+- **Fuzzing**, for two minutes per target, and for 50 minutes each night on the Debug build, where an input
+  that takes an access past its bounds fails ([`fuzz/`](https://github.com/Evariops/ManagedCompressions/blob/main/fuzz/README.md)).
+- **The GC's heap verification** over the whole suite (`DOTNET_HeapVerify`), which fails a write past an
+  array that damages the heap, whether an assertion states the access or not.
+
 ## How it was measured
 
 - **Machines:** an Apple M4 Pro (arm64) under macOS 26.7, on .NET 11.0.0-rc.1, and an AMD Ryzen 9 7950X
@@ -388,7 +408,9 @@ then pushes the packages to nuget.org.
 | `src/ManagedCompressions.Zstd` | Zstandard: decompressor, compressor, dictionaries, parallel compression |
 | `src/ManagedCompressions.Lz4` | LZ4 block format: `Lz4Block` (decoder, default compressor), `Lz4Compressor` (every level) |
 | `src/ManagedCompressions.Brotli` | Brotli: `BrotliCompressor` (every quality), `BrotliDecompressor`, streaming (`BrotliCompressionStream`, `BrotliStreamEncoder`, `BrotliStreamDecoder`) |
+| `src/Shared` | what the three libraries compile in: the unchecked accesses and the bounds they assert |
 | `tests/` | differential tests against the native libraries, golden files, fuzzing |
+| `fuzz/` | coverage-guided fuzzing with libFuzzer, against the native libraries |
 | `bench/ManagedCompressions.Bench` | level-by-level comparison with NativeCompressions |
 | `bench/ManagedCompressions.Benchmarks` | BenchmarkDotNet on silesia.tar, JIT and Native AOT (`--check` verifies every case once) |
 | `bench/ManagedCompressions.Zstd.Perf` | Zstandard against libzstd built from source, and micro-benchmarks |

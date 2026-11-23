@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -84,6 +85,7 @@ public sealed partial class ZstdDecompressor
             nint consumed = CommonNextStates(llEntry, mlEntry, ofEntry, bc, container, ref llState, ref mlState, ref ofState);
             stream = ref Unsafe.Subtract(ref stream, (consumed >> 3) & 0x1F);
             bc = consumed & 7;
+            Bounds.After(ref stream, ref s.Bits);
             container = Unsafe.ReadUnaligned<ulong>(ref stream);
             offset = SeqEntry.OffsetBase(ofEntry) + ReadBitsFast(containerBefore, bcBefore, (nint)ofEntry);
             s.Rep2 = s.Rep1;
@@ -99,6 +101,7 @@ public sealed partial class ZstdDecompressor
             nint consumed = CommonNextStates(llEntry, mlEntry, ofEntry, bc, container, ref llState, ref mlState, ref ofState);
             stream = ref Unsafe.Subtract(ref stream, (consumed >> 3) & 0x1F);
             bc = consumed & 7;
+            Bounds.After(ref stream, ref s.Bits);
             container = Unsafe.ReadUnaligned<ulong>(ref stream);
             nuint raw = SeqEntry.OffsetBase(ofEntry) + ReadBits(containerBefore, bcBefore, SeqEntry.OffsetExtraBits(ofEntry));
             offset = ResolveOffsetX64(raw, SeqEntry.LengthBase(llEntry) == 0, ref rep0, ref s);
@@ -131,6 +134,8 @@ public sealed partial class ZstdDecompressor
                 goto Execute;
             }
 
+            AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, 16);
+            AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref Unsafe.Subtract(ref matchStart, offset), 16);
             Copy16(ref dst, ref lit);
             Copy16(ref matchStart, ref Unsafe.Subtract(ref matchStart, offset));
             dst = ref Unsafe.Add(ref matchStart, matchLength);
@@ -164,6 +169,7 @@ public sealed partial class ZstdDecompressor
             nint consumed = ExtraNextStates(llEntry, mlEntry, ofEntry, bc, container, ref llState, ref mlState, ref ofState, out nint mlAt);
             stream = ref Unsafe.Subtract(ref stream, (consumed >> 3) & 0x1F);
             bc = consumed & 7;
+            Bounds.After(ref stream, ref s.Bits);
             container = Unsafe.ReadUnaligned<ulong>(ref stream);
             nuint raw = SeqEntry.OffsetBase(ofEntry) + ReadBits(containerBefore, bcBefore, (nint)ofEntry);
             matchLength = (nint)SeqEntry.LengthBase(mlEntry) + (nint)ReadBits(containerBefore, mlAt, (nint)(mlEntry >> 8));
@@ -261,6 +267,8 @@ public sealed partial class ZstdDecompressor
                     goto Pending;
                 }
 
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, Wide(litLength, 32));
+                AssertHistoryCopy(ref s, ref frameStart, ref fastLimit, ref matchStart, ref Unsafe.Subtract(ref s.HistoryEnd, back), Wide(matchLength, 32));
                 WildCopyWide(ref dst, ref lit, litLength);
                 WildCopyWide(ref matchStart, ref Unsafe.Subtract(ref s.HistoryEnd, back), matchLength);
             }
@@ -270,17 +278,21 @@ public sealed partial class ZstdDecompressor
                 // or more back, else 16 at a time, else as a pattern: a copy of up to 32 bytes is one
                 // store, its loop not taken.
                 ref byte match = ref Unsafe.Subtract(ref matchStart, offset);
+                AssertLiteralCopy(ref frameStart, ref fastLimit, ref litEnd, ref dst, ref lit, Wide(litLength, 32));
                 WildCopyWide(ref dst, ref lit, litLength);
                 if (offset >= 32)
                 {
+                    AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref match, Wide(matchLength, 32));
                     WildCopyWide(ref matchStart, ref match, matchLength);
                 }
                 else if (offset >= 16)
                 {
+                    AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref match, Wide(matchLength, 16));
                     WildCopy16(ref matchStart, ref match, matchLength);
                 }
                 else
                 {
+                    AssertMatchCopy(ref frameStart, ref fastLimit, ref matchStart, ref match, matchLength + 15);
                     OverlapCopy(ref matchStart, ref match, offset, matchLength);
                 }
             }

@@ -29,9 +29,7 @@ public sealed class AllocationTests
     [MemberData(nameof(Streams))]
     public void A_warm_decompressor_allocates_nothing(string kind, int size, int quality)
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         byte[] data = DataKinds.Generate(kind, size);
         byte[] stream = NativeBrotli.Compress(data, quality, 22);
         var decompressor = new BrotliDecompressor();
@@ -75,9 +73,7 @@ public sealed class AllocationTests
     [MemberData(nameof(Contents))]
     public void A_warm_compressor_allocates_nothing(string kind, int size, int quality)
     {
-#if DEBUG
-        Assert.Skip("allocations are a property of the optimized build");
-#endif
+        Assert.SkipWhen(TestBuild.Debug, "allocations are a property of the optimized build");
         byte[] data = DataKinds.Generate(kind, size);
         var compressor = new BrotliCompressor(quality);
         byte[] output = new byte[BrotliCompressor.GetMaxCompressedLength(size)];

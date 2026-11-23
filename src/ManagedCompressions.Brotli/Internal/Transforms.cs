@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli.Internal;
 
@@ -22,6 +24,9 @@ internal static unsafe partial class Transforms
     /// </summary>
     public const int MaxLength = 64;
 
+    /// <summary>The longest word of the static dictionary.</summary>
+    private const int MaxWordLength = 24;
+
     private const int OmitLast9 = 9;
     private const int UppercaseFirst = 10;
     private const int UppercaseAll = 11;
@@ -36,8 +41,13 @@ internal static unsafe partial class Transforms
     /// </summary>
     public static int Apply(byte* destination, byte* word, int length, int transform)
     {
+        // SAFETY: a prefix of at most 7 bytes, a word of at most 24, a suffix of at most 8 and the two
+        // bytes uppercasing may touch past the word fit in MaxLength. The affixes' tables are constant,
+        // and BuildInfos reads those of every transform through checked indexing.
+        Debug.Assert((uint)length <= MaxWordLength, "a word of the dictionary");
         ref byte prefixSuffix = ref Unsafe.AsRef(in PrefixSuffix[0]);
         ref byte map = ref Unsafe.AsRef(in PrefixSuffixMap[0]);
+        Bounds.Index(transform, Count);
         ref byte triplet = ref Unsafe.Add(ref Unsafe.AsRef(in Triplets[0]), transform * 3);
         int type = Unsafe.Add(ref triplet, 1);
 
@@ -166,6 +176,9 @@ internal static unsafe partial class Transforms
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int ApplyFast(byte* destination, byte* word, int length, ref Info info)
     {
+        // SAFETY: the stores reach 8 + 32 bytes past the destination, and the suffix's 8 start at most
+        // 8 + 24 bytes on: within the 64 bytes of room.
+        Debug.Assert((uint)length <= MaxWordLength && info.PrefixLength <= 8 && info.SuffixLength <= 8, "a word and affixes the stores cover");
         Unsafe.WriteUnaligned(destination, info.Prefix);
         byte* body = destination + info.PrefixLength;
         int skip = info.OmitFirst;
