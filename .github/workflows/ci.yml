@@ -85,24 +85,11 @@ jobs:
       - name: Build
         run: dotnet build ManagedCompressions.slnx -c Release ${VERSION_PROPERTY:+"$VERSION_PROPERTY"}
 
-      # zstd's golden files and a decodecorpus corpus, which the repository does not keep: written from
-      # zstd 1.5.7's release, checked against its SHA-256. With CI=true, a test that misses them fails.
-      - name: Write the Zstandard test data
-        run: bash tools/native-ref/testdata.sh
-
-      # brotli's test streams, which the repository does not keep either: tests/testdata at brotli's
-      # v1.1.1 tag, fetched by its commit. With CI=true, a test that misses them fails.
-      - name: Write the Brotli test data
-        run: bash tools/native-ref/brotli-testdata.sh
-
-      # brotli 1.1.1 built as .NET builds the brotli it ships, with the whole of its API: the oracle of
-      # the Brotli tests, which need its error codes, and which .NET's library lacks on Linux.
-      - name: Build brotli
-        run: bash tools/native-ref/build-brotli.sh
-
-      # libzstd built with threads, the oracle of the parallel compression tests, which skip without it.
-      - name: Build libzstd with threads
-        run: bash tools/native-ref/build.sh mt
+      # The native oracles and test data (tools/native-ref), from the cache of the same scripts on the
+      # same image; a release builds them from their sources.
+      - uses: $/.github/actions/native-ref
+        with:
+          cache: ${{ github.event_name != 'release' }}
 
       - name: Test
         run: dotnet test --solution ManagedCompressions.slnx --no-build -c Release
@@ -202,17 +189,11 @@ jobs:
       - name: Build
         run: dotnet build ManagedCompressions.slnx -c Release
 
-      - name: Write the Zstandard test data
-        run: bash tools/native-ref/testdata.sh
-
-      - name: Write the Brotli test data
-        run: bash tools/native-ref/brotli-testdata.sh
-
-      - name: Build brotli
-        run: bash tools/native-ref/build-brotli.sh
-
-      - name: Build libzstd with threads
-        run: bash tools/native-ref/build.sh mt
+      # The native oracles and test data (tools/native-ref), from the cache of the same scripts on the
+      # same image; a release builds them from their sources.
+      - uses: $/.github/actions/native-ref
+        with:
+          cache: ${{ github.event_name != 'release' }}
 
       # The knob is set for the tests alone, not for the build.
       - name: Test
@@ -260,17 +241,11 @@ jobs:
           CONFIGURATION: ${{ matrix.configuration }}
         run: dotnet build ManagedCompressions.slnx -c "$CONFIGURATION" -p:Optimize=true
 
-      - name: Write the Zstandard test data
-        run: bash tools/native-ref/testdata.sh
-
-      - name: Write the Brotli test data
-        run: bash tools/native-ref/brotli-testdata.sh
-
-      - name: Build brotli
-        run: bash tools/native-ref/build-brotli.sh
-
-      - name: Build libzstd with threads
-        run: bash tools/native-ref/build.sh mt
+      # The native oracles and test data (tools/native-ref), from the cache of the same scripts on the
+      # same image; a release builds them from their sources.
+      - uses: $/.github/actions/native-ref
+        with:
+          cache: ${{ github.event_name != 'release' }}
 
       # The heap is verified at each collection, for the tests alone, not for the build.
       - name: Test

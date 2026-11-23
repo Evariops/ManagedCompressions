@@ -1,0 +1,71 @@
+name: Native references
+description: >-
+  What the tests compare against and read, which the repository does not keep (tools/native-ref):
+  libzstd built with threads, brotli 1.1.1 built as .NET builds it, and the test data of zstd and
+  brotli. Built from their sources, which the scripts check, or restored from the cache of the same
+  scripts on the same runner image.
+
+inputs:
+  cache:
+    description: >-
+      'true' to restore them from the cache and fill it on a miss; anything else builds them from
+      their sources, as a release does: its job packs what it ships in the process that loads these
+      libraries, which must not come from a cache.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The libraries link against the image's C library: an image of another release rebuilds them.
+    - name: Name the runner image
+      id: image
+      shell: bash
+      run: echo "name=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: restore
+      if: inputs.cache == 'true'
+      with:
+        path: |
+          tools/native-ref/out/libzstd_mt.so
+          tools/native-ref/out/libbrotli_ref.so
+          tests/ManagedCompressions.Zstd.Tests/testdata
+          tests/ManagedCompressions.Brotli.Tests/testdata
+        key: native-ref-${{ steps.image.outputs.name }}-${{ runner.arch }}-${{ hashFiles('tools/native-ref/*.sh', 'tools/native-ref/*.c') }}
+
+    # zstd's golden files and a decodecorpus corpus, written from zstd 1.5.7's release, checked
+    # against its SHA-256. With CI=true, a test that misses them fails.
+    - name: Write the Zstandard test data
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash tools/native-ref/testdata.sh
+
+    # brotli's test streams: tests/testdata at brotli's v1.1.1 tag, fetched by its commit. With
+    # CI=true, a test that misses them fails.
+    - name: Write the Brotli test data
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash tools/native-ref/brotli-testdata.sh
+
+    # brotli 1.1.1 built as .NET builds the brotli it ships, with the whole of its API: the oracle of
+    # the Brotli tests, which need its error codes, and which .NET's library lacks on Linux.
+    - name: Build brotli
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash tools/native-ref/build-brotli.sh
+
+    # libzstd built with threads, the oracle of the parallel compression tests, which skip without it.
+    - name: Build libzstd with threads
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash tools/native-ref/build.sh mt
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.cache == 'true' && steps.restore.outputs.cache-hit != 'true'
+      with:
+        path: |
+          tools/native-ref/out/libzstd_mt.so
+          tools/native-ref/out/libbrotli_ref.so
+          tests/ManagedCompressions.Zstd.Tests/testdata
+          tests/ManagedCompressions.Brotli.Tests/testdata
+        key: native-ref-${{ steps.image.outputs.name }}-${{ runner.arch }}-${{ hashFiles('tools/native-ref/*.sh', 'tools/native-ref/*.c') }}
