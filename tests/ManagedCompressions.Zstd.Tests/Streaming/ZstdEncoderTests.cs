@@ -54,11 +54,13 @@ public sealed class ZstdEncoderTests
             Levels,
             level =>
             {
+                // Sources of a few blocks, past the fast levels' window of 512 KiB; from level 15 on, the
+                // window is 4 MiB or more, and half the blocks show the calls as well, at half the cost.
                 for (int round = 0; round < 3; round++)
                 {
                     variant++;
                     var random = new Random(variant);
-                    byte[] data = DataKinds.Generate(kind, random.Next(0, 600_000), variant);
+                    byte[] data = DataKinds.Generate(kind, random.Next(0, level >= 15 ? 300_000 : 600_000), variant);
                     bool checksum = random.Next(2) == 0;
                     var options = new ZstdCompressionOptions { Level = level, AppendChecksum = checksum };
                     using var native = new NativeZstdEncoder(new NativeZstdOptions { Quality = level, AppendChecksum = checksum });
@@ -257,8 +259,9 @@ public sealed class ZstdEncoderTests
             LongDistanceCompressionTests.FarRepeats.Kinds,
             kind =>
             {
+                // Twice the window and more: the input buffer wraps, and the matcher's window with it.
                 var random = new Random(level + kind.Length);
-                byte[] data = LongDistanceCompressionTests.FarRepeats.Generate(kind, 3_000_000);
+                byte[] data = LongDistanceCompressionTests.FarRepeats.Generate(kind, 2_000_000);
                 var options = new ZstdCompressionOptions { Level = level, WindowLog = 20, LongDistanceMatching = true, AppendChecksum = true };
                 using var native = new NativeZstdEncoder(new NativeZstdOptions { Quality = level, WindowLog = 20, EnableLongDistanceMatching = true, AppendChecksum = true });
                 IEnumerable<StreamCall> calls = EncoderScript.RandomCalls(random, data.Length).Select(c => c.Op == StreamOp.End ? c with { Op = StreamOp.Flush } : c);

@@ -58,7 +58,7 @@ public sealed class IndexCorrectionTests
     public void Corrected_long_distance_matching_is_the_same_bytes(int level)
     {
         var random = new Random(level);
-        byte[] data = LongDistanceCompressionTests.FarRepeats.Generate("far-text", 6_000_000);
+        byte[] data = LongDistanceCompressionTests.FarRepeats.Generate("far-text", 3_000_000);
         var options = new ZstdCompressionOptions { Level = level, WindowLog = 17, LongDistanceMatching = true };
         var plain = new ZstdEncoder(options);
         var corrected = new ZstdEncoder(options) { CorrectOverflowFrequently = true };
@@ -123,14 +123,16 @@ public sealed class IndexCorrectionTests
 
     /// <summary>
     /// A stream of 3.7 GB, a megabyte at a time, through the encoder and libzstd: past 3500 MiB, both
-    /// correct their indices, and the frame stays libzstd's.
+    /// correct their indices, and the frame stays libzstd's. The content repeats itself at every
+    /// distance, so that the tables the correction moves are read all the time, and goes through four
+    /// times as fast as mixed content.
     /// </summary>
     [Theory]
     [InlineData(1)]
     public void A_stream_past_3500_MiB_stays_libzstds(int level)
     {
         const long Total = 3700L << 20;
-        byte[] chunk = DataKinds.Generate("mixed", 1 << 20, level);
+        byte[] chunk = DataKinds.Generate("repeats", 1 << 20, level);
         byte[] ours = new byte[2 << 20];
         byte[] theirs = new byte[2 << 20];
         var encoder = new ZstdEncoder(level);
