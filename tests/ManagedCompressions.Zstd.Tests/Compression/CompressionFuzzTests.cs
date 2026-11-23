@@ -49,6 +49,13 @@ public sealed class CompressionFuzzTests
                 _ => random.Next(16, 23),
             };
 
+            // The optimal parsers' windows are 4 MiB and more: past two blocks, a larger source only
+            // costs them more.
+            if (level >= 16)
+            {
+                size = Math.Min(size, 1 << 18);
+            }
+
             bool longDistance = CompressionParameters.LibzstdStrategy(level, size) >= Strategy.BinaryTreeOptimal && random.Next(3) == 0;
             byte[] data = Generate(random, size);
             Span<byte> src = random.Next(2) == 0 ? source.AtEnd(size) : source.AtStart(size);
@@ -137,14 +144,19 @@ public sealed class CompressorReuseTests
 {
     public static TheoryData<int> Levels() => [-5, 1, 2, 3, 4, 5, 6, 8, 10, 12, 13, 15, 16, 18, 19, 22];
 
+    /// <summary>
+    /// Sizes that go up and down across the block and the window, three kinds of content at each, in
+    /// turn: every frame follows one of another kind or size, and each kind comes back at several sizes.
+    /// </summary>
     [Theory]
     [MemberData(nameof(Levels))]
     public void A_reused_compressor_writes_libzstd_frames(int level)
     {
         var compressor = new ZstdCompressor(level);
+        int turn = Math.Abs(level);
         foreach (int size in new[] { 300_000, 0, 1000, 70_000, 5, 131_073, 4096, 1_000_000, 64 })
         {
-            foreach (string kind in DataKinds.All)
+            foreach (string kind in (string[])[DataKinds.All[turn++ % DataKinds.All.Length], DataKinds.All[turn++ % DataKinds.All.Length], DataKinds.All[turn++ % DataKinds.All.Length]])
             {
                 byte[] data = DataKinds.Generate(kind, size, 3);
                 byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(size)];

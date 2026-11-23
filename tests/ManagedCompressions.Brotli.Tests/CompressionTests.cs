@@ -15,28 +15,49 @@ public sealed class CompressionTests
     /// <summary>The qualities the compressor has so far.</summary>
     internal static readonly int[] Qualities = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
+    /// <summary>
+    /// Every quality with every kind at the sizes of a block at most, which cost little; past them, two
+    /// kinds in turn at each quality and size, so that every kind meets every quality and size there
+    /// too. Then the windows and modes, with the source in turn: each pair of a quality, a window, a
+    /// mode and a source meets in some case (a covering array of strength 2), where the whole product
+    /// would be six times the cases.
+    /// </summary>
     public static IEnumerable<TheoryDataRow<string, int, int, int, int>> Cases()
     {
-        int[] sizes = [1, 2, 3, 15, 16, 17, 100, 1000, 4096, 65535, 65536, 65537, 100_000, 200_000, 300_000, 1 << 20];
-        foreach (int quality in Qualities)
+        int[] small = [1, 2, 3, 15, 16, 17, 100, 1000, 4096];
+        int[] large = [65535, 65536, 65537, 100_000, 200_000, 300_000, 1 << 20];
+        int[] windows = [10, 11, 12, 15, 16, 17, 18, 19, 20, 24];
+        (string Kind, int Size)[] sources = [("mixed", 300_000), ("text", 70_000)];
+        for (int q = 0; q < Qualities.Length; q++)
         {
+            int quality = Qualities[q];
             foreach (string kind in DataKinds.All)
             {
-                foreach (int size in sizes)
+                foreach (int size in small)
                 {
                     yield return new(kind, size, quality, 22, 0);
                 }
             }
 
-            foreach (int window in new[] { 10, 11, 12, 15, 16, 17, 18, 19, 20, 24 })
+            for (int s = 0; s < large.Length; s++)
             {
-                foreach (int mode in new[] { 0, 1, 2 })
-                {
-                    yield return new("mixed", 300_000, quality, window, mode);
-                    yield return new("text", 70_000, quality, window, mode);
-                }
+                int turn = (2 * ((q * large.Length) + s)) % DataKinds.All.Length;
+                yield return new(DataKinds.All[turn], large[s], quality, 22, 0);
+                yield return new(DataKinds.All[turn + 1], large[s], quality, 22, 0);
+            }
+
+            for (int w = 0; w < windows.Length; w++)
+            {
+                (string kind, int size) = sources[(q + w) % sources.Length];
+                yield return new(kind, size, quality, windows[w], (q + w) % 3);
             }
         }
+
+        // The two cases of the whole product that alone reach a path, which the turns leave out: the
+        // block splitter's histograms and the clustering's pairs grown past their first capacity, and
+        // a dictionary word whose first letter is uppercased, which the decoder transforms back.
+        yield return new("ascending32", 1 << 20, 10, 22, 0);
+        yield return new("text", 65535, 10, 22, 0);
     }
 
     [Theory]

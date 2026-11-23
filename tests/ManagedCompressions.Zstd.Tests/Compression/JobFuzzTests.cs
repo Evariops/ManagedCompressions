@@ -14,13 +14,16 @@ namespace ManagedCompressions.Zstd.Tests.Compression;
 /// long-distance matcher asked for in a third of the optimal parsers' frames, run at random degrees of
 /// parallelism by compressors reused from frame to frame.
 /// </summary>
-/// <remarks><c>MANAGEDCOMPRESSIONS_ZSTD_FUZZ_ITERATIONS</c> sets the number of frames per seed (default 300, here a tenth of it).</remarks>
+/// <remarks>
+/// <c>MANAGEDCOMPRESSIONS_ZSTD_FUZZ_ITERATIONS</c> sets the number of frames per seed (default 300, here
+/// a twentieth of it, over twice the seeds, which run side by side).
+/// </remarks>
 public sealed class JobFuzzTests
 {
     private static int Iterations =>
-        Math.Max(1, (int.TryParse(Environment.GetEnvironmentVariable("MANAGEDCOMPRESSIONS_ZSTD_FUZZ_ITERATIONS"), CultureInfo.InvariantCulture, out int n) ? n : 300) / 10);
+        Math.Max(1, (int.TryParse(Environment.GetEnvironmentVariable("MANAGEDCOMPRESSIONS_ZSTD_FUZZ_ITERATIONS"), CultureInfo.InvariantCulture, out int n) ? n : 300) / 20);
 
-    public static TheoryData<int> Seeds() => [1, 2, 3, 4];
+    public static TheoryData<int> Seeds() => [1, 2, 3, 4, 5, 6, 7, 8];
 
     [Theory]
     [MemberData(nameof(Seeds))]
@@ -41,7 +44,9 @@ public sealed class JobFuzzTests
                 2 => random.Next(8, 16),
                 _ => random.Next(16, 23),
             };
-            int size = random.Next(3) == 0 ? random.Next(400_000, 1_100_000) : random.Next(1_100_000, 4_000_000);
+            // The jobs and overlaps follow the window, which follows the source: from the optimal
+            // parsers on, 2 MB is cut as 4 MB would be, at half the cost.
+            int size = random.Next(3) == 0 ? random.Next(400_000, 1_100_000) : random.Next(1_100_000, level >= 16 ? 2_000_000 : 4_000_000);
             int jobSize = random.Next(3) == 0 ? 0 : random.Next(512 << 10, 1_500_000);
             int overlapLog = random.Next(3) == 0 ? random.Next(1, 10) : 0;
             int dictionaryKind = random.Next(4) == 0 ? random.Next(1, 3) : 0;

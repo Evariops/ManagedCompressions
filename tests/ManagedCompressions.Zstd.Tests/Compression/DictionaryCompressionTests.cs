@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Linq;
 using ManagedCompressions.Zstd.Tests.Differential;
 using ManagedCompressions.Zstd.Tests.Support;
@@ -22,13 +23,27 @@ public sealed class DictionaryCompressionTests
 
     private static readonly string[] Kinds = ["text", "json", "walk64", "mixed", "zeros", "urls"];
 
-    /// <summary>A kind and a type of dictionary, a theory row each; the row checks every level and size.</summary>
+    /// <summary>A kind and a type of dictionary, a theory row each.</summary>
     public static MatrixTheoryData<string, string> KindsAndTypes() => new(Kinds, ["trained", "raw"]);
 
+    /// <summary>
+    /// Every level and size with each type of dictionary, the kind in turn: the way a frame takes the
+    /// dictionary follows the level, the size and the dictionary's own size, which the type sets. Each
+    /// pair of a kind with a level, a size or a type meets in some case (a covering array of strength
+    /// 2), where the whole product would be six times the cases.
+    /// </summary>
     [Theory]
     [MemberData(nameof(KindsAndTypes))]
     public void Compresses_like_libzstd(string kind, string type) =>
-        Cases.CheckAll(from level in Levels from size in Sizes select CorpusCase.Name(kind, size, level, "dict=" + type), Check);
+        Cases.CheckAll(
+            from l in Enumerable.Range(0, Levels.Length)
+            from s in Enumerable.Range(0, Sizes.Length)
+            where Kinds[(l + s) % Kinds.Length] == kind
+            select CorpusCase.Name(kind, Sizes[s], Levels[l], "dict=" + type),
+            Check);
+
+    /// <summary>libzstd's dictionaries prepared at each level, made once: preparing one is as dear as a small frame.</summary>
+    private static readonly ConcurrentDictionary<(string, string, int), NativeZstdDictionary> Prepared = new();
 
     private static void Check(string name)
     {
@@ -36,7 +51,7 @@ public sealed class DictionaryCompressionTests
         byte[] data = @case.Data;
         (byte[] dictionary, _) = @case.GetDictionary()!.Value;
 
-        using NativeZstdDictionary native = NativeZstdDictionary.Create(dictionary, @case.Level);
+        NativeZstdDictionary native = Prepared.GetOrAdd((@case.Kind, @case.Dictionary!, @case.Level), _ => NativeZstdDictionary.Create(dictionary, @case.Level));
         byte[] expected = NativeZstd.Compress(data, new NativeZstdOptions { Dictionary = native });
 
         var compressor = new ZstdCompressor(@case.Level, dictionary);

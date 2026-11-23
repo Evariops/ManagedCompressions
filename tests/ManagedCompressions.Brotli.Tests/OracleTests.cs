@@ -1,5 +1,6 @@
 using System;
 using System.IO.Compression;
+using System.Linq;
 using ManagedCompressions.Brotli.Tests.Support;
 using Xunit;
 
@@ -47,18 +48,24 @@ public sealed class OracleTests
         Assert.True(NativeBrotli.HasErrorCodes);
     }
 
+    /// <summary>
+    /// Every quality at every window, the source in turn: each pair of a source, a quality and a window
+    /// meets in some case (a covering array of strength 2), where the whole product would be four
+    /// times the cases.
+    /// </summary>
     [Theory]
-    [InlineData("text", 100_000)]
-    [InlineData("json", 70_000)]
-    [InlineData("mixed", 300_000)]
-    [InlineData("walk64", 50_000)]
-    public void DotNetWritesTheOraclesBytes(string kind, int size)
+    [InlineData(0, "text", 100_000)]
+    [InlineData(1, "json", 70_000)]
+    [InlineData(2, "mixed", 300_000)]
+    [InlineData(3, "walk64", 50_000)]
+    public void DotNetWritesTheOraclesBytes(int turn, string kind, int size)
     {
         byte[] data = DataKinds.Generate(kind, size);
         byte[] dotnet = new byte[BrotliEncoder.GetMaxCompressedLength(data.Length)];
+        int[] windows = [10, 16, 22, 24];
         for (int quality = 0; quality <= 11; quality++)
         {
-            foreach (int window in new[] { 10, 16, 22, 24 })
+            foreach (int window in windows.Where((_, w) => (quality + w) % windows.Length == turn))
             {
                 Assert.True(BrotliEncoder.TryCompress(data, dotnet, out int written, quality, window));
                 byte[] oracle = NativeBrotli.Compress(data, quality, window);

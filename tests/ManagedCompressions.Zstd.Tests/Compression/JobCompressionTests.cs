@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using ManagedCompressions.Zstd.Tests.Differential;
 using ManagedCompressions.Zstd.Tests.Support;
@@ -22,21 +23,24 @@ public sealed class JobCompressionTests
     {
         var data = new TheoryData<string>();
 
-        // The defaults: jobs of four windows, the overlap by the strategy.
-        foreach (string kind in Kinds)
+        // The defaults: jobs of four windows, the overlap by the strategy. Each kind takes two of the
+        // four, and each of the four four kinds.
+        (int Size, int Level, bool Checksum)[] defaults = [(600_000, 3, false), (5_000_000, 1, false), (5_000_000, -3, true), (20_000_000, 3, false)];
+        for (int k = 0; k < Kinds.Length; k++)
         {
-            data.Add(Name(kind, 600_000, 3, 0, 0, false));
-            data.Add(Name(kind, 5_000_000, 1, 0, 0, false));
-            data.Add(Name(kind, 5_000_000, -3, 0, 0, true));
-            data.Add(Name(kind, 20_000_000, 3, 0, 0, false));
+            foreach ((int size, int level, bool checksum) in (ReadOnlySpan<(int, int, bool)>)[defaults[k % 4], defaults[(k + 1) % 4]])
+            {
+                data.Add(Name(Kinds[k], size, level, 0, 0, checksum));
+            }
         }
 
         data.Add(Name("text", 20_000_000, 5, 0, 0, true));
         data.Add(Name("json", 40_000_000, 9, 0, 0, false));
 
         // The edges: no workers up to 512 KiB, one job past it, a last job of a whole job, of a byte,
-        // of fewer bytes than a hash reads.
-        foreach (int level in new[] { 1, 3, 9, 19 })
+        // of fewer bytes than a hash reads. Level 19's jobs are its window, whatever the job size
+        // asked for: past one job, its frames of these sizes are all a single job.
+        foreach (int level in new[] { 1, 3, 9 })
         {
             foreach (int size in new[] { 524_288, 524_289, 1_048_576, 1_048_577, 1_048_583, 1_572_864 + 100 })
             {
@@ -44,17 +48,25 @@ public sealed class JobCompressionTests
             }
         }
 
+        data.Add(Name("mixed", 524_288, 19, 512 << 10, 0, false));
+        data.Add(Name("mixed", 524_289, 19, 512 << 10, 0, false));
         data.Add(Name("text", (2 << 20) + 1, 1, 0, 0, true));
 
-        // Small jobs at every level, overlaps from none to the window.
-        foreach (string kind in Kinds)
+        // Small jobs at every level: the mixed content, which holds most kinds, and two kinds more in
+        // turn, so that each kind meets the strategies from the fastest to the strongest. The jobs and
+        // overlaps follow the window, which follows the source: 1.5 MB cut as 3 MB would be, three jobs
+        // up to the lazy strategies, two for the first optimal parsers, one for the strongest.
+        int[] levels = [-1, 1, 2, 3, 4, 5, 6, 8, 10, 12, 13, 15, 16, 17, 18, 19, 22];
+        string[] others = [.. Kinds.Where(kind => kind != "mixed")];
+        for (int l = 0; l < levels.Length; l++)
         {
-            foreach (int level in new[] { -1, 1, 2, 3, 4, 5, 6, 8, 10, 12, 13, 15, 16, 17, 18, 19, 22 })
+            foreach (string kind in (string[])["mixed", others[(2 * l) % others.Length], others[((2 * l) + 1) % others.Length]])
             {
-                data.Add(Name(kind, 3_000_000, level, 512 << 10, 0, level % 2 == 0));
+                data.Add(Name(kind, 1_500_000, levels[l], 512 << 10, 0, levels[l] % 2 == 0));
             }
         }
 
+        // Overlaps from none to the window.
         foreach (int overlapLog in new[] { 1, 3, 6, 9 })
         {
             foreach (int level in new[] { 1, 3, 7, 13, 19 })
@@ -86,24 +98,26 @@ public sealed class JobCompressionTests
         byte[] data = DataKinds.Generate(kind, size);
         byte[] expected = libzstd!.Compress(data, level, workers: 2, checksum, jobSize: jobSize, overlapLog: overlapLog);
 
+        // The jobs one after the other on the compressor itself: the frame, and where it parts.
         var compressor = new ZstdCompressor(level) { AppendChecksum = checksum, JobSizeOverride = jobSize, OverlapLogOverride = overlapLog };
         byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(size)];
         Assert.Equal(OperationStatus.Done, compressor.CompressInJobs(data, output, out int written));
         Corpus.AssertSameBytes(expected, output.AsSpan(0, written), name);
         CompressionCorpus.AssertDecodes(output.AsSpan(0, written), data, name, libzstds: true);
 
-        // Again on the same compressor, whose tables carry over from job to job and frame to frame.
-        Assert.Equal(OperationStatus.Done, compressor.CompressInJobs(data, output, out int again));
-        Corpus.AssertSameBytes(expected, output.AsSpan(0, again), name);
-
-        // In parallel, at a few degrees: the same frame, its jobs run in any order.
-        foreach (int degree in new[] { 1, 3, 8 })
+        // In parallel, twice: on new workers, then on those the first call kept (the levels whose
+        // compressors hold little keep them), whose tables carry over from job to job and frame to
+        // frame. The degrees go round the cases, from one job at a time to more workers than jobs.
+        int turn = Support.Cases.Turn(name);
+        foreach (int degree in (int[])[Degrees[turn % Degrees.Length], Degrees[(turn + 1) % Degrees.Length]])
         {
             Array.Clear(output);
             int parallel = await compressor.CompressAsync(data, output, degree, TestContext.Current.CancellationToken);
             Corpus.AssertSameBytes(expected, output.AsSpan(0, parallel), name + " in parallel at " + degree);
         }
     }
+
+    private static readonly int[] Degrees = [1, 3, 8];
 
     /// <summary>
     /// Frames of libzstd with threads, recorded by their size and SHA-256: the jobs stay checked where
@@ -162,17 +176,22 @@ public sealed class JobCompressionTests
             () => compressor.CompressAsync(data, new byte[length - 1], 3, TestContext.Current.CancellationToken).AsTask());
     }
 
+    /// <summary>
+    /// Every level with every kind, and the type of dictionary in turn: each pair of a level, a kind and
+    /// a type meets in some case (a covering array of strength 2), where the whole product would be
+    /// three times the cases.
+    /// </summary>
     public static TheoryData<string> DictionaryCases()
     {
         var data = new TheoryData<string>();
-        foreach (string kind in new[] { "text", "json", "mixed", "walk64" })
+        string[] kinds = ["text", "json", "mixed", "walk64"];
+        string[] types = ["trained", "raw", "large"];
+        int[] levels = [-1, 1, 3, 5, 9, 13, 16, 19];
+        for (int l = 0; l < levels.Length; l++)
         {
-            foreach (string type in new[] { "trained", "raw", "large" })
+            for (int k = 0; k < kinds.Length; k++)
             {
-                foreach (int level in new[] { -1, 1, 3, 5, 9, 13, 16, 19 })
-                {
-                    data.Add($"{kind}/{type}/L{level}");
-                }
+                data.Add($"{kinds[k]}/{types[(k + l) % types.Length]}/L{levels[l]}");
             }
         }
 
