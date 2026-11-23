@@ -443,12 +443,34 @@ internal static unsafe class FseEncoder
     }
 
     /// <summary>
+    /// Asserts that a distribution is one <see cref="BuildCTable"/> can spread without a check: a table of
+    /// <see cref="MaxTableLog"/> bits at most, 256 symbols at most, counts that sum to the table's size.
+    /// </summary>
+    [Conditional("DEBUG")]
+    private static void AssertDistribution(short* normalized, uint maxSymbolValue, uint tableLog)
+    {
+        Debug.Assert(tableLog <= MaxTableLog && maxSymbolValue <= 255, "a distribution the scratch holds");
+        long cells = 0;
+        for (uint s = 0; s <= maxSymbolValue; s++)
+        {
+            cells += normalized[s] == -1 ? 1 : normalized[s];
+        }
+
+        Debug.Assert(cells == 1L << (int)tableLog, "a distribution that fills its table");
+    }
+
+    /// <summary>
     /// libzstd's <c>FSE_buildCTable_wksp</c>: the symbols spread over the table as the decoder spreads
     /// them, then each state's successor by symbol, and each symbol's transform.
     /// </summary>
     public static void BuildCTable(FseCTable table, short* normalized, uint maxSymbolValue, uint tableLog)
     {
         Debug.Assert(tableLog < 16);
+
+        // SAFETY: every index below follows from what the normalization guarantees: counts that sum to
+        // the table's size, a count of -1 taking one cell; and from a table and symbols that fit the
+        // scratch, sized for the largest.
+        AssertDistribution(normalized, maxSymbolValue, tableLog);
         uint tableSize = 1u << (int)tableLog;
         uint tableMask = tableSize - 1;
         uint step = (uint)Fse.TableStep((int)tableSize);
