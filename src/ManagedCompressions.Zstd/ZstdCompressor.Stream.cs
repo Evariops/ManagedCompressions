@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Hashing;
 using ManagedCompressions.Zstd.Internal;
 
@@ -107,11 +108,17 @@ public sealed unsafe partial class ZstdCompressor
     /// <param name="destination">Where the frame's next bytes go.</param>
     /// <param name="capacity">Room for them: <see cref="GetMaxCompressedLength"/> of the chunk always suffices.</param>
     /// <returns>The bytes written, or <see cref="PledgedSizeExceeded"/>.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The chunk took more than its bound, which libzstd refuses as <c>dstSize_tooSmall</c>: blocks split
+    /// into many parts that each fail to compress could, in principle. Nothing reports the frame whole.
+    /// </exception>
     internal int CompressStreamChunk(byte* source, int size, bool last, byte* destination, int capacity)
     {
         int headerSize = 0;
         if (_streamStage == StreamStage.Init)
         {
+            // The largest header, which any bound holds.
+            Debug.Assert(capacity >= FrameHeaderSizeMax, "room for the frame's header");
             bool contentSize = _writeContentSize && _streamPledged != CompressionParameters.UnknownSize;
             headerSize = WriteFrameHeader(
                 destination, _streamParameters.WindowLog, _streamPledged, AppendChecksum, _dictionary?.Id ?? 0, contentSize, _writeDictionaryId);
@@ -146,7 +153,20 @@ public sealed unsafe partial class ZstdCompressor
             // Past 3500 MiB, the blocks correct the indices before they overflow (CorrectOverflowIfNeeded).
             _streamChecksum?.Append(new ReadOnlySpan<byte>(source, size));
             long savings = (long)_streamConsumed - (long)_streamProduced;
+
+            // The next frame's first index past whatever the chunk's blocks store, before they store it:
+            // an exception in the middle of the chunk leaves no table entry above the index a later frame
+            // starts at, which its match finders would take for a position ahead of theirs. A block ahead
+            // for btultra2, which moves the window past its first block once.
+            _nextIndex = (uint)(_streamNextSource - _matchState.Base) + (uint)FrameFormat.MaxBlockSize;
             int blocks = CompressBlocks(source, size, destination + op, capacity - op, _streamBlockSizeMax, last, savings);
+            if (blocks < 0)
+            {
+                // The blocks took more than the bound the capacity holds: libzstd's dstSize_tooSmall, which
+                // only a block split into many parts that each fail to compress could reach.
+                throw new InvalidOperationException("A chunk's blocks took more room than their bound.");
+            }
+
             if (last && blocks != 0)
             {
                 _streamStage = StreamStage.Ending;
@@ -167,7 +187,13 @@ public sealed unsafe partial class ZstdCompressor
             return op;
         }
 
-        // libzstd's ZSTD_writeEpilogue.
+        // libzstd's ZSTD_writeEpilogue, within the bound as the blocks were.
+        int epilogue = (_streamStage != StreamStage.Ending ? FrameFormat.BlockHeaderSize : 0) + (_streamChecksum is not null ? FrameFormat.ChecksumSize : 0);
+        if (capacity - op < epilogue)
+        {
+            throw new InvalidOperationException("A frame's end took more room than its bound.");
+        }
+
         if (_streamStage != StreamStage.Ending)
         {
             WriteBlockHeader(destination + op, 1, 0);

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -32,12 +33,12 @@ internal sealed unsafe class PinnedSlab
         where T : unmanaged => ((count * sizeof(T)) + LineSize - 1) & ~(LineSize - 1);
 
     /// <summary>The next table, of <paramref name="count"/> values.</summary>
-    /// <exception cref="InvalidOperationException">The slab was sized for fewer tables.</exception>
+    /// <exception cref="UnreachableException">The slab was sized for fewer tables.</exception>
     public T* Take<T>(int count)
         where T : unmanaged
     {
         T* table = (T*)_next;
         _next += SizeOf<T>(count);
-        return _next <= _end ? table : throw new InvalidOperationException("The slab is smaller than its tables.");
+        return _next <= _end ? table : throw new UnreachableException("The slab is smaller than its tables.");
     }
 }

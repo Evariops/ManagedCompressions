@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using ManagedCompressions.Zstd.Tests.Differential;
 using ManagedCompressions.Zstd.Tests.Support;
@@ -174,6 +175,27 @@ public sealed class JobCompressionTests
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => compressor.CompressAsync(data, new byte[length - 1], 3, TestContext.Current.CancellationToken).AsTask());
+    }
+
+    /// <summary>
+    /// A call cancelled while its first job runs: the job runs to its end, the jobs waiting for a thread
+    /// never start, the call throws, and the compressor compresses the next call's frame as before.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_call_stops_and_leaves_the_compressor_whole()
+    {
+        byte[] data = DataKinds.Generate("text", 4_000_000, 19);
+        var compressor = new ZstdCompressor(19) { JobSizeOverride = 512 << 10 };
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancellation.CancelAfter(50);
+        byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => compressor.CompressAsync(data, output, 1, cancellation.Token).AsTask());
+
+        byte[] small = DataKinds.Generate("json", 1_200_000, 5);
+        byte[] expected = new byte[ZstdCompressor.GetMaxCompressedLength(small.Length)];
+        Assert.Equal(OperationStatus.Done, compressor.CompressInJobs(small, expected, out int length));
+        int written = await compressor.CompressAsync(small, output, 2, TestContext.Current.CancellationToken);
+        Assert.True(expected.AsSpan(0, length).SequenceEqual(output.AsSpan(0, written)));
     }
 
     /// <summary>

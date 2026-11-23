@@ -223,11 +223,23 @@ public sealed unsafe class ZstdEncoder
     /// <returns>
     /// <see cref="OperationStatus.Done"/> when the source is taken whole and no compressed byte waits,
     /// and with <paramref name="isFinalBlock"/> the frame written to its end: the next call begins
-    /// another. <see cref="OperationStatus.DestinationTooSmall"/> when the destination filled first: call
+    /// another. An empty source that is not final returns it at once, as System.IO.Compression's encoder
+    /// does, even when a compressed block still waits: <see cref="Flush"/> hands it out.
+    /// <see cref="OperationStatus.DestinationTooSmall"/> when the destination filled first: call
     /// again with the rest of the source. <see cref="OperationStatus.InvalidData"/> when the content
     /// differs from the size pledged (<see cref="SetSourceLength"/>): nothing is reported taken or
     /// written, and every call is refused until <see cref="Reset"/>.
     /// </returns>
+    /// <exception cref="NotSupportedException">
+    /// The frame needs a window of 2^31 bytes (<see cref="ZstdCompressionOptions.MaxWindowLog"/> with no
+    /// size pledged), which this encoder keeps in an array, and an array does not hold; or the
+    /// long-distance matcher is asked for below the optimal parsers. Known once the frame begins: the
+    /// size pledged, or the first call's when it is final, decides the window and the strategy.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// A block took more than the bound libzstd gives it, which libzstd refuses as <c>dstSize_tooSmall</c>:
+    /// every call is then refused until <see cref="Reset"/>.
+    /// </exception>
     public OperationStatus Compress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesConsumed, out int bytesWritten, bool isFinalBlock)
     {
         if (source.IsEmpty && !isFinalBlock)
@@ -249,6 +261,8 @@ public sealed unsafe class ZstdEncoder
     /// <see cref="OperationStatus.Done"/> once all of it is written; <see cref="OperationStatus.DestinationTooSmall"/>
     /// when the destination filled first: flush again. <see cref="OperationStatus.InvalidData"/> as for <see cref="Compress"/>.
     /// </returns>
+    /// <exception cref="NotSupportedException">As for <see cref="Compress"/>.</exception>
+    /// <exception cref="InvalidOperationException">As for <see cref="Compress"/>.</exception>
     public OperationStatus Flush(Span<byte> destination, out int bytesWritten) =>
         Run(default, destination, Directive.Flush, out _, out bytesWritten);
 
@@ -281,8 +295,11 @@ public sealed unsafe class ZstdEncoder
                         && destination.Length - op >= Bound(source.Length - ip)
                         && _inputPosition == 0)
                     {
-                        // The shortcut: the rest of the source compressed straight into the destination.
+                        // The shortcut: the rest of the source compressed straight into the destination. Failed
+                        // until the chunk returns, so that an exception leaves the encoder refusing its calls.
+                        _failed = true;
                         int size = _compressor.CompressStreamChunk(src + ip, source.Length - ip, last: true, dst + op, destination.Length - op);
+                        _failed = false;
                         if (size < 0)
                         {
                             return Fail();
@@ -321,12 +338,14 @@ public sealed unsafe class ZstdEncoder
                         _outputStart = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(_output));
                     }
 
+                    _failed = true;
                     int compressed = _compressor.CompressStreamChunk(
                         _inputStart + _inputToCompress,
                         chunk,
                         lastBlock,
                         direct ? dst + op : _outputStart,
                         direct ? destination.Length - op : _output.Length);
+                    _failed = false;
                     if (compressed < 0)
                     {
                         return Fail();

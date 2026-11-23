@@ -13,7 +13,14 @@ public sealed class ZstdCompressionOptions
     /// <summary>The smallest window the format has: 1 KiB, libzstd's <c>ZSTD_WINDOWLOG_MIN</c>.</summary>
     public const int MinWindowLog = 10;
 
-    /// <summary>The largest window libzstd takes on 64-bit machines: 2 GiB, <c>ZSTD_WINDOWLOG_MAX_64</c>.</summary>
+    /// <summary>
+    /// The largest window libzstd takes on 64-bit machines: 2 GiB, <c>ZSTD_WINDOWLOG_MAX_64</c>. Its frames
+    /// are for one-shot decoders: <see cref="ZstdDecompressor"/> decodes them, while this library's
+    /// streaming decoders refuse a window past 2^<see cref="ZstdDecompressionOptions.WindowLogLimit"/>, as
+    /// libzstd's do by default past 2^27; and <see cref="ZstdEncoder"/> cannot stream a frame of unknown
+    /// size with it, its window taking an array (it throws <see cref="NotSupportedException"/> when the
+    /// frame begins).
+    /// </summary>
     public const int MaxWindowLog = 31;
 
     private int _level = ZstdCompressor.DefaultLevel;

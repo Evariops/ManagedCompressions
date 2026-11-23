@@ -4,6 +4,10 @@ using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
 
+// The hooks of bench/ManagedCompressions.Zstd.Perf's micro-benchmarks, which time the stages of a
+// compression apart. They stay in the assembly that ships, internal: the library is built one way, and a
+// build of its own for the benchmarks would time other code than the one shipped. What they cost the
+// compressions that do not use them is the test of Recorder against null, once a block.
 public sealed unsafe partial class ZstdCompressor
 {
     /// <summary>

@@ -466,7 +466,7 @@ internal static unsafe class HuffmanEncoder
         maxNbBits = SetMaxHeight(nodes, (uint)nonNullRank, maxNbBits);
         if (maxNbBits > HuffmanTable.MaxTableLog)
         {
-            throw new InvalidOperationException("HUF_buildCTable: tree too deep");
+            throw new UnreachableException("HUF_buildCTable: tree too deep");
         }
 
         // HUF_buildCTableFromTree: the starting code of each length, from the longest.

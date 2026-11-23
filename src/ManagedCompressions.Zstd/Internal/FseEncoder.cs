@@ -153,7 +153,7 @@ internal static unsafe class FseEncoder
 
         if (tableLog < Fse.MinTableLog || tableLog > MaxTableLog || tableLog < MinTableLog(total, maxSymbolValue))
         {
-            throw new InvalidOperationException("FSE_normalizeCount: unsupported table log");
+            throw new UnreachableException("FSE_normalizeCount: unsupported table log");
         }
 
         ReadOnlySpan<uint> restToBeatTable = [0, 473195, 504333, 520860, 550000, 700000, 750000, 830000];
@@ -323,7 +323,7 @@ internal static unsafe class FseEncoder
                 uint weight = stop - start;
                 if (weight < 1)
                 {
-                    throw new InvalidOperationException("FSE_normalizeM2: a symbol rounded to nothing");
+                    throw new UnreachableException("FSE_normalizeM2: a symbol rounded to nothing");
                 }
 
                 normalized[s] = (short)weight;
@@ -411,7 +411,7 @@ internal static unsafe class FseEncoder
                 previousIsZero = count == 1;
                 if (remaining < 1)
                 {
-                    throw new InvalidOperationException("FSE_writeNCount: invalid distribution");
+                    throw new UnreachableException("FSE_writeNCount: invalid distribution");
                 }
 
                 while (remaining < threshold)
@@ -433,7 +433,7 @@ internal static unsafe class FseEncoder
 
         if (remaining != 1)
         {
-            throw new InvalidOperationException("FSE_writeNCount: invalid distribution");
+            throw new UnreachableException("FSE_writeNCount: invalid distribution");
         }
 
         output[0] = (byte)bitStream;

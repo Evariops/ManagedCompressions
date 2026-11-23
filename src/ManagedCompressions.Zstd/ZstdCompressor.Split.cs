@@ -14,6 +14,16 @@ public sealed unsafe partial class ZstdCompressor
     /// <summary>libzstd's <c>ZSTD_MAX_NB_BLOCK_SPLITS</c>.</summary>
     private const int MaxBlockSplits = 196;
 
+    /// <summary>
+    /// The entries of <see cref="_partitions"/>. libzstd's helper checks its cap where a part starts, not
+    /// where a cut is written: each part on the way, back from its first half, writes one more cut, and
+    /// the count follows the last. Past <see cref="MaxBlockSplits"/>, a cut per level of the recursion
+    /// then: a part of fewer than 300 sequences is not split, and a block holds 43,690 at most, so 8
+    /// levels; and the count. libzstd's array of 196 entries does not hold them, which its comment calls
+    /// impossible to reach; the splits stay libzstd's, the table holds them.
+    /// </summary>
+    private const int PartitionsSize = MaxBlockSplits + 16;
+
     /// <summary>libzstd's <c>LONGNBSEQ</c>: from this many sequences, their count takes three bytes.</summary>
     private const nuint LongSequenceCount = 0x7F00;
 
@@ -185,6 +195,7 @@ public sealed unsafe partial class ZstdCompressor
             DeriveBlockSplits(partitions, 0, sequenceCount, EstimateSize(Section(0, sequenceCount, SplitCounts(0))));
         }
 
+        Bounds.Index(_splitCount, PartitionsSize);
         partitions[_splitCount] = (uint)sequenceCount;
         return _splitCount;
     }
@@ -219,6 +230,9 @@ public sealed unsafe partial class ZstdCompressor
         if (firstSize + secondSize < fullSize)
         {
             DeriveBlockSplits(partitions, start, middle, firstSize);
+
+            // SAFETY: past the cap, a cut per part on the way at most (PartitionsSize).
+            Bounds.Index(_splitCount, PartitionsSize);
             partitions[_splitCount++] = (uint)middle;
             DeriveBlockSplits(partitions, middle, end, secondSize);
         }
