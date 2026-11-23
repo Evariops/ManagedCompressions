@@ -21,6 +21,21 @@ internal static class Cases
     public static void CheckAll<T>(IEnumerable<T> cases, Action<T> check, Func<T, string> name) =>
         Assert.Multiple([.. cases.Select(@case => (Action)(() => Named(@case, check, name)))]);
 
+    /// <summary>
+    /// The case's turn among the variants a case takes one or two of (the degrees of parallelism, the
+    /// calls repeated): a hash of its name, the same in every process, unlike string.GetHashCode.
+    /// </summary>
+    public static int Turn(string name)
+    {
+        int hash = 17;
+        foreach (char c in name)
+        {
+            hash = unchecked((hash * 31) + c);
+        }
+
+        return hash & int.MaxValue;
+    }
+
     private static void Named<T>(T @case, Action<T> check, Func<T, string> name)
     {
         try

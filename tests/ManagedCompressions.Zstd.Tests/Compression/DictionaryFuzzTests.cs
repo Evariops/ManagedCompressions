@@ -70,7 +70,10 @@ public sealed class DictionaryFuzzTests
                     1 => random.Next(40_000),
                     2 => 100_000 + random.Next(60_000),
                     3 => random.Next(Math.Min(1 << 20, (7 * dictionary.Length) + 1)),
-                    _ => random.Next(1 << 20),
+
+                    // Past the points where the frame changes the way it takes the dictionary, a larger
+                    // source only costs the optimal parsers more: two blocks for them.
+                    _ => random.Next(level >= 16 ? 1 << 18 : 1 << 20),
                 };
 
                 byte[] data = Generate(random, size, dictionary);

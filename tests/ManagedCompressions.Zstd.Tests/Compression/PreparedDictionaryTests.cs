@@ -32,8 +32,9 @@ public sealed class PreparedDictionaryTests
         var checksummed = new ZstdCompressor(new ZstdCompressionOptions { Level = level, Dictionary = bytes, AppendChecksum = true });
         Assert.Equal(level, fromOptions.Level);
 
-        // Attached, copied and loaded: the three ways a frame uses the dictionary, by its size.
-        foreach (int size in (int[])[100, 5000, 40_000, 140_000, 900_000])
+        // Attached, copied and loaded: the three ways a frame uses the dictionary, by its size, loaded
+        // past 128 KiB and six times the dictionary's 16 KiB.
+        foreach (int size in (int[])[100, 5000, 40_000, 140_000])
         {
             byte[] data = DataKinds.Generate("json", size, level + size);
             byte[] expected = Compress(fromBytes, data);

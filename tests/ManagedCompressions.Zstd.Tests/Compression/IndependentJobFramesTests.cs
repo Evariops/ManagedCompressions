@@ -19,12 +19,14 @@ public sealed class IndependentJobFramesTests
 {
     public static TheoryData<string> Cases()
     {
+        // The jobs follow the window, which follows the source: at the slow levels, 1.5 MB is cut as
+        // 3 MB would be, in three jobs at level 12 and in one at level 19.
         var data = new TheoryData<string>();
         foreach (string kind in new[] { "text", "json", "mixed", "incompressible", "zeros" })
         {
             foreach (int level in new[] { -1, 1, 3, 7, 12, 19 })
             {
-                data.Add(Name(kind, 3_000_000, level, 512 << 10, level == 3));
+                data.Add(Name(kind, level >= 12 ? 1_500_000 : 3_000_000, level, 512 << 10, level == 3));
             }
         }
 
@@ -53,17 +55,28 @@ public sealed class IndependentJobFramesTests
             JobSizeOverride = int.Parse(parts[3]["job=".Length..], CultureInfo.InvariantCulture),
         };
 
-        foreach (int degree in new[] { 1, 3, -1 })
+        // At two degrees in turn, from one job at a time to the default: on new workers, then on those
+        // the first call kept, where it keeps them. The second call must write the first's bytes, which
+        // are checked frame by frame.
+        int turn = Support.Cases.Turn(name);
+        byte[]? frames = null;
+        foreach (int degree in (int[])[Degrees[turn % Degrees.Length], Degrees[(turn + 1) % Degrees.Length]])
         {
             byte[] destination = new byte[ZstdCompressor.GetMaxCompressedLength(content.Length) + 4096];
             int size = await compressor.CompressAsync(content, destination, degree, TestContext.Current.CancellationToken);
-            byte[] frames = destination.AsSpan(0, size).ToArray();
+            if (frames is not null)
+            {
+                Assert.True(destination.AsSpan(0, size).SequenceEqual(frames), $"degree {degree}: not the frames of the first call");
+                continue;
+            }
+
+            frames = destination.AsSpan(0, size).ToArray();
 
             // Frame by frame: the section it declares, compressed by libzstd in one shot.
             List<FrameSpan> found = FrameScan.Scan(frames, out bool complete);
             Assert.True(complete);
-            // A job is never smaller than the overlap libzstd would load before it (the whole 8 MiB window
-            // at level 19), independent or not: the fast levels' small jobs make several frames.
+            // A job is never smaller than the overlap libzstd would load before it (the whole window at
+            // level 19), independent or not: the fast levels' small jobs make several frames.
             if (content.Length <= ZstdCompressor.MinJobsSourceSize)
             {
                 Assert.Single(found);
@@ -95,6 +108,9 @@ public sealed class IndependentJobFramesTests
             Assert.True(streamed.ToArray().AsSpan().SequenceEqual(content));
         }
     }
+
+    /// <summary>One job at a time, a few, and the default degree (-1).</summary>
+    private static readonly int[] Degrees = [1, 3, -1];
 
     [Fact]
     public async Task The_default_stays_one_frame()

@@ -31,11 +31,22 @@ public static class CompressionCorpus
     public static IEnumerable<string> Small(string kind) =>
         from size in SmallSizes from level in ExactLevels select CorpusCase.Name(kind, size, level);
 
-    /// <summary>One size around the block boundary, of <paramref name="kind"/>, at every level.</summary>
+    /// <summary>
+    /// One size around the block boundary, of <paramref name="kind"/>, at the levels that fall to it:
+    /// every kind meets every level, at a size in turn, so that each pair of a kind, a size and a level
+    /// meets in some case (a covering array of strength 2), where the whole product would be six times
+    /// the cases.
+    /// </summary>
     public static IEnumerable<string> Blocks(string kind, int size) =>
-        from level in ExactLevels select CorpusCase.Name(kind, size, level);
+        from l in Enumerable.Range(0, ExactLevels.Length)
+        where BlockSizes[(Array.IndexOf(DataKinds.All, kind) + l) % BlockSizes.Length] == size
+        select CorpusCase.Name(kind, size, ExactLevels[l]);
 
-    /// <summary>Several megabytes: many blocks, split before their match finding, and windows that slide.</summary>
+    /// <summary>
+    /// Megabytes: many blocks, split before their match finding, and windows that slide. From level 9
+    /// on, the window is 4 MiB or more and slides over none of these: there, a megabyte of eight
+    /// blocks takes the paths three megabytes take, at a third of the cost.
+    /// </summary>
     public static TheoryData<string> Large()
     {
         var data = new TheoryData<string>();
@@ -43,7 +54,7 @@ public static class CompressionCorpus
         {
             foreach (int level in new[] { -1, 1, 3, 4, 5, 8, 12, 15, 16, 19, 22 })
             {
-                data.Add(CorpusCase.Name(kind, 3_000_000, level));
+                data.Add(CorpusCase.Name(kind, level >= 9 ? 1_000_000 : 3_000_000, level));
             }
         }
 
