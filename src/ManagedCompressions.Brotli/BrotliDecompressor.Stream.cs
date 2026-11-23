@@ -47,6 +47,7 @@ public sealed unsafe partial class BrotliDecompressor
         consumed = 0;
         written = 0;
         _br = new BitReader(src, srcLength);
+        _streaming = false;
         _pos = 0;
         _s.DistRb[0] = 16;
         _s.DistRb[1] = 15;

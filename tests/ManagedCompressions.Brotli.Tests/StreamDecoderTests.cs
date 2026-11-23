@@ -120,6 +120,102 @@ public sealed class StreamDecoderTests
     }
 
     /// <summary>
+    /// A meta-block whose header holds many prefix codes and context maps, the stream given a byte at a
+    /// time: the header is read part by part, each part once, so that the decoder keeps a part of it at
+    /// most, never the header from its start, which it would read again at every byte, and keeps a
+    /// command at most of the commands.
+    /// </summary>
+    [Fact]
+    public void AHeaderOfManyCodesIsReadPartByPart()
+    {
+        // Segments of unrelated distributions: at quality 11, many block types, codes and contexts.
+        byte[] data = new byte[1 << 18];
+        var random = new Random(7);
+        byte[] permutation = new byte[256];
+        for (int at = 0; at < data.Length; at += 8192)
+        {
+            for (int i = 0; i < 256; i++)
+            {
+                permutation[i] = (byte)i;
+            }
+
+            random.Shuffle(permutation);
+            double scale = 4 + random.Next(20);
+            for (int i = 0; i < 8192; i++)
+            {
+                data[at + i] = permutation[Math.Min((int)(-Math.Log(1.0 - random.NextDouble()) * scale), 255)];
+            }
+        }
+
+        byte[] stream = NativeBrotli.Compress(data, 11, 22);
+        var decoder = new BrotliStreamDecoder();
+        var content = new MemoryStream();
+        byte[] buffer = new byte[1 << 16];
+        long kept = 0;
+        int position = 0;
+        OperationStatus status;
+        do
+        {
+            status = decoder.Decompress(stream.AsSpan(position, Math.Min(1, stream.Length - position)), buffer, out int consumed, out int written);
+            content.Write(buffer, 0, written);
+            position += consumed;
+            kept = Math.Max(kept, decoder.BufferedInput);
+        }
+        while (status is OperationStatus.NeedMoreData or OperationStatus.DestinationTooSmall);
+
+        Assert.Equal(OperationStatus.Done, status);
+        Assert.True(data.AsSpan().SequenceEqual(content.ToArray()), "other content");
+        Assert.True(kept <= 1024, $"{kept} bytes of input kept");
+    }
+
+    /// <summary>An uncompressed meta-block's bytes are content as they arrive, before the meta-block is whole.</summary>
+    [Fact]
+    public void AnUncompressedMetaBlockIsContentAsItArrives()
+    {
+        // Quality 1 stores incompressible data in uncompressed meta-blocks of 128 KiB.
+        byte[] data = DataKinds.Generate("incompressible", 300_000);
+        byte[] stream = NativeBrotli.Compress(data, 1, 22);
+        var decoder = new BrotliStreamDecoder();
+        byte[] buffer = new byte[data.Length];
+        Assert.Equal(OperationStatus.NeedMoreData, decoder.Decompress(stream.AsSpan(0, 100_000), buffer, out _, out int written));
+        Assert.True(written > 90_000, $"{written} bytes of content from 100,000 of stream");
+        Assert.True(data.AsSpan(0, written).SequenceEqual(buffer.AsSpan(0, written)));
+        Assert.Equal(OperationStatus.Done, decoder.Decompress(stream.AsSpan(100_000), buffer.AsSpan(written), out _, out int rest));
+        Assert.True(data.AsSpan().SequenceEqual(buffer.AsSpan(0, written + rest)));
+    }
+
+    /// <summary>A metadata block's bytes are skipped as they arrive, not kept until the block is whole.</summary>
+    [Fact]
+    public void AMetadataBlockIsSkippedAsItArrives()
+    {
+        // Window 16; a metadata block of 1 MiB (MSKIPBYTES 3, MSKIPLEN - 1 = 0x0FFFFF); the empty last block.
+        const int Length = 1 << 20;
+        byte[] header = [0xEC, 0xFF, 0xFF, 0x07];
+        byte[] stream = [.. header, .. new byte[Length], 0x03];
+        var native = NativeBrotli.Decompress(stream, 100);
+        Assert.Equal(1, native.Result);
+        Assert.Equal(stream.Length, native.Consumed);
+
+        var decoder = new BrotliStreamDecoder();
+        byte[] buffer = new byte[64];
+        long kept = 0;
+        int position = 0;
+        OperationStatus status;
+        do
+        {
+            status = decoder.Decompress(stream.AsSpan(position, Math.Min(4096, stream.Length - position)), buffer, out int consumed, out int written);
+            Assert.Equal(0, written);
+            position += consumed;
+            kept = Math.Max(kept, decoder.BufferedInput);
+        }
+        while (status == OperationStatus.NeedMoreData);
+
+        Assert.Equal(OperationStatus.Done, status);
+        Assert.Equal(stream.Length, position);
+        Assert.True(kept <= 8192, $"{kept} bytes of input kept");
+    }
+
+    /// <summary>
     /// A metadata block can be the stream's last meta-block: "hello" uncompressed at window 16, then the
     /// last one, metadata of no byte or of three, then bytes past the end, which the decoder must leave.
     /// </summary>
