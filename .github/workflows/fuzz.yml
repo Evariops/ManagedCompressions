@@ -51,23 +51,48 @@ jobs:
         with:
           global-json-file: global.json
 
+      # The libFuzzer driver and brotli, built from their checked sources once per runner image (they
+      # link against its C library), then restored from the cache.
+      - name: Name the runner image
+        id: image
+        run: echo "name=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: tools
+        with:
+          path: |
+            tools/native-ref/out/libfuzzer-dotnet
+            tools/native-ref/out/libbrotli_ref.so
+          key: fuzz-tools-${{ steps.image.outputs.name }}-${{ env.LIBFUZZER_DOTNET_COMMIT }}-${{ hashFiles('tools/native-ref/*.sh') }}
+
       # libFuzzer comes with clang's compiler-rt, which the runner may lack.
       - name: Build libfuzzer-dotnet
+        if: steps.tools.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          mkdir -p tools/native-ref/out
           cd "$RUNNER_TEMP"
           curl -fsSL -o libfuzzer-dotnet.cc \
             "https://raw.githubusercontent.com/Metalnem/libfuzzer-dotnet/$LIBFUZZER_DOTNET_COMMIT/libfuzzer-dotnet.cc"
           echo "$LIBFUZZER_DOTNET_SHA256  libfuzzer-dotnet.cc" | sha256sum -c -
-          if ! clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet; then
+          if ! clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o "$GITHUB_WORKSPACE/tools/native-ref/out/libfuzzer-dotnet"; then
             sudo apt-get update -q
             sudo apt-get install -y -q libclang-rt-18-dev
-            clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
+            clang -fsanitize=fuzzer libfuzzer-dotnet.cc -o "$GITHUB_WORKSPACE/tools/native-ref/out/libfuzzer-dotnet"
           fi
 
       # brotli 1.1.1 built as .NET builds it, with the error codes the brotli target compares.
       - name: Build brotli
+        if: steps.tools.outputs.cache-hit != 'true'
         run: bash tools/native-ref/build-brotli.sh
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: |
+            tools/native-ref/out/libfuzzer-dotnet
+            tools/native-ref/out/libbrotli_ref.so
+          key: fuzz-tools-${{ steps.image.outputs.name }}-${{ env.LIBFUZZER_DOTNET_COMMIT }}-${{ hashFiles('tools/native-ref/*.sh') }}
 
       # Pull requests fuzz the Release build, the one that ships. The nightly runs fuzz the Debug build,
       # optimized as the Release one is, in which each access the libraries make without a bounds check
@@ -117,7 +142,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p findings
-          "$RUNNER_TEMP/libfuzzer-dotnet" \
+          tools/native-ref/out/libfuzzer-dotnet \
             --target_path="$RUNNER_TEMP/fuzz/ManagedCompressions.Fuzz" --target_arg="$TARGET" \
             -max_total_time="$FUZZ_SECONDS" -timeout=20 -rss_limit_mb=4096 -max_len=65536 \
             -print_final_stats=1 -artifact_prefix=findings/ "corpus/$TARGET"
