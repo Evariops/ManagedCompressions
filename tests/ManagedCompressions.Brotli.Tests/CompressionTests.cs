@@ -52,6 +52,12 @@ public sealed class CompressionTests
                 yield return new(kind, size, quality, windows[w], (q + w) % 3);
             }
         }
+
+        // The two cases of the whole product that alone reach a path, which the turns leave out: the
+        // block splitter's histograms and the clustering's pairs grown past their first capacity, and
+        // a dictionary word whose first letter is uppercased, which the decoder transforms back.
+        yield return new("ascending32", 1 << 20, 10, 22, 0);
+        yield return new("text", 65535, 10, 22, 0);
     }
 
     [Theory]

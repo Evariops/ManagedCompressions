@@ -279,6 +279,9 @@ public sealed class LongDistanceCompressionTests
             }
         }
 
+        // Plain content, in which the matcher finds little: a job uses its sequences up before its
+        // last blocks, which then take none.
+        data.Add(string.Create(CultureInfo.InvariantCulture, $"json/16/{512 << 10}/none"));
         return data;
     }
 
