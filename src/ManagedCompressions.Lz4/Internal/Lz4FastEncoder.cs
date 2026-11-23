@@ -17,7 +17,7 @@ namespace ManagedCompressions.Lz4.Internal;
 /// lz4 clears its 16 KiB table before every block. This one keeps its table from block to block and
 /// numbers positions on from where the last block ended: an entry left by an earlier block lies
 /// below the current block's first position, and reads as that first position, which is what a
-/// cleared entry reads as in lz4. Only when the numbering nears 2 GiB is the table cleared.
+/// cleared entry reads as in lz4. Only when the numbering passes 1 GiB is the table cleared.
 /// </para>
 /// <para>
 /// Inputs under 64 KiB plus 11 bytes hash four bytes to 13 bits, as lz4's 16-bit table does; larger
