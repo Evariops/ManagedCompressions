@@ -228,11 +228,13 @@ jobs:
   # libraries make without a bounds check asserts its bounds (src/Shared/Bounds.cs): one past them
   # fails its test, where the Release build would read or write out of its buffer unnoticed. With the
   # GC's heap verification, on the Release build, a write past an array that damages the heap fails
-  # the run, whether an assertion states the access or not.
+  # the run, whether an assertion states the access or not. The Debug build is compiled with the
+  # optimizations here, as the nightly fuzzing's: the same assertions, which unoptimized took more than
+  # an hour where the Release tests take 20 minutes.
   checks:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-26.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -256,7 +258,7 @@ jobs:
       - name: Build
         env:
           CONFIGURATION: ${{ matrix.configuration }}
-        run: dotnet build ManagedCompressions.slnx -c "$CONFIGURATION"
+        run: dotnet build ManagedCompressions.slnx -c "$CONFIGURATION" -p:Optimize=true
 
       - name: Write the Zstandard test data
         run: bash tools/native-ref/testdata.sh
