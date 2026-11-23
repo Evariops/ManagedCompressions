@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
@@ -561,6 +562,9 @@ internal static unsafe class CompressFragmentTwoPass
             {
                 CreateCommands<MinMatch6>(block, blockSize, remaining, baseIp, table, tableBits, ref literals, ref commands);
             }
+            // The commands and literals a block left, written without a check: within the arena's buffers,
+            // of a block's size each, as a block takes a command or a literal a byte at most.
+            Debug.Assert(literals - s.Literals <= TwoPassArena.BlockSize && commands - s.Commands <= TwoPassArena.BlockSize, "a block's commands and literals within the arena");
             int numLiterals = (int)(literals - s.Literals);
             if (ShouldCompress(s, block, blockSize, numLiterals))
             {

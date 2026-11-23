@@ -1,7 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 using static ManagedCompressions.Lz4.Internal.Lz4Common;
 
 namespace ManagedCompressions.Lz4.Internal;
@@ -345,6 +347,8 @@ internal sealed unsafe class Lz4HighEncoder
             int matchLength = 0;
             nbAttempts--;
             byte* matchPtr = @base + matchIndex;
+            AssertCandidate(matchPtr, prefixPtr, ip, iHighLimit + LastLiterals);
+            Bounds.Within(matchPtr + probeDelta, sizeof(ushort), prefixPtr, iHighLimit + LastLiterals);
             if (Read16(matchPtr + probeDelta) == probe && Read32(matchPtr) == pattern)
             {
                 int back = lookBackLength != 0 ? CountBack(ip, matchPtr, iLowLimit, prefixPtr) : 0;
@@ -460,6 +464,7 @@ internal sealed unsafe class Lz4HighEncoder
         }
 
         byte* matchPtr = prefixPtr + (matchCandidateIdx - prefixIdx);
+        AssertCandidate(matchPtr, prefixPtr, ip, iHighLimit + LastLiterals);
         if (Read32(matchPtr) != pattern)
         {
             return 0;
@@ -583,9 +588,13 @@ internal sealed unsafe class Lz4HighEncoder
             *token = (byte)(length << 4);
         }
 
+        // SAFETY: the room was checked above, or the destination holds the bound, which lz4 proves holds
+        // a wide copy's excess: as for every write below.
+        Bounds.Before(op, (nint)Math.Max((length + 7) & ~(nuint)7, 8), oend);
         WildCopy8(op, anchor, op + length);
         op += length;
 
+        Bounds.Before(op, sizeof(ushort), oend);
         Write16(op, (ushort)offset);
         op += 2;
 
@@ -595,6 +604,7 @@ internal sealed unsafe class Lz4HighEncoder
             return false;
         }
 
+        Bounds.Before(op, length >= MatchLengthMask ? (nint)((length - MatchLengthMask) / 255) + 1 : 0, oend);
         if (length >= MatchLengthMask)
         {
             *token += MatchLengthMask;
@@ -636,6 +646,7 @@ internal sealed unsafe class Lz4HighEncoder
             return 0;
         }
 
+        AssertLastLiterals(op, lastRunSize, dest, oend);
         op = WriteLastLiterals(op, anchor, lastRunSize);
         return (int)(op - dest);
     }
@@ -677,6 +688,7 @@ internal sealed unsafe class Lz4HighEncoder
                 if (ipIndex - pos8 <= MaxDistance && pos8 >= prefixIdx)
                 {
                     byte* matchPtr = prefixPtr + pos8 - prefixIdx;
+                    AssertCandidate(matchPtr, prefixPtr, ip, iend);
                     matchLength = Count(ip, matchPtr, matchlimit);
                     if (matchLength >= MinMatch)
                     {
@@ -694,6 +706,7 @@ internal sealed unsafe class Lz4HighEncoder
                 if (ipIndex - pos4 <= MaxDistance && pos4 >= prefixIdx)
                 {
                     byte* matchPtr = prefixPtr + (pos4 - prefixIdx);
+                    AssertCandidate(matchPtr, prefixPtr, ip, iend);
                     matchLength = Count(ip, matchPtr, matchlimit);
                     if (matchLength >= MinMatch)
                     {
@@ -705,6 +718,7 @@ internal sealed unsafe class Lz4HighEncoder
                         if (m2Distance <= MaxDistance && pos8 >= prefixIdx && ip < mflimit)
                         {
                             byte* m2Ptr = prefixPtr + (pos8 - prefixIdx);
+                            AssertCandidate(m2Ptr, prefixPtr, ip + 1, iend);
                             uint ml2 = Count(ip + 1, m2Ptr, matchlimit);
                             if (ml2 > matchLength)
                             {
@@ -1076,11 +1090,13 @@ internal sealed unsafe class Lz4HighEncoder
                 int offset = firstMatch.Offset;
                 for (int mlen = MinMatch; mlen <= matchML; mlen++)
                 {
+                    Bounds.Index(mlen, OptimalNum + TrailingLiterals);
                     opt[mlen] = new OptimalEntry(SequencePrice(llen, mlen), offset, mlen, llen);
                 }
             }
 
             lastMatchPos = firstMatch.Length;
+            Bounds.Index(lastMatchPos + TrailingLiterals, OptimalNum + TrailingLiterals);
             for (int addLit = 1; addLit <= TrailingLiterals; addLit++)
             {
                 opt[lastMatchPos + addLit] = new OptimalEntry(opt[lastMatchPos].Price + LiteralsPrice(addLit), 0, 1, addLit);
@@ -1146,6 +1162,7 @@ internal sealed unsafe class Lz4HighEncoder
                     for (int ml = MinMatch; ml <= matchML; ml++)
                     {
                         int pos = cur + ml;
+                        Bounds.Index(pos, OptimalNum + TrailingLiterals);
                         int offset = newMatch.Offset;
                         int price;
                         int ll;
@@ -1173,6 +1190,7 @@ internal sealed unsafe class Lz4HighEncoder
                 }
 
                 // The positions after, literals.
+                Bounds.Index(lastMatchPos + TrailingLiterals, OptimalNum + TrailingLiterals);
                 for (int addLit = 1; addLit <= TrailingLiterals; addLit++)
                 {
                     opt[lastMatchPos + addLit] = new OptimalEntry(opt[lastMatchPos].Price + LiteralsPrice(addLit), 0, 1, addLit);

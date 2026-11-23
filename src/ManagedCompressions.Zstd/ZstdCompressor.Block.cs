@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Zstd.Internal;
 
 namespace ManagedCompressions.Zstd;
@@ -256,6 +257,7 @@ public sealed unsafe partial class ZstdCompressor
                     return -1;
                 }
 
+                Bounds.Within(destination + op, blockTotal, destination, destination + capacity);
                 WriteBlockHeader(destination + op, lastBlock, blockSize << 3);
                 Buffer.MemoryCopy(ip, destination + op + FrameFormat.BlockHeaderSize, blockSize, blockSize);
             }
@@ -268,6 +270,7 @@ public sealed unsafe partial class ZstdCompressor
                     return -1;
                 }
 
+                Bounds.Within(destination + op, blockTotal, destination, destination + capacity);
                 WriteBlockHeader(destination + op, lastBlock, (1 << 1) | (blockSize << 3));
                 destination[op + FrameFormat.BlockHeaderSize] = *compressed;
             }
@@ -279,6 +282,7 @@ public sealed unsafe partial class ZstdCompressor
                     return -1;
                 }
 
+                Bounds.Within(destination + op, blockTotal, destination, destination + capacity);
                 WriteBlockHeader(destination + op, lastBlock, (2 << 1) | ((int)size << 3));
                 CopyBlockOutput(compressed, destination + op, size);
             }
@@ -469,6 +473,7 @@ public sealed unsafe partial class ZstdCompressor
             nuint dictionaryLiterals = FindSequencesWithDictionary(source, size, rep);
             _store.StoreLastLiterals(source + size - (nint)dictionaryLiterals, dictionaryLiterals);
             _store.ComputeCodes();
+            _store.AssertWithin((nuint)size);
             SkipJobSequences(size);
             return;
         }
@@ -483,6 +488,7 @@ public sealed unsafe partial class ZstdCompressor
 
         _store.StoreLastLiterals(source + size - (nint)lastLiterals, lastLiterals);
         _store.ComputeCodes();
+        _store.AssertWithin((nuint)size);
         SkipJobSequences(size);
     }
 
@@ -542,6 +548,7 @@ public sealed unsafe partial class ZstdCompressor
         bool suspectUncompressible = sequenceCount == 0 || literalCount / sequenceCount >= SuspectUncompressibleLiteralRatio;
         bool literalCompressionDisabled = strategy == Strategy.Fast && _parameters.TargetLength > 0;
         op += CompressLiterals(op, capacity, section.LiteralsStart, literalCount, literalCompressionDisabled, suspectUncompressible);
+        Debug.Assert(op <= oend, "the literals section within the block's room");
 
         // ---- the sequences section's header, then its tables and bitstream
         if (oend - op < 3 + 1)
@@ -561,6 +568,7 @@ public sealed unsafe partial class ZstdCompressor
             SequenceEncoder.Statistics stats = SequenceEncoder.BuildStatistics(section, _previous, _next, op, strategy);
             *modes = (byte)(((int)stats.LiteralLengths << 6) + ((int)stats.Offsets << 4) + ((int)stats.MatchLengths << 2));
             op += stats.Size;
+            Debug.Assert(op <= oend, "the tables' descriptions within the block's room");
 
             nuint bitstreamSize = SequenceEncoder.EncodeSequences(
                 op, (nuint)(oend - op), _next.LiteralLengths, _next.Offsets, _next.MatchLengths, section.SequencesStart, sequenceCount);
@@ -570,6 +578,7 @@ public sealed unsafe partial class ZstdCompressor
             }
 
             op += bitstreamSize;
+            Debug.Assert(op <= oend, "the bitstream within the block's room");
 
             // zstd up to 1.3.4 refuses a last table description of 2 bytes followed by a bitstream of
             // one: such a block is written raw.
@@ -606,6 +615,7 @@ public sealed unsafe partial class ZstdCompressor
         _next.HuffmanRepeat = _previous.HuffmanRepeat;
         if (disabled || size < MinLiteralsToCompress(strategy, _previous.HuffmanRepeat))
         {
+            AssertRawLiterals(capacity, size);
             return WriteRawLiterals(destination, source, size);
         }
 
@@ -630,6 +640,7 @@ public sealed unsafe partial class ZstdCompressor
         nuint minGain = MinGain(size, strategy);
         if (compressed == 0 || compressed >= size - minGain)
         {
+            AssertRawLiterals(capacity, size);
             return WriteRawLiterals(destination, source, size);
         }
 
@@ -670,6 +681,14 @@ public sealed unsafe partial class ZstdCompressor
 
         return headerSize + compressed;
     }
+
+    /// <summary>
+    /// Asserts that raw literals, with the largest header of a literals section, fit the room of a block:
+    /// its content and the margin of the block buffer, which raw literals never exceed.
+    /// </summary>
+    [Conditional("DEBUG")]
+    private static void AssertRawLiterals(nuint capacity, nuint size) =>
+        Debug.Assert(size + 5 <= capacity, "raw literals within the block's room");
 
     /// <summary>
     /// libzstd's <c>ZSTD_minLiteralsToCompress</c>: 64 literals for the fast strategies, halving for

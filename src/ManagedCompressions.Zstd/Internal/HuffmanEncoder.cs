@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -741,6 +742,7 @@ internal static unsafe class HuffmanEncoder
     {
         byte* stream = workspace.Streams;
         nuint bits = EncodeStream(source, size, table.Elements, stream);
+        Debug.Assert(((bits + 7) >> 3) + sizeof(ulong) <= 4 * (nuint)workspace.StreamCapacity, "a stream and its last flush within the workspace");
         nuint compressed = StreamSize(bits, capacity);
         if (compressed != 0)
         {
@@ -935,6 +937,13 @@ internal static unsafe class HuffmanEncoder
         bits[1] = Close(ref c1, ref b1, ref ptr1, out1);
         bits[2] = Close(ref c2, ref b2, ref ptr2, out2);
         bits[3] = Close(ref c3, ref b3, ref ptr3, out3);
+
+        // SAFETY: a stream takes at most 12 bits a symbol, which the stride was sized for, plus the eight
+        // bytes of a flush: the last flush of each within its buffer.
+        Bounds.Within(ptr0, sizeof(ulong), out0, out0 + stride);
+        Bounds.Within(ptr1, sizeof(ulong), out1, out1 + stride);
+        Bounds.Within(ptr2, sizeof(ulong), out2, out2 + stride);
+        Bounds.Within(ptr3, sizeof(ulong), out3, out3 + stride);
     }
 
     /// <summary>

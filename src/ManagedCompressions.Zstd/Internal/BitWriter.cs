@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Zstd.Internal;
 
@@ -58,6 +59,7 @@ internal unsafe struct BitWriter
     {
         Debug.Assert(_bitPosition < 64);
         int bytes = _bitPosition >> 3;
+        Bounds.Within(_ptr, sizeof(ulong), _start, _end + sizeof(ulong));
         Unsafe.WriteUnaligned(_ptr, _container);
         _ptr += bytes;
         if (_ptr > _end)

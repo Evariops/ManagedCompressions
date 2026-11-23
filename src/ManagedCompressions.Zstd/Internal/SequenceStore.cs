@@ -553,8 +553,22 @@ internal sealed unsafe class SequenceStore
     /// <summary>libzstd's <c>ZSTD_storeLastLiterals</c>: the literals after the last sequence.</summary>
     public void StoreLastLiterals(byte* anchor, nuint size)
     {
+        Debug.Assert(LiteralCount + size <= (nuint)Capacity, "the last literals within the store");
         Buffer.MemoryCopy(anchor, Literals, size, size);
         Literals += size;
+    }
+
+    /// <summary>
+    /// Asserts that a block of <paramref name="blockSize"/> bytes left its literals and its sequences within
+    /// the store: the match finders write them through cursors of their own, without a check, the store
+    /// being sized for the largest block (and the wide copies' excess), and for a sequence every match of
+    /// the minimum length.
+    /// </summary>
+    [Conditional("DEBUG")]
+    public void AssertWithin(nuint blockSize)
+    {
+        Debug.Assert(LiteralCount <= blockSize && blockSize <= (nuint)Capacity, "a block's literals within the store");
+        Debug.Assert(SequenceCount <= (nuint)_sequences.Length, "a block's sequences within the store");
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

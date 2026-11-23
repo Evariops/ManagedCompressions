@@ -38,6 +38,7 @@ public sealed unsafe partial class BrotliCompressor
             storage[1] = (byte)(lastBytes >> 8);
             int storageIx = lastBytesBits;
             fast.CompressFragment(input, blockSize, isLast, ref storageIx, storage);
+            EncoderState.AssertWithinStorage(storageIx, (nuint)blockSize);
             input += blockSize;
             remaining -= blockSize;
             int outBytes = storageIx >> 3;
