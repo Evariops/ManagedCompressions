@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
@@ -309,6 +310,7 @@ internal static unsafe class MatchFinder
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static nuint MatchLength(byte* ip, byte* match, byte* end)
     {
+        AssertMatch(ip, match, 16);
         nuint first = (nuint)BitOperations.TrailingZeroCount(Read64(ip) ^ Read64(match)) >> 3;
         nuint second = (nuint)BitOperations.TrailingZeroCount(Read64(ip + 8) ^ Read64(match + 8)) >> 3;
         nuint length = first + (second & (0 - (first >> 3)));
@@ -414,12 +416,73 @@ internal static unsafe class MatchFinder
         table[hashAndTag >> TagBits] = (index << TagBits) | ((uint)hashAndTag & TagMask);
 
     /// <summary>
+    /// The window of the block being searched, which the assertions of <see cref="Count"/>,
+    /// <see cref="Count2Segments"/> and <see cref="MatchLength"/> check a match against, as those reads,
+    /// shared by every match finder, cannot know it. Set and read in Debug only, by thread: a block is
+    /// searched on one thread, and the parallel frames search theirs side by side.
+    /// </summary>
+    [ThreadStatic]
+    private static Window t_window;
+
+    /// <summary>The regions a match may lie in: the prefix, before the position; the segment below it (extDict); an attached dictionary's content.</summary>
+    private struct Window
+    {
+        public bool Active;
+        public byte* PrefixStart;
+        public byte* SegmentStart;
+        public byte* SegmentEnd;
+        public byte* DictionaryStart;
+        public byte* DictionaryEnd;
+    }
+
+    /// <summary>Declares the window of the block <paramref name="state"/> is about to search, for the Debug assertions of the reads of its matches.</summary>
+    [Conditional("DEBUG")]
+    public static void EnterWindow(in MatchState state)
+    {
+        t_window = new Window
+        {
+            Active = true,
+            PrefixStart = state.Base + state.DictLimit,
+            SegmentStart = state.DictionaryBase + state.LowLimit,
+            SegmentEnd = state.LowLimit < state.DictLimit ? state.DictionaryBase + state.DictLimit : state.DictionaryBase + state.LowLimit,
+            DictionaryStart = state.Dictionary == null ? null : state.Dictionary->Base + state.Dictionary->LowLimit,
+            DictionaryEnd = state.Dictionary == null ? null : state.Dictionary->Base + state.Dictionary->End,
+        };
+    }
+
+    /// <summary>Ends the window <see cref="EnterWindow"/> declared.</summary>
+    [Conditional("DEBUG")]
+    public static void LeaveWindow() => t_window = default;
+
+    /// <summary>
+    /// Asserts that a match read <paramref name="size"/> bytes on from <paramref name="match"/>, for the
+    /// position <paramref name="input"/>, lies in the window: in the prefix, before the position (its
+    /// reads, which go no further than the input's, then stay in the block); or whole in the segment
+    /// below the prefix, or in an attached dictionary's content.
+    /// </summary>
+    [Conditional("DEBUG")]
+    private static void AssertMatch(byte* input, byte* match, nint size)
+    {
+        Window window = t_window;
+        if (!window.Active)
+        {
+            return;
+        }
+
+        bool inPrefix = match >= window.PrefixStart && match < input;
+        bool inSegment = match >= window.SegmentStart && match + size <= window.SegmentEnd;
+        bool inDictionary = window.DictionaryStart != null && match >= window.DictionaryStart && match + size <= window.DictionaryEnd;
+        Debug.Assert(size >= 0 && (inPrefix || inSegment || inDictionary), "a match within the window");
+    }
+
+    /// <summary>
     /// libzstd's <c>ZSTD_count</c>: how many bytes from <paramref name="input"/> equal those from
     /// <paramref name="match"/>, up to <paramref name="inputLimit"/>, which no read passes.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static nuint Count(byte* input, byte* match, byte* inputLimit)
     {
+        AssertMatch(input, match, (nint)(inputLimit - input));
         byte* start = input;
         byte* loopLimit = inputLimit - (sizeof(ulong) - 1);
         if (input < loopLimit)

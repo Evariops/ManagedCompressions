@@ -435,6 +435,7 @@ public sealed unsafe partial class ZstdCompressor
     private void FindSequences(byte* source, int size)
     {
         _store.Reset();
+        MatchFinder.EnterWindow(_matchState);
 
         // A limited update after a very long match.
         uint current = (uint)(source - _matchState.Base);
@@ -474,6 +475,7 @@ public sealed unsafe partial class ZstdCompressor
             _store.StoreLastLiterals(source + size - (nint)dictionaryLiterals, dictionaryLiterals);
             _store.ComputeCodes();
             _store.AssertWithin((nuint)size);
+            MatchFinder.LeaveWindow();
             SkipJobSequences(size);
             return;
         }
@@ -489,6 +491,7 @@ public sealed unsafe partial class ZstdCompressor
         _store.StoreLastLiterals(source + size - (nint)lastLiterals, lastLiterals);
         _store.ComputeCodes();
         _store.AssertWithin((nuint)size);
+        MatchFinder.LeaveWindow();
         SkipJobSequences(size);
     }
 
