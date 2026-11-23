@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Threading;
 using System.Threading.Tasks;
 using ManagedCompressions.Brotli.Tests.Support;
 using Xunit;
@@ -113,6 +114,47 @@ public sealed class CompressionStreamTests
         Assert.Equal(-1, reader.ReadByte());
     }
 
+    /// <summary>
+    /// A stream disposed of while a read waits on the underlying stream, as one is to abandon a read
+    /// that hangs: the read then fails as disposed, rather than decode on a decoder whose buffers went
+    /// back to their pool. A second operation meanwhile is refused, as <see cref="BrotliStream"/> refuses it.
+    /// </summary>
+    [Fact]
+    public async Task DisposingDuringAPendingReadFailsTheRead()
+    {
+        var pending = new Pending();
+        var stream = new BrotliCompressionStream(pending, CompressionMode.Decompress);
+        ValueTask<int> read = stream.ReadAsync(new byte[100], TestContext.Current.CancellationToken);
+        Memory<byte> held = await pending.ReadStarted;
+        Assert.Throws<InvalidOperationException>(() => stream.Read(new byte[100]));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => stream.ReadAsync(new byte[100], TestContext.Current.CancellationToken).AsTask());
+
+        stream.Dispose();
+        byte[] compressed = NativeBrotli.Compress(DataKinds.Generate("text", 1000), 5, 22);
+        compressed.CopyTo(held.Span);
+        pending.Complete(compressed.Length);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => read.AsTask());
+    }
+
+    /// <summary>
+    /// A stream disposed of while a write waits on the underlying stream does not end the Brotli stream
+    /// through the buffer that write still sends.
+    /// </summary>
+    [Fact]
+    public async Task DisposingDuringAPendingWriteLeavesTheWriteItsBuffer()
+    {
+        var pending = new Pending();
+        var stream = new BrotliCompressionStream(pending, 1);
+        ValueTask write = stream.WriteAsync(DataKinds.Generate("incompressible", 400_000), TestContext.Current.CancellationToken);
+        await pending.WriteStarted;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => stream.FlushAsync(TestContext.Current.CancellationToken));
+
+        stream.Dispose();
+        Assert.Equal(0, pending.SynchronousWrites);
+        pending.Complete(0);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => write.AsTask());
+    }
+
     private static byte[] ReadAll(Stream stream, Random random)
     {
         using (stream)
@@ -127,5 +169,73 @@ public sealed class CompressionStreamTests
 
             return content.ToArray();
         }
+    }
+
+    /// <summary>
+    /// A stream whose first asynchronous read or write waits until <see cref="Complete"/>, and tells
+    /// which buffer it was handed; a second one meanwhile fails with an <see cref="IOException"/>, rather
+    /// than wait for ever.
+    /// </summary>
+    private sealed class Pending : Stream
+    {
+        private readonly TaskCompletionSource<Memory<byte>> _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<Memory<byte>> _writeStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<int> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Memory<byte>> ReadStarted => _readStarted.Task;
+
+        public Task<Memory<byte>> WriteStarted => _writeStarted.Task;
+
+        public int SynchronousWrites { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanWrite => true;
+
+        public override bool CanSeek => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public void Complete(int read) => _done.SetResult(read);
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_readStarted.TrySetResult(buffer) && !_done.Task.IsCompleted)
+            {
+                throw new IOException("a second read reached the underlying stream while the first one ran");
+            }
+
+            return await _done.Task;
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_writeStarted.TrySetResult(System.Runtime.InteropServices.MemoryMarshal.AsMemory(buffer)) && !_done.Task.IsCompleted)
+            {
+                throw new IOException("a second write reached the underlying stream while the first one ran");
+            }
+
+            await _done.Task;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => SynchronousWrites++;
+
+        public override void Write(ReadOnlySpan<byte> buffer) => SynchronousWrites++;
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 }

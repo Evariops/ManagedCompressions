@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
 using System.Threading;
@@ -34,7 +35,11 @@ namespace ManagedCompressions.Zstd;
 /// a few codecs per setting, a <see cref="ZstdDictionary"/> among them but not a dictionary's bytes,
 /// none holding more than 16 MiB, and lets go of those no stream took between two gen 2 collections.
 /// </para>
-/// <para>Not thread-safe, as streams are not.</para>
+/// <para>
+/// Not thread-safe, as streams are not; and one asynchronous operation at a time, as with
+/// System.IO.Compression's streams: another one meanwhile, or a synchronous one, throws
+/// <see cref="InvalidOperationException"/>.
+/// </para>
 /// </remarks>
 public sealed class ZstdStream : Stream
 {
@@ -68,6 +73,9 @@ public sealed class ZstdStream : Stream
     private bool _ended;
     private byte[]? _output;
 
+    /// <summary>1 while an asynchronous operation runs, 0 otherwise.</summary>
+    private int _asyncOperation;
+
     /// <summary>
     /// Compresses into <paramref name="stream"/>, at the default level, or decompresses from it; the stream
     /// disposes of <paramref name="stream"/> with itself.
@@ -88,21 +96,24 @@ public sealed class ZstdStream : Stream
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="mode"/> is neither mode.</exception>
     public ZstdStream(Stream stream, CompressionMode mode, bool leaveOpen)
     {
-        switch (mode)
+        if (mode is not (CompressionMode.Compress or CompressionMode.Decompress))
         {
-            case CompressionMode.Compress:
-                _pooledEncoder = CodecPool.EncoderKey.Of(ZstdCompressor.DefaultLevel);
-                _encoder = CodecPool.RentEncoder(_pooledEncoder.Value, null);
-                break;
-            case CompressionMode.Decompress:
-                _pooledDecoder = new CodecPool.DecoderKey(ZstdDecompressionOptions.DefaultMaxWindowLog, null);
-                _decoder = CodecPool.RentDecoder(_pooledDecoder.Value);
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown compression mode.");
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown compression mode.");
         }
 
+        // The stream checked before a codec is taken from the pool, which a refused stream would not give back.
         _stream = Open(stream, mode == CompressionMode.Compress);
+        if (mode == CompressionMode.Compress)
+        {
+            _pooledEncoder = CodecPool.EncoderKey.Of(ZstdCompressor.DefaultLevel);
+            _encoder = CodecPool.RentEncoder(_pooledEncoder.Value, null);
+        }
+        else
+        {
+            _pooledDecoder = new CodecPool.DecoderKey(ZstdDecompressionOptions.DefaultMaxWindowLog, null);
+            _decoder = CodecPool.RentDecoder(_pooledDecoder.Value);
+        }
+
         _leaveOpen = leaveOpen;
     }
 
@@ -117,9 +128,10 @@ public sealed class ZstdStream : Stream
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="level"/> is not a level.</exception>
     public ZstdStream(Stream stream, CompressionLevel level, bool leaveOpen = false)
     {
-        _pooledEncoder = CodecPool.EncoderKey.Of(Level(level));
-        _encoder = CodecPool.RentEncoder(_pooledEncoder.Value, null);
+        CodecPool.EncoderKey key = CodecPool.EncoderKey.Of(Level(level));
         _stream = Open(stream, compress: true);
+        _pooledEncoder = key;
+        _encoder = CodecPool.RentEncoder(key, null);
         _leaveOpen = leaveOpen;
     }
 
@@ -129,9 +141,9 @@ public sealed class ZstdStream : Stream
     public ZstdStream(Stream stream, ZstdCompressionOptions options, bool leaveOpen = false)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _stream = Open(stream, compress: true);
         _pooledEncoder = CodecPool.EncoderKey.Of(options);
         _encoder = _pooledEncoder is { } key ? CodecPool.RentEncoder(key, options) : new ZstdEncoder(options);
-        _stream = Open(stream, compress: true);
         _leaveOpen = leaveOpen;
     }
 
@@ -161,10 +173,9 @@ public sealed class ZstdStream : Stream
             throw new ArgumentException("A dictionary is given as bytes or prepared, not both.", nameof(options));
         }
 
+        _stream = Open(stream, compress: false);
         _pooledDecoder = CodecPool.DecoderKey.Of(options);
         _decoder = _pooledDecoder is { } key ? CodecPool.RentDecoder(key) : new ZstdDecoder(options);
-
-        _stream = Open(stream, compress: false);
         _leaveOpen = leaveOpen;
     }
 
@@ -292,23 +303,34 @@ public sealed class ZstdStream : Stream
     {
         ValidateCopyToArguments(destination, bufferSize);
         Stream stream = Reading();
-        while (true)
+        BeginAsync();
+        try
         {
-            OperationStatus status = DecodeInWindow(out ReadOnlyMemory<byte> content);
-            if (!content.IsEmpty)
+            while (true)
             {
-                await destination.WriteAsync(content, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (status == OperationStatus.NeedMoreData)
-            {
-                if (_ended)
+                OperationStatus status = DecodeInWindow(out ReadOnlyMemory<byte> content);
+                if (!content.IsEmpty)
                 {
-                    return;
+                    await destination.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
                 }
 
-                Fill(await stream.ReadAsync(InputBuffer(), cancellationToken).ConfigureAwait(false));
+                if (status == OperationStatus.NeedMoreData)
+                {
+                    if (_ended)
+                    {
+                        return;
+                    }
+
+                    int read = await stream.ReadAsync(InputBuffer(), cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    Fill(read);
+                }
             }
+        }
+        finally
+        {
+            EndAsync();
         }
     }
 
@@ -329,14 +351,24 @@ public sealed class ZstdStream : Stream
             return 0;
         }
 
-        while (true)
+        BeginAsync();
+        try
         {
-            if (Decode(buffer.Span, out int written))
+            while (true)
             {
-                return written;
-            }
+                if (Decode(buffer.Span, out int written))
+                {
+                    return written;
+                }
 
-            Fill(await stream.ReadAsync(InputBuffer(), cancellationToken).ConfigureAwait(false));
+                int read = await stream.ReadAsync(InputBuffer(), cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+                Fill(read);
+            }
+        }
+        finally
+        {
+            EndAsync();
         }
     }
 
@@ -381,19 +413,28 @@ public sealed class ZstdStream : Stream
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         Stream stream = Writing();
-        while (true)
+        BeginAsync();
+        try
         {
-            OperationStatus status = Encode(buffer.Span, out int consumed, out int written);
-            if (written > 0)
+            while (true)
             {
-                await stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
-            }
+                OperationStatus status = Encode(buffer.Span, out int consumed, out int written);
+                if (written > 0)
+                {
+                    await stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                }
 
-            buffer = buffer.Slice(consumed);
-            if (status == OperationStatus.Done)
-            {
-                return;
+                buffer = buffer.Slice(consumed);
+                if (status == OperationStatus.Done)
+                {
+                    return;
+                }
             }
+        }
+        finally
+        {
+            EndAsync();
         }
     }
 
@@ -403,7 +444,8 @@ public sealed class ZstdStream : Stream
     /// </summary>
     public override void Flush()
     {
-        ObjectDisposedException.ThrowIf(_stream is null, this);
+        ThrowIfDisposed();
+        EnsureNoAsyncOperation();
         if (_encoder is null)
         {
             return;
@@ -423,24 +465,35 @@ public sealed class ZstdStream : Stream
     /// <inheritdoc cref="Flush()"/>
     public override async Task FlushAsync(CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_stream is null, this);
+        ThrowIfDisposed();
+        EnsureNoAsyncOperation();
         if (_encoder is null)
         {
             return;
         }
 
-        OperationStatus status;
-        do
+        Stream stream = _stream;
+        BeginAsync();
+        try
         {
-            status = Checked(_encoder.Flush(OutputBuffer(), out int written));
-            if (written > 0)
+            OperationStatus status;
+            do
             {
-                await _stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                status = Checked(_encoder.Flush(OutputBuffer(), out int written));
+                if (written > 0)
+                {
+                    await stream.WriteAsync(_output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                }
             }
-        }
-        while (status != OperationStatus.Done);
+            while (status != OperationStatus.Done);
 
-        await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            EndAsync();
+        }
     }
 
     /// <inheritdoc/>
@@ -454,12 +507,19 @@ public sealed class ZstdStream : Stream
     /// left open.
     /// </summary>
     /// <exception cref="InvalidDataException">The content differs from the source length set.</exception>
+    /// <remarks>
+    /// Disposed of while an asynchronous read or write runs, the stream leaves that operation its
+    /// buffers and its codec, which the garbage collector then takes, rather than return them to their
+    /// pools, where the underlying stream could still be filling or sending them; nor does it end the
+    /// frame, whose bytes would go through the same buffer. The operation then fails with an
+    /// <see cref="ObjectDisposedException"/> once the underlying stream completes it.
+    /// </remarks>
     protected override void Dispose(bool disposing)
     {
         bool ended = false;
         try
         {
-            if (disposing && _stream is { } stream && _encoder is not null)
+            if (disposing && !AsyncOperationActive && _stream is { } stream && _encoder is not null)
             {
                 OperationStatus status;
                 do
@@ -489,7 +549,7 @@ public sealed class ZstdStream : Stream
         bool ended = false;
         try
         {
-            if (_stream is { } stream && _encoder is not null)
+            if (!AsyncOperationActive && _stream is { } stream && _encoder is not null)
             {
                 OperationStatus status;
                 do
@@ -539,20 +599,55 @@ public sealed class ZstdStream : Stream
 
     private Stream Reading()
     {
-        ObjectDisposedException.ThrowIf(_stream is null, this);
+        ThrowIfDisposed();
+        EnsureNoAsyncOperation();
         return _decoder is not null ? _stream : throw new InvalidOperationException("A compression stream cannot be read.");
     }
 
     private Stream Writing()
     {
-        ObjectDisposedException.ThrowIf(_stream is null, this);
+        ThrowIfDisposed();
+        EnsureNoAsyncOperation();
         return _encoder is not null ? _stream : throw new InvalidOperationException("A decompression stream cannot be written.");
     }
+
+    [MemberNotNull(nameof(_stream))]
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_stream is null, this);
+
+    /// <summary>Whether an asynchronous read, write, flush or copy is running.</summary>
+    private bool AsyncOperationActive => Volatile.Read(ref _asyncOperation) != 0;
+
+    /// <summary>
+    /// An asynchronous operation begins: none may run beside it, as with System.IO.Compression's streams,
+    /// which a second one would corrupt, the codec and the buffers being the stream's own.
+    /// </summary>
+    private void BeginAsync()
+    {
+        if (Interlocked.Exchange(ref _asyncOperation, 1) != 0)
+        {
+            ThrowOperationActive();
+        }
+    }
+
+    private void EndAsync() => Volatile.Write(ref _asyncOperation, 0);
+
+    private void EnsureNoAsyncOperation()
+    {
+        if (AsyncOperationActive)
+        {
+            ThrowOperationActive();
+        }
+    }
+
+    [DoesNotReturn]
+    private static void ThrowOperationActive() =>
+        throw new InvalidOperationException("An asynchronous operation is still running on this stream: one at a time.");
 
     /// <summary>
     /// The stream, let go of: returned to be disposed of unless left open; the buffers returned, and the
     /// codec the stream took from <see cref="CodecPool"/>, when it <paramref name="ended"/> cleanly. Once
-    /// only: a stream let go of has nothing left to release.
+    /// only: a stream let go of has nothing left to release. Disposed of during an asynchronous operation,
+    /// the stream leaves that operation its buffers and its codec, which then go to the garbage collector.
     /// </summary>
     private Stream? Release(bool ended)
     {
@@ -563,6 +658,11 @@ public sealed class ZstdStream : Stream
         }
 
         _stream = null;
+        if (AsyncOperationActive)
+        {
+            return _leaveOpen ? null : stream;
+        }
+
         Return(ref _input);
         Return(ref _output);
         if (ended)

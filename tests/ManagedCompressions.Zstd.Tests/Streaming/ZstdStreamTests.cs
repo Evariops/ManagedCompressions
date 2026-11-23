@@ -232,6 +232,70 @@ public sealed class ZstdStreamTests
     }
 #endif
 
+    /// <summary>
+    /// A stream disposed of while a read waits on the underlying stream, as one is to abandon a read
+    /// that hangs: the buffer the underlying read still fills stays the read's rather than going back
+    /// to the pool, where another renter would get it, and the read then fails as disposed. A second
+    /// operation meanwhile is refused, as System.IO.Compression's streams refuse it.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_during_a_pending_read_leaves_the_read_its_buffer()
+    {
+        var pending = new Pending();
+        var stream = new ZstdStream(pending, CompressionMode.Decompress);
+        ValueTask<int> read = stream.ReadAsync(new byte[100], TestContext.Current.CancellationToken);
+        Memory<byte> held = await pending.ReadStarted;
+        Assert.Throws<InvalidOperationException>(() => stream.Read(new byte[100]));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => stream.ReadAsync(new byte[100], TestContext.Current.CancellationToken).AsTask());
+
+        Assert.False(ReturnedToThePool(held, stream.Dispose));
+        Compressed.AsSpan(0, 10).CopyTo(held.Span);
+        pending.Complete(10);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => read.AsTask());
+    }
+
+    /// <summary>
+    /// As for a read: a stream disposed of while a write waits on the underlying stream neither ends
+    /// the frame through the buffer that write still sends, nor gives that buffer back.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_during_a_pending_write_leaves_the_write_its_buffer()
+    {
+        var pending = new Pending();
+        var stream = new ZstdStream(pending, CompressionLevel.Fastest);
+        byte[] data = DataKinds.Generate("incompressible", 400_000, 5);
+        ValueTask write = stream.WriteAsync(data, TestContext.Current.CancellationToken);
+        Memory<byte> held = await pending.WriteStarted;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => stream.FlushAsync(TestContext.Current.CancellationToken));
+
+        Assert.False(ReturnedToThePool(held, stream.Dispose));
+        Assert.Equal(0, pending.SynchronousWrites);
+        pending.Complete(0);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => write.AsTask());
+    }
+
+    /// <summary>
+    /// Whether <paramref name="dispose"/> gives the array under <paramref name="buffer"/> back to
+    /// <see cref="System.Buffers.ArrayPool{T}.Shared"/>: the pool keeps, for this thread, the last array of a
+    /// size it was given back, and rents it out again first. The thread's slot is emptied before.
+    /// </summary>
+    private static bool ReturnedToThePool(ReadOnlyMemory<byte> buffer, Action dispose)
+    {
+        Assert.True(System.Runtime.InteropServices.MemoryMarshal.TryGetArray(buffer, out ArraySegment<byte> segment));
+        byte[] array = segment.Array!;
+        byte[] emptied = System.Buffers.ArrayPool<byte>.Shared.Rent(array.Length);
+        dispose();
+        byte[] next = System.Buffers.ArrayPool<byte>.Shared.Rent(array.Length);
+        bool returned = ReferenceEquals(next, array);
+        if (!returned)
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(next);
+        }
+
+        System.Buffers.ArrayPool<byte>.Shared.Return(emptied);
+        return returned;
+    }
+
     private static byte[] ReadAll(Stream stream, int bufferSize)
     {
         using var content = new MemoryStream();
@@ -259,5 +323,73 @@ public sealed class ZstdStreamTests
     private sealed class Unreadable : MemoryStream
     {
         public override bool CanRead => false;
+    }
+
+    /// <summary>
+    /// A stream whose first asynchronous read or write waits until <see cref="Complete"/>, and tells
+    /// which buffer it was handed; a second one meanwhile fails with an <see cref="IOException"/>, rather
+    /// than wait for ever.
+    /// </summary>
+    internal sealed class Pending : Stream
+    {
+        private readonly TaskCompletionSource<Memory<byte>> _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<Memory<byte>> _writeStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<int> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Memory<byte>> ReadStarted => _readStarted.Task;
+
+        public Task<Memory<byte>> WriteStarted => _writeStarted.Task;
+
+        public int SynchronousWrites { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanWrite => true;
+
+        public override bool CanSeek => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public void Complete(int read) => _done.SetResult(read);
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_readStarted.TrySetResult(buffer) && !_done.Task.IsCompleted)
+            {
+                throw new IOException("a second read reached the underlying stream while the first one ran");
+            }
+
+            return await _done.Task;
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_writeStarted.TrySetResult(System.Runtime.InteropServices.MemoryMarshal.AsMemory(buffer)) && !_done.Task.IsCompleted)
+            {
+                throw new IOException("a second write reached the underlying stream while the first one ran");
+            }
+
+            await _done.Task;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => SynchronousWrites++;
+
+        public override void Write(ReadOnlySpan<byte> buffer) => SynchronousWrites++;
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 }

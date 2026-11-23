@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
 using System.Threading;
@@ -19,6 +20,11 @@ namespace ManagedCompressions.Brotli;
 /// an invalid or truncated stream.
 /// </para>
 /// <para>
+/// Not thread-safe, as streams are not; and one asynchronous operation at a time, as with
+/// <see cref="BrotliStream"/>: another one meanwhile, or a synchronous one, throws
+/// <see cref="InvalidOperationException"/>.
+/// </para>
+/// <para>
 /// The name does not clash with <see cref="BrotliStream"/>, so that both namespaces can be imported.
 /// </para>
 /// </remarks>
@@ -35,6 +41,9 @@ public sealed class BrotliCompressionStream : Stream
     private int _bufferCount;
     private bool _endOfInput;
     private bool _disposed;
+
+    /// <summary>1 while an asynchronous operation runs, 0 otherwise.</summary>
+    private int _asyncOperation;
 
     /// <summary>A stream that compresses at .NET's default quality, 4, or decompresses.</summary>
     /// <param name="stream">The underlying stream.</param>
@@ -178,15 +187,24 @@ public sealed class BrotliCompressionStream : Stream
         }
 
         byte[] input = _buffer ??= new byte[BufferSize];
-        while (true)
+        BeginAsync();
+        try
         {
-            if (TryDecode(decoder, buffer.Span, out int written))
+            while (true)
             {
-                return written;
-            }
+                if (TryDecode(decoder, buffer.Span, out int written))
+                {
+                    return written;
+                }
 
-            int read = await BaseStream.ReadAsync(input.AsMemory(), cancellationToken).ConfigureAwait(false);
-            NoteRead(read);
+                int read = await BaseStream.ReadAsync(input.AsMemory(), cancellationToken).ConfigureAwait(false);
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                NoteRead(read);
+            }
+        }
+        finally
+        {
+            EndAsync();
         }
     }
 
@@ -260,21 +278,31 @@ public sealed class BrotliCompressionStream : Stream
     {
         BrotliStreamEncoder encoder = EncoderOrThrow();
         byte[] output = _buffer ??= new byte[BufferSize];
-        OperationStatus status;
-        do
+        BeginAsync();
+        try
         {
-            status = encoder.Compress(buffer.Span, output, out int consumed, out int written, isFinalBlock: false);
-            ThrowIfInvalid(status);
-            buffer = buffer[consumed..];
-            await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+            OperationStatus status;
+            do
+            {
+                status = encoder.Compress(buffer.Span, output, out int consumed, out int written, isFinalBlock: false);
+                ThrowIfInvalid(status);
+                buffer = buffer[consumed..];
+                await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                ObjectDisposedException.ThrowIf(_disposed, this);
+            }
+            while (status == OperationStatus.DestinationTooSmall || !buffer.IsEmpty);
         }
-        while (status == OperationStatus.DestinationTooSmall || !buffer.IsEmpty);
+        finally
+        {
+            EndAsync();
+        }
     }
 
     /// <summary>Writes everything written so far into the underlying stream, ending on a byte boundary, then flushes it.</summary>
     public override void Flush()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureNoAsyncOperation();
         if (_encoder is not null)
         {
             byte[] output = _buffer ??= new byte[BufferSize];
@@ -295,28 +323,45 @@ public sealed class BrotliCompressionStream : Stream
     public override async Task FlushAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureNoAsyncOperation();
         if (_encoder is not null)
         {
             byte[] output = _buffer ??= new byte[BufferSize];
-            OperationStatus status;
-            do
+            BeginAsync();
+            try
             {
-                status = _encoder.Flush(output, out int written);
-                ThrowIfInvalid(status);
-                await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
-            }
-            while (status == OperationStatus.DestinationTooSmall);
+                OperationStatus status;
+                do
+                {
+                    status = _encoder.Flush(output, out int written);
+                    ThrowIfInvalid(status);
+                    await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                    ObjectDisposedException.ThrowIf(_disposed, this);
+                }
+                while (status == OperationStatus.DestinationTooSmall);
 
-            await BaseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await BaseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndAsync();
+            }
         }
     }
 
     /// <summary>Ends the Brotli stream when compressing, then disposes of the underlying stream unless it is left open.</summary>
+    /// <remarks>
+    /// Disposed of while an asynchronous read or write runs, the stream does not end the Brotli stream,
+    /// whose bytes would go through the buffer that operation still sends, nor give the decoder's buffers
+    /// back to their pool: they go to the garbage collector. The operation then fails with an
+    /// <see cref="ObjectDisposedException"/> once the underlying stream completes it.
+    /// </remarks>
     protected override void Dispose(bool disposing)
     {
+        bool pending = AsyncOperationActive;
         try
         {
-            if (disposing && !_disposed && _encoder is not null)
+            if (disposing && !_disposed && !pending && _encoder is not null)
             {
                 byte[] output = _buffer ??= new byte[BufferSize];
                 OperationStatus status;
@@ -334,7 +379,11 @@ public sealed class BrotliCompressionStream : Stream
             if (disposing && !_disposed)
             {
                 _disposed = true;
-                _decoder?.Dispose();
+                if (!pending)
+                {
+                    _decoder?.Dispose();
+                }
+
                 if (!_leaveOpen)
                 {
                     BaseStream.Dispose();
@@ -345,12 +394,13 @@ public sealed class BrotliCompressionStream : Stream
         }
     }
 
-    /// <summary>Ends the Brotli stream when compressing, then disposes of the underlying stream unless it is left open.</summary>
+    /// <inheritdoc cref="Dispose(bool)"/>
     public override async ValueTask DisposeAsync()
     {
+        bool pending = AsyncOperationActive;
         try
         {
-            if (!_disposed && _encoder is not null)
+            if (!_disposed && !pending && _encoder is not null)
             {
                 byte[] output = _buffer ??= new byte[BufferSize];
                 OperationStatus status;
@@ -368,14 +418,19 @@ public sealed class BrotliCompressionStream : Stream
             if (!_disposed)
             {
                 _disposed = true;
-                _decoder?.Dispose();
+                if (!pending)
+                {
+                    _decoder?.Dispose();
+                }
+
                 if (!_leaveOpen)
                 {
                     await BaseStream.DisposeAsync().ConfigureAwait(false);
                 }
             }
 
-            GC.SuppressFinalize(this);
+            // Stream's own, which suppresses finalization; the stream, disposed of, does nothing more.
+            await base.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -399,12 +454,43 @@ public sealed class BrotliCompressionStream : Stream
     private BrotliStreamDecoder DecoderOrThrow()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureNoAsyncOperation();
         return _decoder ?? throw new InvalidOperationException("the stream compresses: it cannot be read");
     }
 
     private BrotliStreamEncoder EncoderOrThrow()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureNoAsyncOperation();
         return _encoder ?? throw new InvalidOperationException("the stream decompresses: it cannot be written");
     }
+
+    /// <summary>Whether an asynchronous read, write or flush is running.</summary>
+    private bool AsyncOperationActive => Volatile.Read(ref _asyncOperation) != 0;
+
+    /// <summary>
+    /// An asynchronous operation begins: none may run beside it, as with <see cref="BrotliStream"/>, the
+    /// codec and the buffer being the stream's own.
+    /// </summary>
+    private void BeginAsync()
+    {
+        if (Interlocked.Exchange(ref _asyncOperation, 1) != 0)
+        {
+            ThrowOperationActive();
+        }
+    }
+
+    private void EndAsync() => Volatile.Write(ref _asyncOperation, 0);
+
+    private void EnsureNoAsyncOperation()
+    {
+        if (AsyncOperationActive)
+        {
+            ThrowOperationActive();
+        }
+    }
+
+    [DoesNotReturn]
+    private static void ThrowOperationActive() =>
+        throw new InvalidOperationException("an asynchronous operation is still running on this stream: one at a time");
 }
