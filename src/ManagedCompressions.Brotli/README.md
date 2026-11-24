@@ -7,7 +7,8 @@ fully managed C#.
   little-endian processor, and it is compatible with trimming and Native AOT.
 - Its compressor writes the bytes brotli 1.1.1 writes, the version .NET 10 and .NET 11 ship, those of
   `BrotliEncoder.TryCompress`: at every quality from 0 to 11, every window and every mode, so its ratios
-  are brotli's.
+  are brotli's. At qualities 10 and 11 they are those of the platform's brotli: .NET's brotli computes a
+  logarithm otherwise on Windows than on Linux and macOS, which changes a few streams, and so does this one.
 - Its decompressor accepts and refuses the streams brotli 1.1.1 does, and reports why it refuses one
   with brotli's own error codes.
 - Both are at least as fast as the brotli .NET ships at every quality (see [Performance](#performance)):

@@ -8,7 +8,14 @@ namespace ManagedCompressions.Brotli.Internal;
 internal sealed unsafe class PinnedBuffer<T>
     where T : unmanaged
 {
-    private T[] _array = [];
+    /// <summary>
+    /// The array of a buffer never grown: on the pinned heap too, so that a pointer taken from it before
+    /// any growth (<c>Ensure(0)</c>) stays where it was, as one into <see cref="Array.Empty{T}"/>, which
+    /// the GC may move, would not. Nothing reads through it: it holds no item.
+    /// </summary>
+    private static readonly T[] Empty = GC.AllocateUninitializedArray<T>(0, pinned: true);
+
+    private T[] _array = Empty;
 
     /// <summary>The buffer, of at least <paramref name="count"/> items; its content is not kept when it grows.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -45,7 +52,11 @@ internal sealed unsafe class BlockSplit
         NumBlocks = 0;
     }
 
-    /// <summary>brotli's <c>BROTLI_ENSURE_CAPACITY</c> of the types and the lengths.</summary>
+    /// <summary>
+    /// brotli's <c>BROTLI_ENSURE_CAPACITY</c> of the types and the lengths, but for their content, which
+    /// brotli keeps when they grow and this does not: every caller fills them from their start, the split
+    /// emptied by <see cref="Init"/> before a meta-block's.
+    /// </summary>
     public void EnsureCapacity(nuint count)
     {
         Types = _types.Ensure(count);

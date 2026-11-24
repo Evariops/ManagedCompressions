@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -154,6 +155,9 @@ internal static unsafe class EntropyEncode
                 }
             }
 
+            // As in brotli, an empty histogram would run the merges below from k = -1, out of the tree:
+            // every caller returns before, on a count of one symbol or none.
+            Debug.Assert(n >= 1, "a symbol to build the tree of");
             if (n == 1)
             {
                 // A single symbol.

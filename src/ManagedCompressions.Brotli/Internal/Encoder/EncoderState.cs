@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace ManagedCompressions.Brotli.Internal;
@@ -236,7 +237,8 @@ internal sealed unsafe partial class EncoderState
 
         if (_isLastBlockEmitted)
         {
-            throw new InvalidOperationException("a block after the last");
+            // brotli returns false; BrotliStreamEncoder never asks once the last block is out.
+            throw new UnreachableException("a block after the last");
         }
 
         if (isLast)

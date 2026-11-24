@@ -156,7 +156,7 @@ internal static unsafe partial class Transforms
         length = PrefixSuffix[at];
         if (length > 8)
         {
-            throw new InvalidOperationException("a prefix or suffix of more than 8 bytes");
+            throw new UnreachableException("a prefix or suffix of more than 8 bytes");
         }
 
         ulong value = 0;
