@@ -102,6 +102,51 @@ public sealed class CompressionStreamTests
         Assert.Throws<InvalidDataException>(() => reader.CopyTo(Stream.Null));
     }
 
+    /// <summary>
+    /// An underlying stream that holds nothing at all reads as empty, as <see cref="BrotliStream"/> and
+    /// ZstdStream read it: an empty HTTP body that says it is Brotli. A stream cut short inside its
+    /// data is still refused (<see cref="RefusesATruncatedStream"/>).
+    /// </summary>
+    [Fact]
+    public async Task AnEmptyUnderlyingStreamReadsAsEmpty()
+    {
+        using var native = new BrotliStream(new MemoryStream(), CompressionMode.Decompress);
+        Assert.Equal(0, native.Read(new byte[16]));
+        using var reader = new BrotliCompressionStream(new MemoryStream(), CompressionMode.Decompress);
+        Assert.Equal(0, reader.Read(new byte[16]));
+        Assert.Equal(-1, reader.ReadByte());
+        using var asyncReader = new BrotliCompressionStream(new MemoryStream(), CompressionMode.Decompress);
+        Assert.Equal(0, await asyncReader.ReadAsync(new byte[16], TestContext.Current.CancellationToken));
+        using var copied = new BrotliCompressionStream(new MemoryStream(), CompressionMode.Decompress);
+        var content = new MemoryStream();
+        copied.CopyTo(content);
+        Assert.Equal(0, content.Length);
+    }
+
+    /// <summary>The underlying stream gets no empty write when the encoder has nothing to hand out.</summary>
+    [Fact]
+    public async Task NothingIsWrittenWhenTheEncoderHasNothing()
+    {
+        var counting = new Counting();
+        using (var writer = new BrotliCompressionStream(counting, 5, leaveOpen: true))
+        {
+            writer.Write(new byte[10]);
+            writer.Flush();
+            writer.Flush();
+            await writer.WriteAsync(new byte[10], TestContext.Current.CancellationToken);
+            await writer.FlushAsync(TestContext.Current.CancellationToken);
+            await writer.FlushAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using (var writer = new BrotliCompressionStream(counting, 5, leaveOpen: true))
+        {
+            await writer.WriteAsync(new byte[10], TestContext.Current.CancellationToken);
+        }
+
+        Assert.True(counting.Writes > 0);
+        Assert.Equal(0, counting.EmptyWrites);
+    }
+
     [Fact]
     public void RefusesTheWrongDirection()
     {
@@ -168,6 +213,38 @@ public sealed class CompressionStreamTests
             }
 
             return content.ToArray();
+        }
+    }
+
+    /// <summary>A stream that counts the writes it gets, and the empty ones.</summary>
+    private sealed class Counting : MemoryStream
+    {
+        public int Writes { get; private set; }
+
+        public int EmptyWrites { get; private set; }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Count(count);
+            base.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            Count(buffer.Length);
+            base.Write(buffer);
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Count(buffer.Length);
+            return base.WriteAsync(buffer, cancellationToken);
+        }
+
+        private void Count(int length)
+        {
+            Writes++;
+            EmptyWrites += length == 0 ? 1 : 0;
         }
     }
 

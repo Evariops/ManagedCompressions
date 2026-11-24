@@ -17,7 +17,9 @@ namespace ManagedCompressions.Brotli;
 /// Writing compresses through <see cref="BrotliStreamEncoder"/>: the bytes <see cref="BrotliStream"/> writes
 /// for the same writes, flushes and quality. Disposing the stream ends the Brotli stream. Reading
 /// decompresses through <see cref="BrotliStreamDecoder"/>, and throws <see cref="InvalidDataException"/> for
-/// an invalid or truncated stream.
+/// an invalid or truncated stream; an underlying stream that holds nothing at all reads as empty, as with
+/// <see cref="BrotliStream"/>. Nothing is written to the underlying stream when the encoder has nothing to
+/// write.
 /// </para>
 /// <para>
 /// Not thread-safe, as streams are not; and one asynchronous operation at a time, as with
@@ -40,6 +42,9 @@ public sealed class BrotliCompressionStream : Stream
     private int _bufferOffset;
     private int _bufferCount;
     private bool _endOfInput;
+
+    /// <summary>Whether the underlying stream has given a byte yet.</summary>
+    private bool _inputSeen;
     private bool _disposed;
 
     /// <summary>1 while an asynchronous operation runs, 0 otherwise.</summary>
@@ -224,7 +229,9 @@ public sealed class BrotliCompressionStream : Stream
             case OperationStatus.NeedMoreData when written == 0:
                 if (_endOfInput)
                 {
-                    throw new InvalidDataException("truncated Brotli stream");
+                    // An underlying stream that ends before its first byte reads as empty, as BrotliStream and
+                    // ZstdStream read it; one that ends inside the Brotli stream cuts it short.
+                    return !_inputSeen ? true : throw new InvalidDataException("truncated Brotli stream");
                 }
 
                 return false;
@@ -238,6 +245,7 @@ public sealed class BrotliCompressionStream : Stream
         _bufferOffset = 0;
         _bufferCount = read;
         _endOfInput = read == 0;
+        _inputSeen |= read > 0;
     }
 
     /// <inheritdoc/>
@@ -261,7 +269,10 @@ public sealed class BrotliCompressionStream : Stream
             status = encoder.Compress(buffer, output, out int consumed, out int written, isFinalBlock: false);
             ThrowIfInvalid(status);
             buffer = buffer[consumed..];
-            BaseStream.Write(output, 0, written);
+            if (written > 0)
+            {
+                BaseStream.Write(output, 0, written);
+            }
         }
         while (status == OperationStatus.DestinationTooSmall || !buffer.IsEmpty);
     }
@@ -287,8 +298,11 @@ public sealed class BrotliCompressionStream : Stream
                 status = encoder.Compress(buffer.Span, output, out int consumed, out int written, isFinalBlock: false);
                 ThrowIfInvalid(status);
                 buffer = buffer[consumed..];
-                await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
-                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (written > 0)
+                {
+                    await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                    ObjectDisposedException.ThrowIf(_disposed, this);
+                }
             }
             while (status == OperationStatus.DestinationTooSmall || !buffer.IsEmpty);
         }
@@ -311,7 +325,10 @@ public sealed class BrotliCompressionStream : Stream
             {
                 status = _encoder.Flush(output, out int written);
                 ThrowIfInvalid(status);
-                BaseStream.Write(output, 0, written);
+                if (written > 0)
+                {
+                    BaseStream.Write(output, 0, written);
+                }
             }
             while (status == OperationStatus.DestinationTooSmall);
 
@@ -335,8 +352,11 @@ public sealed class BrotliCompressionStream : Stream
                 {
                     status = _encoder.Flush(output, out int written);
                     ThrowIfInvalid(status);
-                    await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
-                    ObjectDisposedException.ThrowIf(_disposed, this);
+                    if (written > 0)
+                    {
+                        await BaseStream.WriteAsync(output.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+                        ObjectDisposedException.ThrowIf(_disposed, this);
+                    }
                 }
                 while (status == OperationStatus.DestinationTooSmall);
 
@@ -369,7 +389,10 @@ public sealed class BrotliCompressionStream : Stream
                 {
                     status = _encoder.Compress(default, output, out _, out int written, isFinalBlock: true);
                     ThrowIfInvalid(status);
-                    BaseStream.Write(output, 0, written);
+                    if (written > 0)
+                    {
+                        BaseStream.Write(output, 0, written);
+                    }
                 }
                 while (status == OperationStatus.DestinationTooSmall);
             }
@@ -408,7 +431,10 @@ public sealed class BrotliCompressionStream : Stream
                 {
                     status = _encoder.Compress(default, output, out _, out int written, isFinalBlock: true);
                     ThrowIfInvalid(status);
-                    await BaseStream.WriteAsync(output.AsMemory(0, written)).ConfigureAwait(false);
+                    if (written > 0)
+                    {
+                        await BaseStream.WriteAsync(output.AsMemory(0, written)).ConfigureAwait(false);
+                    }
                 }
                 while (status == OperationStatus.DestinationTooSmall);
             }
