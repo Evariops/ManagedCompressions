@@ -148,20 +148,31 @@ internal static class CodecPool
 
     /// <summary>
     /// At a gen 2 collection: the codecs kept since before the last one, and not taken since, released.
-    /// They are at the bottom of their lists, which are taken from the top.
+    /// They are at the bottom of their lists, which are taken from the top. A setting left without a
+    /// codec goes too: its key holds its dictionary, which an application that prepares dictionaries as
+    /// it goes would otherwise find kept for good.
     /// </summary>
     private static void Trim()
     {
         lock (Gate)
         {
-            foreach (List<Entry<ZstdEncoder>> kept in Encoders.Values)
+            // Removing an entry does not invalidate the enumeration of a dictionary.
+            foreach ((EncoderKey key, List<Entry<ZstdEncoder>> kept) in Encoders)
             {
                 kept.RemoveAll(entry => entry.Epoch < s_epoch);
+                if (kept.Count == 0)
+                {
+                    Encoders.Remove(key);
+                }
             }
 
-            foreach (List<Entry<ZstdDecoder>> kept in Decoders.Values)
+            foreach ((DecoderKey key, List<Entry<ZstdDecoder>> kept) in Decoders)
             {
                 kept.RemoveAll(entry => entry.Epoch < s_epoch);
+                if (kept.Count == 0)
+                {
+                    Decoders.Remove(key);
+                }
             }
 
             s_epoch++;
