@@ -2,12 +2,12 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
-namespace ManagedCompressions.Zstd.Internal;
+namespace ManagedCompressions.Internal;
 
 /// <summary>
-/// The codecs read the format's little-endian fields, and write them, in the processor's byte order,
-/// as unaligned loads and stores of whole words: on a big-endian processor (IBM Z) every frame would
-/// come out wrong. They refuse to start there instead.
+/// The codecs read their formats' little-endian fields, and write them, in the processor's byte order,
+/// as unaligned loads and stores of whole words: on a big-endian processor (IBM Z) every block, frame
+/// or stream would come out wrong. They refuse to start there instead.
 /// </summary>
 internal static class LittleEndian
 {
@@ -29,5 +29,5 @@ internal static class LittleEndian
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowBigEndian() =>
         throw new PlatformNotSupportedException(
-            "ManagedCompressions.Zstd runs on little-endian processors only: it reads the format's fields in the processor's byte order.");
+            $"{typeof(LittleEndian).Assembly.GetName().Name} runs on little-endian processors only: it reads and writes its format in the processor's byte order.");
 }

@@ -1,4 +1,5 @@
 using System;
+using ManagedCompressions.Internal;
 using ManagedCompressions.Lz4.Internal;
 
 namespace ManagedCompressions.Lz4;

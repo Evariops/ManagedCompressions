@@ -3,7 +3,9 @@
   <PropertyGroup>
     <!-- .NET 10, the long-term release, and .NET 11. A project that needs .NET 11 alone says so itself. -->
     <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
-    <LangVersion>preview</LangVersion>
+    <!-- C# 14, .NET 10's, for both: a released language, whose rules a newer SDK does not change under
+         the code, as it may change a preview's. -->
+    <LangVersion>14</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -14,11 +16,12 @@
     <NeutralLanguage>en</NeutralLanguage>
   </PropertyGroup>
 
-  <!-- Package metadata, shared by the two libraries. Nothing here sets a version: the number belongs
+  <!-- Package metadata, shared by the three libraries. Nothing here sets a version: the number belongs
        to a release, and CI passes the one a release names. A local `dotnet pack` therefore produces
        the SDK's default 1.0.0, which is a file name and not a claim. Not packable by default either,
-       so a project has to ask: the two libraries do, and the benchmarks and the tests never will.
-       Each library states its license expression itself, since each carries a different BSD part. -->
+       so a project has to ask: the three libraries do, and the benchmarks and the tests never will.
+       Each library states its license expression itself: Zstd and Lz4 each carry a different BSD part,
+       Brotli none. -->
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <Authors>Evariops</Authors>
@@ -35,8 +38,8 @@
   </PropertyGroup>
 
   <!-- These files sit at the root and belong in every package: the readme because NuGet renders it on
-       the package page, NOTICE because the BSD licenses of zstd and lz4 ask that a binary
-       distribution reproduce their notices, and LICENSE, which NOTICE refers to. The Pack metadata is
+       the package page, NOTICE because the licenses of zstd and lz4 (BSD) and of brotli (MIT) ask that
+       a distribution reproduce their notices, and LICENSE, which NOTICE refers to. The Pack metadata is
        inert wherever IsPackable stays false. -->
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />

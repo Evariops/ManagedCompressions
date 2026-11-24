@@ -12,7 +12,11 @@ using ManagedCompressions.Zstd.Internal;
 namespace ManagedCompressions.Zstd;
 
 /// <summary>Decompression of a whole source, its frames on several threads.</summary>
-public sealed unsafe partial class ZstdDecompressor
+/// <remarks>
+/// Not an unsafe context, unlike the other parts: C# 14 allows no await in one. The methods that take
+/// pointers say so themselves.
+/// </remarks>
+public sealed partial class ZstdDecompressor
 {
     /// <summary>
     /// The smallest content whose checksum <see cref="DecompressAsync"/> verifies on a second thread
@@ -141,8 +145,8 @@ public sealed unsafe partial class ZstdDecompressor
         var shared = new SharedFrames(frames, places);
         using MemoryHandle sourcePin = source.Pin();
         using MemoryHandle destinationPin = destination.Pin();
-        nint sourceAddress = (nint)sourcePin.Pointer;
-        nint destinationAddress = (nint)destinationPin.Pointer;
+        nint sourceAddress = AddressOf(sourcePin);
+        nint destinationAddress = AddressOf(destinationPin);
         var tasks = new Task[workers];
         for (int w = 0; w < workers; w++)
         {
@@ -184,7 +188,7 @@ public sealed unsafe partial class ZstdDecompressor
     /// The frames one after the other on the calling thread, each with <see cref="Decompress(ReadOnlySpan{byte}, Span{byte}, out int, out int)"/>'s
     /// result; a large frame's checksum verified on a second thread when <paramref name="parallelChecksum"/>.
     /// </summary>
-    private int DecompressInOrder(ReadOnlyMemory<byte> source, Memory<byte> destination, bool parallelChecksum, CancellationToken cancellationToken)
+    private unsafe int DecompressInOrder(ReadOnlyMemory<byte> source, Memory<byte> destination, bool parallelChecksum, CancellationToken cancellationToken)
     {
         using MemoryHandle pin = destination.Pin();
         int ip = 0;
@@ -240,8 +244,11 @@ public sealed unsafe partial class ZstdDecompressor
         return size >= ParallelChecksumMin;
     }
 
+    /// <summary>The address of pinned memory, for the workers (an async method takes no pointer).</summary>
+    private static unsafe nint AddressOf(in MemoryHandle pin) => (nint)pin.Pointer;
+
     /// <summary>A worker's part of a parallel call: the frames it takes, one at a time, until none is left.</summary>
-    private void DecompressShared(SharedFrames shared, nint source, int sourceLength, nint destination, CancellationToken cancellationToken)
+    private unsafe void DecompressShared(SharedFrames shared, nint source, int sourceLength, nint destination, CancellationToken cancellationToken)
     {
         while (shared.TryTake(out int index))
         {
