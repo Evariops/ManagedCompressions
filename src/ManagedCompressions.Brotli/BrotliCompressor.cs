@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Runtime.InteropServices;
 using ManagedCompressions.Brotli.Internal;
+using ManagedCompressions.Internal;
 
 namespace ManagedCompressions.Brotli;
 

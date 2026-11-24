@@ -2,8 +2,9 @@
 
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
-  <!-- What the libraries share, compiled into each of them as internal types: the helpers of their
-       accesses without bounds checks (Shared/Unchecked.cs). -->
+  <!-- What the libraries share, compiled into each of them as internal types: the assertions of their
+       accesses without bounds checks (Shared/Bounds.cs), and their refusal of big-endian processors
+       (Shared/LittleEndian.cs). -->
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
   </ItemGroup>
