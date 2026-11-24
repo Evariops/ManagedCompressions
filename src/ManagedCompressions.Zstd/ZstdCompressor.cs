@@ -229,6 +229,9 @@ public sealed unsafe partial class ZstdCompressor
             written = CompressFrame(src, source.Length, dst, destination.Length);
         }
 
+        // The tables are pinned arrays that only the compressor holds, read through pointers: it stays
+        // alive until the frame is written, whatever the code after the loops uses of it.
+        GC.KeepAlive(this);
         if (written < 0)
         {
             return OperationStatus.DestinationTooSmall;

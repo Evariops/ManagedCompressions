@@ -238,7 +238,12 @@ public sealed unsafe class ZstdEncoder
             return _failed ? OperationStatus.InvalidData : OperationStatus.Done;
         }
 
-        return Run(source, destination, isFinalBlock ? Directive.End : Directive.Continue, out bytesConsumed, out bytesWritten);
+        OperationStatus status = Run(source, destination, isFinalBlock ? Directive.End : Directive.Continue, out bytesConsumed, out bytesWritten);
+
+        // The buffers, read through pointers, are pinned arrays only the encoder holds: it stays alive
+        // until the call is done, whatever the code after the loops uses of it.
+        GC.KeepAlive(this);
+        return status;
     }
 
     /// <summary>
@@ -249,8 +254,12 @@ public sealed unsafe class ZstdEncoder
     /// <see cref="OperationStatus.Done"/> once all of it is written; <see cref="OperationStatus.DestinationTooSmall"/>
     /// when the destination filled first: flush again. <see cref="OperationStatus.InvalidData"/> as for <see cref="Compress"/>.
     /// </returns>
-    public OperationStatus Flush(Span<byte> destination, out int bytesWritten) =>
-        Run(default, destination, Directive.Flush, out _, out bytesWritten);
+    public OperationStatus Flush(Span<byte> destination, out int bytesWritten)
+    {
+        OperationStatus status = Run(default, destination, Directive.Flush, out _, out bytesWritten);
+        GC.KeepAlive(this);
+        return status;
+    }
 
     /// <summary>libzstd's <c>ZSTD_compressStream2</c> over <c>ZSTD_compressStream_generic</c>, with buffered input and output.</summary>
     private OperationStatus Run(ReadOnlySpan<byte> source, Span<byte> destination, Directive directive, out int bytesConsumed, out int bytesWritten)

@@ -199,6 +199,10 @@ public sealed unsafe class BrotliStreamDecoder : IDisposable
         }
 
         Compact();
+
+        // The decoder's tables, read through pointers, are pinned arrays only this one holds: it stays
+        // alive until the call is done, whatever the code after the loop uses of it.
+        GC.KeepAlive(this);
         return status;
     }
 
