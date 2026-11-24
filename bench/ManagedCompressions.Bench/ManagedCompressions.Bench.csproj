@@ -22,6 +22,7 @@
     <ProjectReference Include="../../src/ManagedCompressions.Lz4/ManagedCompressions.Lz4.csproj" />
     <ProjectReference Include="../../src/ManagedCompressions.Brotli/ManagedCompressions.Brotli.csproj" />
     <Compile Include="../ManagedCompressions.Zstd.Shared/PairedRatio.cs" LinkBase="Shared" />
+    <Compile Include="../ManagedCompressions.Zstd.Shared/SilesiaTar.cs" LinkBase="Shared" />
   </ItemGroup>
 
 </Project>

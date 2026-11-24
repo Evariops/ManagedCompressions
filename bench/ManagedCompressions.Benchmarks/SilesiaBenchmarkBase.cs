@@ -10,9 +10,10 @@ namespace ManagedCompressions.Benchmarks;
 /// </summary>
 /// <remarks>
 /// NativeCompressions is the baseline of each group, so the Ratio column is a case's time over
-/// NativeCompressions'. The managed compressors and decompressors, and .NET's Zstandard encoder, are
-/// created once and reused, as their documentation says to: they keep their tables between calls. Every
-/// decoder reads the same bytes, NativeCompressions' (the managed compressors write the same).
+/// NativeCompressions'; for Brotli, which it does not bind, .NET's brotli is. The managed compressors
+/// and decompressors, and .NET's Zstandard encoder, are created once and reused, as their documentation
+/// says to: they keep their tables between calls. Every decoder reads the same bytes, the baseline's
+/// (the managed compressors write the same).
 /// </remarks>
 public abstract class SilesiaBenchmarkBase
 {

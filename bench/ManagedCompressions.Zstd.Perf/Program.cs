@@ -153,6 +153,10 @@ public static class Program
         {
             candidates.Add(new("libzstd-ref", (f, o) => native.Decompress(f, o)));
         }
+        else
+        {
+            Console.WriteLine($"(no {NativeReference.LibraryPath}: run tools/native-ref/build.sh for the third reference)");
+        }
 
         if (args.Contains("--ab"))
         {
@@ -165,10 +169,6 @@ public static class Program
                 AbSwitch.Set(legacy: false);
                 return w;
             }));
-        }
-        else
-        {
-            Console.WriteLine($"(no {NativeReference.LibraryPath}: run tools/native-ref/build.sh for the third reference)");
         }
 
         if (only is not null)

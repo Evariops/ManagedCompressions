@@ -64,8 +64,14 @@ internal static unsafe class PcSampler
     private static extern nint _dyld_get_image_vmaddr_slide(uint imageIndex);
 
     /// <summary>Samples the calling thread until disposed, when <see cref="Path"/> is set.</summary>
+    /// <exception cref="PlatformNotSupportedException">
+    /// Neither x64 Windows nor arm64 macOS: the offsets of the thread states read are those two's.
+    /// </exception>
     public static IDisposable? Start() =>
-        Path is null ? null : OperatingSystem.IsWindows() ? new WindowsSession(Path) : new Session(Path);
+        Path is null ? null
+        : OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.X64 ? new WindowsSession(Path)
+        : OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? new Session(Path)
+        : throw new PlatformNotSupportedException("--pcprofile samples x64 Windows and arm64 macOS only.");
 
     private sealed class Session : IDisposable
     {
