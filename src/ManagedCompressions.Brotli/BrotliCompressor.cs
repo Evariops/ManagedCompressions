@@ -18,8 +18,14 @@ namespace ManagedCompressions.Brotli;
 /// </para>
 /// <para>
 /// <see cref="Compress"/> compresses the whole source into one stream per call. When the stream does not
-/// fit the destination, it reports so without writing anything, unless the destination holds
-/// <see cref="GetMaxCompressedLength"/> bytes: then, as brotli does, it stores the source uncompressed.
+/// fit the destination, it reports so, the destination then holding the part of the stream written
+/// before, which is no stream, unless the destination holds <see cref="GetMaxCompressedLength"/> bytes:
+/// then, as brotli does, it stores the source uncompressed.
+/// </para>
+/// <para>
+/// The bytes are those of the brotli of the platform the code runs on, and differ between platforms at
+/// qualities 10 and 11: .NET's brotli computes a logarithm otherwise on Windows than on Linux and macOS,
+/// which changes the encoder's choices for a few streams. Any brotli decodes them all.
 /// </para>
 /// </remarks>
 public sealed unsafe partial class BrotliCompressor
@@ -107,7 +113,7 @@ public sealed unsafe partial class BrotliCompressor
     /// <returns>
     /// <see cref="OperationStatus.Done"/> once the stream is written;
     /// <see cref="OperationStatus.DestinationTooSmall"/> when it does not fit, and the destination holds
-    /// fewer than <see cref="GetMaxCompressedLength"/> bytes.
+    /// fewer than <see cref="GetMaxCompressedLength"/> bytes: what it holds then is not a stream.
     /// </returns>
     public OperationStatus Compress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesConsumed, out int bytesWritten)
     {
