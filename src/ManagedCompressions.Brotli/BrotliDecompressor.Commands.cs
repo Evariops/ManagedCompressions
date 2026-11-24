@@ -541,6 +541,14 @@ public sealed unsafe partial class BrotliDecompressor
             goto MetaBlockDone;
         }
 
+        if (careful && _streaming)
+        {
+            // A command done near the end of the input: a point the stream resumes from, so that the
+            // next input does not decode it again (BrotliDecompressor.Streaming.cs).
+            _resume = AtCommandBegin;
+            goto Suspend;
+        }
+
         goto CommandBegin;
 
     LiteralBlockSwitch:

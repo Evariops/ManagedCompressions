@@ -12,7 +12,8 @@ namespace ManagedCompressions.Brotli;
 /// <remarks>
 /// <para>
 /// An instance keeps its tables from one stream to the next, so that a warm decoder allocates
-/// nothing. It is not thread-safe: use one per thread.
+/// nothing: they grow to the prefix codes of the largest meta-block it has decoded, some 8 MB at most
+/// (256 codes of each kind), and do not shrink. It is not thread-safe: use one per thread.
 /// </para>
 /// <para>
 /// <see cref="Decompress(ReadOnlySpan{byte}, Span{byte}, out int, out int)"/> decodes one whole stream

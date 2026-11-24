@@ -14,9 +14,11 @@ namespace ManagedCompressions.Brotli;
 /// <remarks>
 /// <para>
 /// The decoder keeps the stream's window, the last 1 KiB to 16 MiB of content, and up to twice the window
-/// and a meta-block besides, so that it moves the window once per window of content at most; it keeps the
-/// input of the meta-block it decodes until the meta-block's header is whole, and the last 64 bytes of
-/// input once the commands start. It accepts and refuses the streams <see cref="BrotliDecompressor"/>
+/// and a meta-block besides, so that it moves the window once per window of content at most. It reads
+/// each byte of input once, whatever pieces the stream comes in: of the input, it keeps the part of a
+/// meta-block's header it has yet to read whole (a prefix code, a few hundred bytes at most), and once the
+/// commands start, the last 64 bytes, or the command the input ends inside; an uncompressed meta-block's
+/// bytes are content as they arrive. It accepts and refuses the streams <see cref="BrotliDecompressor"/>
 /// does, with the same <see cref="LastError"/>.
 /// </para>
 /// <para>
@@ -46,6 +48,9 @@ public sealed unsafe class BrotliStreamDecoder : IDisposable
 
     /// <summary>Whether the stream is decoded and all of its content written.</summary>
     public bool IsFinished => _finished && _delivered == _decoder.StreamPosition;
+
+    /// <summary>The input the decoder keeps between calls, for the tests.</summary>
+    internal long BufferedInput => _inputLength;
 
     /// <summary>Returns the buffers to <see cref="ArrayPool{T}.Shared"/>; the decoder takes new ones if it is used again.</summary>
     public void Dispose()

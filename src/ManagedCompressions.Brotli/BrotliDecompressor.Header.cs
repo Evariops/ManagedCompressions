@@ -168,43 +168,14 @@ public sealed unsafe partial class BrotliDecompressor
     {
         for (int i = 0; i < 3; i++)
         {
-            _s.BlockLength[i] = Prefix.BlockSizeCap;
-            _s.BlockTypeRb[(i * 2) + 0] = 1;
-            _s.BlockTypeRb[(i * 2) + 1] = 0;
-            int types = DecodeVarLenUint8() + 1;
-            _s.NumBlockTypes[i] = types;
-            if (types < 2)
-            {
-                continue;
-            }
-
-            BrotliError error = ReadHuffmanCode(types + 2, types + 2, _blockTypeTrees + (i * BlockTypeTableSize), out int tableSize);
+            BrotliError error = DecodeBlockTypes(i);
             if (error != BrotliError.None)
             {
                 return error;
             }
-
-            Debug.Assert(tableSize <= BlockTypeTableSize, "a block type code within its table");
-            error = ReadHuffmanCode(Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, _blockLengthTrees + (i * BlockLengthTableSize), out tableSize);
-            if (error != BrotliError.None)
-            {
-                return error;
-            }
-
-            Debug.Assert(tableSize <= BlockLengthTableSize, "a block length code within its table");
-
-            _s.BlockLength[i] = ReadBlockLength(_blockLengthTrees + (i * BlockLengthTableSize));
         }
 
-        uint bits = _br.Read(6);
-        _distancePostfixBits = (int)(bits & 3);
-        _numDirectDistanceCodes = (int)(bits >> 2) << _distancePostfixBits;
-
-        for (int i = 0; i < _s.NumBlockTypes[0]; i++)
-        {
-            _contextModes[i] = (byte)_br.Read(2);
-        }
-
+        DecodeDistanceParametersAndModes();
         BrotliError result = DecodeContextMap(_s.NumBlockTypes[0] << Prefix.LiteralContextBits, out _numLiteralTrees, _contextMap);
         if (result != BrotliError.None)
         {
@@ -241,6 +212,54 @@ public sealed unsafe partial class BrotliDecompressor
 
         CalculateDistanceLut();
         return BrotliError.None;
+    }
+
+    /// <summary>
+    /// The block types of category <paramref name="i"/> (literals, commands, distances): their number,
+    /// and from two of them on, the codes of the block types and lengths, and the first block's length.
+    /// </summary>
+    private BrotliError DecodeBlockTypes(int i)
+    {
+        _s.BlockLength[i] = Prefix.BlockSizeCap;
+        _s.BlockTypeRb[(i * 2) + 0] = 1;
+        _s.BlockTypeRb[(i * 2) + 1] = 0;
+        int types = DecodeVarLenUint8() + 1;
+        _s.NumBlockTypes[i] = types;
+        if (types < 2)
+        {
+            return BrotliError.None;
+        }
+
+        BrotliError error = ReadHuffmanCode(types + 2, types + 2, _blockTypeTrees + (i * BlockTypeTableSize), out int tableSize);
+        if (error != BrotliError.None)
+        {
+            return error;
+        }
+
+        Debug.Assert(tableSize <= BlockTypeTableSize, "a block type code within its table");
+        error = ReadHuffmanCode(Prefix.NumBlockLengthSymbols, Prefix.NumBlockLengthSymbols, _blockLengthTrees + (i * BlockLengthTableSize), out tableSize);
+        if (error != BrotliError.None)
+        {
+            return error;
+        }
+
+        Debug.Assert(tableSize <= BlockLengthTableSize, "a block length code within its table");
+
+        _s.BlockLength[i] = ReadBlockLength(_blockLengthTrees + (i * BlockLengthTableSize));
+        return BrotliError.None;
+    }
+
+    /// <summary>NPOSTFIX and NDIRECT, then the context mode of each literal block type.</summary>
+    private void DecodeDistanceParametersAndModes()
+    {
+        uint bits = _br.Read(6);
+        _distancePostfixBits = (int)(bits & 3);
+        _numDirectDistanceCodes = (int)(bits >> 2) << _distancePostfixBits;
+
+        for (int i = 0; i < _s.NumBlockTypes[0]; i++)
+        {
+            _contextModes[i] = (byte)_br.Read(2);
+        }
     }
 
     /// <summary>A number of 0 to 255 in 1 to 11 bits (RFC 7932, section 9.2).</summary>
