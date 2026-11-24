@@ -160,7 +160,11 @@ internal static unsafe class Lz4Decoder
                 return false;
             }
 
-            Debug.Assert(match >= destination && op + length + 16 <= oend, "the short pattern lies in the output, its stores within it");
+            // The pattern's stores end 32 bytes past op at most: a second one, from op + step (12 to 16),
+            // only when the match is longer than the step, and a match here is 18 bytes at most. Both
+            // ways in leave that room: the short literals 50 bytes before the output's end, and the
+            // long ones 32.
+            Debug.Assert(match >= destination && length <= 18 && op + 32 <= oend, "the short pattern lies in the output, its stores within it");
             RepeatPattern(op, match, op + length, offset);
             op += length;
             continue;
@@ -169,7 +173,10 @@ internal static unsafe class Lz4Decoder
             ip = sequence + 1;
             if (!ReadLength(ref ip, iend - 15, ref literals))
             {
-                return false;
+                // A length that runs too close to the end, or past any block's: the careful loop takes
+                // the sequence again and judges it, so that a block is read or refused wherever it lies.
+                ip = sequence;
+                break;
             }
 
             // Room for the wild copy past the literals, then the offset, at both ends.
@@ -188,7 +195,10 @@ internal static unsafe class Lz4Decoder
         LongMatch:
             if (!ReadLength(ref ip, iend - 4, ref length))
             {
-                return false;
+                // As for the literals: the careful loop takes the sequence again, literals included.
+                ip = sequence;
+                op = sequenceOutput;
+                break;
             }
 
             length += MinMatch;
@@ -336,6 +346,14 @@ internal static unsafe class Lz4Decoder
             length += s;
         }
         while (s == 255);
+
+        // In 32 bits, past some 16 million bytes of 255 the sum wraps around and could read as a short
+        // length: a length past half the address space is no block's, and takes 8.4 million of them at
+        // most. In 64 bits the condition is a constant, and the check is not compiled.
+        if (sizeof(nuint) == 4 && p - ip > int.MaxValue / 255)
+        {
+            return false;
+        }
 
         ip = p;
 

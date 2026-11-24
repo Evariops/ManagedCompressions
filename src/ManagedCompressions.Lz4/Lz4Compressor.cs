@@ -71,6 +71,7 @@ public sealed unsafe class Lz4Compressor
     /// </summary>
     public int Compress(ReadOnlySpan<byte> source, Span<byte> destination)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(source.Length, Lz4Common.MaxInputSize, nameof(source));
         if (destination.Length < GetMaxCompressedLength(source.Length))
         {
             throw new ArgumentException("The destination is shorter than the longest a compression can take.", nameof(destination));
