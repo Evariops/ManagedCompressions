@@ -26,7 +26,11 @@ public sealed unsafe partial class ZstdDecompressor
     /// </remarks>
     internal const int ParallelChecksumMin = 4 << 20;
 
-    /// <summary>The decompressors the frames of <see cref="DecompressAsync"/> run on, kept from one call to the next.</summary>
+    /// <summary>
+    /// The decompressors the frames of <see cref="DecompressAsync"/> run on, kept from one call to the next.
+    /// Unlike the compressor's workers, whose tables and windows can take megabytes and which it lets go
+    /// past <see cref="CodecPool.MaxRetainedBytes"/>, each holds a block's literals at most: none is let go.
+    /// </summary>
     private Stack<ZstdDecompressor>? _idleWorkers;
 
     /// <summary>The helper that verifies a frame's checksum on a second thread, kept from one frame to the next.</summary>
@@ -71,6 +75,12 @@ public sealed unsafe partial class ZstdDecompressor
     /// <para>
     /// A frame decoded alone, whose content is large and has a checksum, has that checksum (XXH64)
     /// verified on a second thread as the frame decodes, which takes it off the decoding thread.
+    /// </para>
+    /// <para>
+    /// Frames decoded one after the other, a single frame among them, are decoded on the calling thread,
+    /// before the call returns its task, completed: a caller that must not block runs the call on the
+    /// thread pool. The decompressor keeps the decompressors its frames ran on for its next calls, as many
+    /// as the threads it used, each holding some hundred kilobytes at most: a block's literals, a pair of blocks' sequences.
     /// </para>
     /// <para>
     /// The result is that of decoding the frames one after the other: the same content, and on invalid

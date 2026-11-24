@@ -59,6 +59,24 @@ public sealed class FrameTests
         FrameAssert.Refused(frame, ZstdError.WindowTooLarge);
     }
 
+    /// <summary>
+    /// A block larger than its frame allows, cut short: refused for its size, as the streaming decoder
+    /// refuses it, rather than taken for a truncation that more input would complete. Raw, RLE and
+    /// compressed alike: a window of 1 KiB, a block of 2,000 bytes, 10 of them there.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void A_block_too_large_is_refused_before_its_bytes_are_looked_for(int blockType)
+    {
+        int blockHeader = 1 | (blockType << 1) | (2000 << 3);
+        byte[] frame = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00, (byte)blockHeader, (byte)(blockHeader >> 8), (byte)(blockHeader >> 16), .. new byte[blockType == 1 ? 0 : 10]];
+        var decoder = new ZstdDecompressor();
+        Assert.Equal(OperationStatus.InvalidData, decoder.Decompress(frame, new byte[4096], out _, out _));
+        Assert.Equal(ZstdError.BlockTooLarge, decoder.LastError);
+    }
+
     [Fact]
     public void The_reserved_bit_is_refused()
     {

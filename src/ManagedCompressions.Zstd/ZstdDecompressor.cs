@@ -503,17 +503,19 @@ public sealed partial class ZstdDecompressor
             int blockSize = blockHeader >> 3;
             ip += FrameFormat.BlockHeaderSize;
 
+            // A block larger than the frame allows is refused before its bytes are looked for, as the
+            // streaming decoder and the frame scan refuse it: more input would not make it valid.
             switch (blockType)
             {
                 case 0: // raw
-                    if (blockSize > source.Length - ip)
-                    {
-                        return Fail(ZstdError.Truncated);
-                    }
-
                     if (blockSize > header.BlockSizeMax)
                     {
                         return Fail(ZstdError.BlockTooLarge);
+                    }
+
+                    if (blockSize > source.Length - ip)
+                    {
+                        return Fail(ZstdError.Truncated);
                     }
 
                     if (blockSize > destination.Length - op)
@@ -534,14 +536,14 @@ public sealed partial class ZstdDecompressor
                     break;
 
                 case 1: // RLE: the size is the content's, the block holds one byte
-                    if (source.Length - ip < 1)
-                    {
-                        return Fail(ZstdError.Truncated);
-                    }
-
                     if (blockSize > header.BlockSizeMax)
                     {
                         return Fail(ZstdError.BlockTooLarge);
+                    }
+
+                    if (source.Length - ip < 1)
+                    {
+                        return Fail(ZstdError.Truncated);
                     }
 
                     if (blockSize > destination.Length - op)
@@ -561,14 +563,14 @@ public sealed partial class ZstdDecompressor
                     break;
 
                 case 2: // compressed
-                    if (blockSize > source.Length - ip)
-                    {
-                        return Fail(ZstdError.Truncated);
-                    }
-
                     if (blockSize > header.BlockSizeMax)
                     {
                         return Fail(ZstdError.BlockTooLarge);
+                    }
+
+                    if (blockSize > source.Length - ip)
+                    {
+                        return Fail(ZstdError.Truncated);
                     }
 
                     // With the next block compressed too, both at once (see ZstdDecompressor.Pairs.cs).

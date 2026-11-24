@@ -266,8 +266,14 @@ public sealed partial class ZstdDecompressor
         int opB = op + writtenA;
 
         // ---- B, from the checks DecodeLiterals and DecodeCompressedBlock make on the room it has,
-        // its tables now the current ones
-        (_sequenceTables, _pairTables) = (tablesB, _sequenceTables);
+        // its tables now the current ones. A block of no sequence builds none, and leaves A's current,
+        // as libzstd does: WorthPairing peeked at least MinPairSequences in B, which its header then
+        // declares, but the swap does not rest on that.
+        if (nbSeqB > 0)
+        {
+            (_sequenceTables, _pairTables) = (tablesB, _sequenceTables);
+        }
+
         int capacityB = destination.Length - opB;
         if (Math.Min(blockSizeMax, capacityB) < literalCountB || (nbSeqB > 0 && capacityB == 0))
         {
