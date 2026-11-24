@@ -185,7 +185,8 @@ public sealed class JobCompressionTests
     public async Task A_cancelled_call_stops_and_leaves_the_compressor_whole()
     {
         byte[] data = DataKinds.Generate("text", 4_000_000, 19);
-        var compressor = new ZstdCompressor(19) { JobSizeOverride = 512 << 10 };
+        // No overlap, which at level 19 would take a job to the whole window: eight jobs.
+        var compressor = new ZstdCompressor(19) { JobSizeOverride = 512 << 10, OverlapLogOverride = 1 };
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         cancellation.CancelAfter(50);
         byte[] output = new byte[ZstdCompressor.GetMaxCompressedLength(data.Length)];
