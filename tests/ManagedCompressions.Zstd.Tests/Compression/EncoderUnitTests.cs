@@ -14,6 +14,29 @@ public sealed unsafe class EncoderUnitTests
 {
     public static TheoryData<int> Seeds() => [1, 2, 3, 4, 5, 6, 7, 8];
 
+    /// <summary>
+    /// A stream chunk whose blocks do not fit the room it is given, less than the bound its callers
+    /// always give: refused, where the chunk took the blocks' failure for their size, one byte short of
+    /// the header, and reported a frame cut short as whole.
+    /// </summary>
+    [Fact]
+    public void A_stream_chunk_past_its_room_is_refused()
+    {
+        byte[] content = DataKinds.Generate("incompressible", 10_000, 3);
+        var compressor = new ZstdCompressor(3);
+        compressor.BeginStream(CompressionParameters.UnknownSize, out _, out _);
+        Assert.Throws<InvalidOperationException>(() => CompressChunk(compressor, content, new byte[100]));
+    }
+
+    private static int CompressChunk(ZstdCompressor compressor, byte[] content, byte[] destination)
+    {
+        fixed (byte* src = content)
+        fixed (byte* dst = destination)
+        {
+            return compressor.CompressStreamChunk(src, content.Length, last: true, dst, destination.Length);
+        }
+    }
+
     /// <summary>The vector loop that strips a copied dictionary table's tags, against one index at a time, at every length's tail.</summary>
     [Fact]
     public void Tags_are_stripped_as_one_at_a_time()

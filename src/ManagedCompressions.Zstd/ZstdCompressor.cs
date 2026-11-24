@@ -71,7 +71,7 @@ public sealed unsafe partial class ZstdCompressor
         _slab = new PinnedSlab(
             (2 * BlockState.SlabSize) + HuffmanWorkspace.SlabSize + SequenceStore.SlabSize
             + PinnedSlab.SizeOf<uint>(LazyMatchFinder.RowHashCacheSize) + PinnedSlab.SizeOf<uint>(LazyMatchFinder.MaxRowCandidates)
-            + PinnedSlab.SizeOf<uint>(SplitCountsSize) + PinnedSlab.SizeOf<uint>(MaxBlockSplits + 1) + PinnedSlab.SizeOf<byte>(SplitScratchSize));
+            + PinnedSlab.SizeOf<uint>(SplitCountsSize) + PinnedSlab.SizeOf<uint>(PartitionsSize) + PinnedSlab.SizeOf<byte>(SplitScratchSize));
         _previous = new BlockState(_slab);
         _next = new BlockState(_slab);
         _huffmanWorkspace = new HuffmanWorkspace(_slab);
@@ -79,7 +79,7 @@ public sealed unsafe partial class ZstdCompressor
         _hashCache = _slab.Take<uint>(LazyMatchFinder.RowHashCacheSize);
         _candidates = _slab.Take<uint>(LazyMatchFinder.MaxRowCandidates);
         _splitCounts = _slab.Take<uint>(SplitCountsSize);
-        _partitions = _slab.Take<uint>(MaxBlockSplits + 1);
+        _partitions = _slab.Take<uint>(PartitionsSize);
         _splitScratch = _slab.Take<byte>(SplitScratchSize);
     }
 

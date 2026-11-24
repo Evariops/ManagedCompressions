@@ -21,7 +21,10 @@ public sealed partial class ZstdCompressor
     /// <param name="source">The content of the frame.</param>
     /// <param name="destination">Where the frame is written; <see cref="GetMaxCompressedLength"/> bytes always suffice.</param>
     /// <param name="maxDegreeOfParallelism">The most jobs compressed at once; 0 or less for <see cref="Environment.ProcessorCount"/>.</param>
-    /// <param name="cancellationToken">Stops the jobs not started yet; the frame is then abandoned.</param>
+    /// <param name="cancellationToken">
+    /// Stops the jobs not started yet, and those waiting for a thread; the frame is then abandoned. A job
+    /// already compressing runs to its end, which the call waits for, since it writes into the destination.
+    /// </param>
     /// <returns>The size of the frame.</returns>
     /// <remarks>
     /// <para>
@@ -37,7 +40,10 @@ public sealed partial class ZstdCompressor
     /// several threads, for 0.1% to 0.3% more bytes (silesia at levels 1 to 9).
     /// </para>
     /// </remarks>
-    /// <exception cref="ArgumentException">The frame does not fit in <paramref name="destination"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// The frame does not fit in <paramref name="destination"/>: the call stops at the first job that
+    /// does not, and throws once the jobs running have ended.
+    /// </exception>
     public async ValueTask<int> CompressAsync(
         ReadOnlyMemory<byte> source, Memory<byte> destination, int maxDegreeOfParallelism = -1, CancellationToken cancellationToken = default)
     {
@@ -90,7 +96,7 @@ public sealed partial class ZstdCompressor
                     (RawSequence[]? sequences, int count) = serialMatcher
                         ? await Task.Run(() => GenerateJobSequences(plan, address, job), CancellationToken.None).ConfigureAwait(false)
                         : (null, 0);
-                    jobs[job] = RunJobAsync(slots, plan, address, job, sequences, count, output, slot);
+                    jobs[job] = RunJobAsync(slots, plan, address, job, sequences, count, output, slot, cancellationToken);
                     slot += JobCapacity(plan.Size(job));
                     started++;
                 }
@@ -112,9 +118,14 @@ public sealed partial class ZstdCompressor
 
                 result.Return();
                 jobs[flushed] = null!;
+                if (!fits)
+                {
+                    // The frame does not fit: no more job starts, and those running are waited for below.
+                    break;
+                }
             }
 
-            if (checksum is not null)
+            if (checksum is not null && fits)
             {
                 ulong hash = await checksum.ConfigureAwait(false);
                 checksum = null;
@@ -165,14 +176,15 @@ public sealed partial class ZstdCompressor
 
     /// <summary>
     /// A job on the thread pool once one of the <paramref name="slots"/> is free, in the order asked, its
-    /// long-distance sequences (if any) returned after.
+    /// long-distance sequences (if any) returned after. Cancelled while it waits for a slot, it never runs.
     /// </summary>
     private async Task<JobOutput> RunJobAsync(
-        SemaphoreSlim slots, JobPlan plan, nint address, int job, RawSequence[]? sequences, int count, JobDestination output, long slot)
+        SemaphoreSlim slots, JobPlan plan, nint address, int job, RawSequence[]? sequences, int count, JobDestination output, long slot,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await slots.WaitAsync().ConfigureAwait(false);
+            await slots.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 return await Task.Run(() => RunJob(plan, address, job, sequences, count, output, slot)).ConfigureAwait(false);
