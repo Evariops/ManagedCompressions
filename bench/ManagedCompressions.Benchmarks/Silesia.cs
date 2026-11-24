@@ -1,8 +1,6 @@
 using System;
-using System.Formats.Tar;
 using System.IO;
-using System.IO.Compression;
-using System.Linq;
+using ManagedCompressions.Zstd.Bench;
 
 namespace ManagedCompressions.Benchmarks;
 
@@ -14,34 +12,7 @@ internal static class Silesia
 {
     private static byte[]? s_tar;
 
-    public static byte[] Tar => s_tar ??= Build();
-
-    private static byte[] Build()
-    {
-        using ZipArchive zip = ZipFile.OpenRead(Path.Combine(RepositoryRoot(), "tests", "ManagedCompressions.Zstd.Tests", "testdata", "corpus", "silesia.zip"));
-        using var tar = new MemoryStream();
-        using (var writer = new TarWriter(tar, TarEntryFormat.Ustar, leaveOpen: true))
-        {
-            foreach (ZipArchiveEntry entry in zip.Entries.OrderBy(e => e.FullName, StringComparer.Ordinal))
-            {
-                using var data = new MemoryStream();
-                using (Stream source = entry.Open())
-                {
-                    source.CopyTo(data);
-                }
-
-                data.Position = 0;
-                writer.WriteEntry(new UstarTarEntry(TarEntryType.RegularFile, "silesia/" + entry.FullName)
-                {
-                    DataStream = data,
-                    ModificationTime = DateTimeOffset.UnixEpoch,
-                    Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead,
-                });
-            }
-        }
-
-        return tar.ToArray();
-    }
+    public static byte[] Tar => s_tar ??= SilesiaTar.Build(Path.Combine(RepositoryRoot(), "tests", "ManagedCompressions.Zstd.Tests", "testdata", "corpus", "silesia.zip"));
 
     private static string RepositoryRoot()
     {

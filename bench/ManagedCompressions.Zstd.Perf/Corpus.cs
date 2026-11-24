@@ -465,7 +465,7 @@ internal static class Corpus
         {
             case "silesia":
             {
-                byte[] tar = SilesiaTar(Path.Combine(directory, "silesia.zip"));
+                byte[] tar = SilesiaTar.Build(Path.Combine(directory, "silesia.zip"));
                 return new DataSet(name, "silesia.tar", $"the Silesia corpus as one tar, {tar.Length:N0} bytes, one frame", tar, [0, tar.Length], null);
             }
 
@@ -474,7 +474,7 @@ internal static class Corpus
                 // 1 MiB every 16 MiB of silesia.tar, as one frame: its kinds of data, text, binaries,
                 // images and databases, in a frame that compresses in a fraction of the time, for the
                 // micro-benchmarks and the profiler.
-                byte[] tar = SilesiaTar(Path.Combine(directory, "silesia.zip"));
+                byte[] tar = SilesiaTar.Build(Path.Combine(directory, "silesia.zip"));
                 const int Slice = 1 << 20;
                 const int Stride = 16 << 20;
                 using var sample = new MemoryStream();
@@ -527,37 +527,6 @@ internal static class Corpus
             default:
                 throw new ArgumentException("unknown corpus " + name + " (silesia, silesia-sample, github, github-dict, github.tar, github.tar-dict)", nameof(name));
         }
-    }
-
-    /// <summary>
-    /// silesia.tar, as lzbench reads it: the twelve files in name order, in a ustar archive whose
-    /// headers depend on nothing but the files.
-    /// </summary>
-    private static byte[] SilesiaTar(string zipPath)
-    {
-        using ZipArchive zip = ZipFile.OpenRead(zipPath);
-        using var tar = new MemoryStream();
-        using (var writer = new TarWriter(tar, TarEntryFormat.Ustar, leaveOpen: true))
-        {
-            foreach (ZipArchiveEntry entry in zip.Entries.OrderBy(e => e.FullName, StringComparer.Ordinal))
-            {
-                using var data = new MemoryStream();
-                using (Stream source = entry.Open())
-                {
-                    source.CopyTo(data);
-                }
-
-                data.Position = 0;
-                writer.WriteEntry(new UstarTarEntry(TarEntryType.RegularFile, "silesia/" + entry.FullName)
-                {
-                    DataStream = data,
-                    ModificationTime = DateTimeOffset.UnixEpoch,
-                    Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead,
-                });
-            }
-        }
-
-        return tar.ToArray();
     }
 
     /// <summary>The regular files of a .tar.zst, one after the other, and where each starts.</summary>

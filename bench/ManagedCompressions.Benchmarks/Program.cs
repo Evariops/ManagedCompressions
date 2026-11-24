@@ -9,7 +9,8 @@ namespace ManagedCompressions.Benchmarks;
 /// <summary>
 /// BenchmarkDotNet's view of the codecs, as NativeCompressions' README presents its own:
 /// <c>dotnet run -c Release --project bench/ManagedCompressions.Benchmarks -- --filter '*'</c>.
-/// <c>--check</c> runs every case once instead, and checks that every decompression gives back the source.
+/// <c>--check</c> runs every case once instead, and checks that every decompression gives back the source;
+/// <c>--check Brotli Lz4</c>, the cases of those classes only.
 /// </summary>
 public static class Program
 {
@@ -17,18 +18,18 @@ public static class Program
     {
         if (args.Contains("--check"))
         {
-            return Check();
+            return Check(args.Where(a => a != "--check").ToArray());
         }
 
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, new BenchmarkConfig());
         return 0;
     }
 
-    private static int Check()
+    private static int Check(string[] classes)
     {
         byte[] source = Silesia.Tar;
         int failures = 0;
-        foreach (Type type in BenchmarkInstances.Types())
+        foreach (Type type in BenchmarkInstances.Types().Where(t => classes.Length == 0 || classes.Contains(t.Name)))
         {
             foreach ((string Name, object? Value)[] parameters in BenchmarkInstances.Parameters(type))
             {

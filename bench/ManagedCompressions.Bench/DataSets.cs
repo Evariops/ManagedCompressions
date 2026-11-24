@@ -85,38 +85,8 @@ internal static class DataSets
 
     private static byte[]? s_silesia;
 
-    /// <summary>silesia.tar, as lzbench reads it: the twelve files in name order, in a ustar archive whose headers depend on nothing but the files.</summary>
-    private static byte[] SilesiaTar()
-    {
-        if (s_silesia is not null)
-        {
-            return s_silesia;
-        }
-
-        using ZipArchive zip = ZipFile.OpenRead(Path.Combine(Directory, "silesia.zip"));
-        using var tar = new MemoryStream();
-        using (var writer = new TarWriter(tar, TarEntryFormat.Ustar, leaveOpen: true))
-        {
-            foreach (ZipArchiveEntry entry in zip.Entries.OrderBy(e => e.FullName, StringComparer.Ordinal))
-            {
-                using var data = new MemoryStream();
-                using (Stream source = entry.Open())
-                {
-                    source.CopyTo(data);
-                }
-
-                data.Position = 0;
-                writer.WriteEntry(new UstarTarEntry(TarEntryType.RegularFile, "silesia/" + entry.FullName)
-                {
-                    DataStream = data,
-                    ModificationTime = DateTimeOffset.UnixEpoch,
-                    Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead,
-                });
-            }
-        }
-
-        return s_silesia = tar.ToArray();
-    }
+    /// <summary>silesia.tar (<see cref="Zstd.Bench.SilesiaTar"/>), built once.</summary>
+    private static byte[] SilesiaTar() => s_silesia ??= Zstd.Bench.SilesiaTar.Build(Path.Combine(Directory, "silesia.zip"));
 
     /// <summary>The regular files of a .tar.zst, one after the other, and where each starts.</summary>
     private static (byte[] Content, int[] Offsets) Records(string path)

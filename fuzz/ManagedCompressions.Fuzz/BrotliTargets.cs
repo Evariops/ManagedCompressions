@@ -323,7 +323,8 @@ internal static unsafe class BrotliTargets
         ReadOnlySpan<byte> stream = input[1..];
         byte[] expected = StreamExpected;
         OperationStatus expectedStatus = Decompressor.Decompress(stream, expected, out int expectedConsumed, out int expectedWritten);
-        var decoder = new BrotliStreamDecoder();
+        // Disposed, so that the next input's decoder rents the buffers this one returns.
+        using var decoder = new BrotliStreamDecoder();
         var content = new List<byte>();
         byte[] buffer = new byte[1 << 16];
         int position = 0;

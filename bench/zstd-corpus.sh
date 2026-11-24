@@ -12,13 +12,27 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$root/tests/ManagedCompressions.Zstd.Tests/testdata/corpus"
 mkdir -p "$out"
 
+# The SHA-256 of a file: sha256sum where it exists (Linux), shasum elsewhere (macOS).
+sha256_of() {
+  if command -v sha256sum > /dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
 fetch() {
   local name="$1" url="$2" sha256="$3"
   if [[ ! -f "$out/$name" ]]; then
     curl -fsSL -o "$out/$name.part" "$url"
     mv "$out/$name.part" "$out/$name"
   fi
-  echo "$sha256  $out/$name" | shasum -a 256 -c - > /dev/null
+  local actual
+  actual="$(sha256_of "$out/$name")"
+  if [[ "$actual" != "$sha256" ]]; then
+    echo "$out/$name: SHA-256 $actual, expected $sha256" >&2
+    exit 1
+  fi
   echo "$out/$name"
 }
 
