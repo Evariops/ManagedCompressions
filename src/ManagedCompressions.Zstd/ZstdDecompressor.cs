@@ -163,6 +163,9 @@ public sealed partial class ZstdDecompressor
                 written = DecompressFrame(source, destination, dictionary.Content, dictionary.Entropy, dictionary.Id, out consumed);
             }
 
+            // Its tables and buffers, read through pointers, are arrays only the decompressor holds: it
+            // stays alive until the frame is decoded, whatever the code after uses of it.
+            GC.KeepAlive(this);
             if (written < 0)
             {
                 return Refuse((ZstdError)~written);
@@ -211,6 +214,7 @@ public sealed partial class ZstdDecompressor
         {
             ReadOnlySpan<byte> history = UseDictionary(dictionary, out DictionaryEntropy? entropy, out uint id);
             int written = DecompressFrame(source, destination, history, entropy, id, out int consumed);
+            GC.KeepAlive(this);
             if (written < 0)
             {
                 return Refuse((ZstdError)~written);
@@ -267,6 +271,7 @@ public sealed partial class ZstdDecompressor
         {
             ReadOnlySpan<byte> history = UseDictionary(dictionary, out DictionaryEntropy? entropy, out uint id);
             int written = DecompressFrame(source, destination, history, entropy, id, out _);
+            GC.KeepAlive(this);
             if (written < 0)
             {
                 return Refuse((ZstdError)~written);

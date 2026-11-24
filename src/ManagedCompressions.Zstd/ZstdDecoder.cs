@@ -203,6 +203,9 @@ public sealed class ZstdDecoder
             status = OperationStatus.InvalidData;
         }
 
+        // The window and the decompressor's tables, read through pointers, are arrays only the decoder
+        // holds: it stays alive until the call is done, whatever the code after the loops uses of it.
+        GC.KeepAlive(this);
         bytesConsumed = consumed;
         bytesWritten = written;
         return status;

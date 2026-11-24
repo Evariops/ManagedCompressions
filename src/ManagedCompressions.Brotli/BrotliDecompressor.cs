@@ -73,6 +73,9 @@ public sealed unsafe partial class BrotliDecompressor
             error = DecodeStream(src, source.Length, dst, destination.Length, out consumed, out written);
         }
 
+        // The tables, read through pointers, are pinned arrays only the decompressor holds: it stays
+        // alive until the stream is decoded, whatever the code after uses of it.
+        GC.KeepAlive(this);
         LastError = error;
         switch (error)
         {

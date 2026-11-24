@@ -143,16 +143,27 @@ public sealed unsafe class BrotliStreamEncoder
     /// the rest of the source and more room; <see cref="OperationStatus.InvalidData"/> for input after the
     /// stream's end, or during a flush that has not written everything.
     /// </returns>
-    public OperationStatus Compress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesConsumed, out int bytesWritten, bool isFinalBlock) =>
-        CompressCore(source, destination, out bytesConsumed, out bytesWritten, isFinalBlock ? OperationFinish : OperationProcess);
+    public OperationStatus Compress(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesConsumed, out int bytesWritten, bool isFinalBlock)
+    {
+        OperationStatus status = CompressCore(source, destination, out bytesConsumed, out bytesWritten, isFinalBlock ? OperationFinish : OperationProcess);
+
+        // The tables and the output waiting, read through pointers, are pinned arrays only the encoder
+        // holds: it stays alive until the call is done, whatever the code after the loops uses of it.
+        GC.KeepAlive(this);
+        return status;
+    }
 
     /// <summary>
     /// Writes everything taken so far, ending on a byte boundary, as
     /// <see cref="System.IO.Compression.BrotliEncoder.Flush(Span{byte}, out int)"/> does.
     /// </summary>
     /// <returns><see cref="OperationStatus.Done"/>, or <see cref="OperationStatus.DestinationTooSmall"/> when the destination is full: call again.</returns>
-    public OperationStatus Flush(Span<byte> destination, out int bytesWritten) =>
-        CompressCore(default, destination, out _, out bytesWritten, OperationFlush);
+    public OperationStatus Flush(Span<byte> destination, out int bytesWritten)
+    {
+        OperationStatus status = CompressCore(default, destination, out _, out bytesWritten, OperationFlush);
+        GC.KeepAlive(this);
+        return status;
+    }
 
     /// <summary>The loop of .NET's <c>BrotliEncoder.Compress</c> around <c>BrotliEncoderCompressStream</c>.</summary>
     private OperationStatus CompressCore(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesConsumed, out int bytesWritten, int operation)

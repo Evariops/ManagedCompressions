@@ -120,6 +120,9 @@ public sealed unsafe partial class BrotliCompressor
             written = CompressOneShot(src, source.Length, dst, destination.Length);
         }
 
+        // The tables and buffers, read through pointers, are pinned arrays only the compressor holds: it
+        // stays alive until the stream is written, whatever the code after the loops uses of it.
+        GC.KeepAlive(this);
         if (written < 0)
         {
             return OperationStatus.DestinationTooSmall;
