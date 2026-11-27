@@ -388,6 +388,8 @@ public sealed partial class ZstdDecompressor
             }
 
             dictionary.CopyTo(_callHistory);
+            // The copies that read past the dictionary's end read zeros, not a larger one copied before.
+            _callHistory.AsSpan(dictionary.Length, DecoderDictionary.Margin).Clear();
             return _callHistory.AsSpan(0, dictionary.Length);
         }
 

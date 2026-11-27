@@ -66,6 +66,9 @@ public sealed class ZstdDecoder
     /// <summary>The part of <see cref="_window"/> blocks are decoded into: libzstd's <c>outBuffSize</c>.</summary>
     private int _capacity;
 
+    /// <summary>The frame's window, 1 KiB at least: libzstd's <c>fParams.windowSize</c>.</summary>
+    private ulong _windowSize;
+
     /// <summary>Whether the content is larger than the window, which then restarts from its start.</summary>
     private bool _restarts;
 
@@ -498,8 +501,8 @@ public sealed class ZstdDecoder
     /// <c>ZSTD_d_windowLogMax</c>) and its window, <c>ZSTD_decodingBufferSize_internal</c>: the window
     /// and two blocks, and their margins, or the content size when it is smaller. libzstd's second block
     /// is room for the literals it splits into the buffer, which the block decoder keeps apart; but it is
-    /// room for content too, and where the buffer restarts sets how far back an offset may reach, so the
-    /// window is as large as libzstd's.
+    /// room for content too, and where the buffer restarts sets how far back an offset may reach before
+    /// the restart (see <see cref="History"/> after it), so the window is as large as libzstd's.
     /// </summary>
     private void BeginFrame()
     {
@@ -519,6 +522,7 @@ public sealed class ZstdDecoder
         ulong ring = window + (2 * block) + (2 * 32);
         ulong capacity = _frame.HasContentSize ? Math.Min(_frame.ContentSize, ring) : ring;
         _capacity = (int)capacity;
+        _windowSize = window;
         _restarts = !_frame.HasContentSize || capacity < _frame.ContentSize;
         if (_window.Length < _capacity + Margin)
         {
@@ -566,8 +570,7 @@ public sealed class ZstdDecoder
     /// <summary>
     /// Decodes a block into the window. When the window is smaller than the content and the block may
     /// not fit before its end, the window restarts from its start, as libzstd's does: what it held
-    /// becomes the history the block reaches back into, which keeps it all, since its capacity exceeds
-    /// the frame's window by a block.
+    /// becomes the history the block reaches back into (see <see cref="History"/>).
     /// </summary>
     private void DecodeBlock(ReadOnlySpan<byte> block)
     {
@@ -577,6 +580,10 @@ public sealed class ZstdDecoder
             _restarted = true;
             _out = 0;
             _flushed = 0;
+
+            // The copies that read past the history's end read zeros, not what an earlier frame left
+            // there. The window has more than this margin after its capacity.
+            _window.AsSpan(_history, DecoderDictionary.Margin).Clear();
         }
 
         int start = _out;
@@ -604,7 +611,7 @@ public sealed class ZstdDecoder
 
             default: // compressed
             {
-                ReadOnlySpan<byte> history = _restarted ? _window.AsSpan(0, _history) : _engine.CreatedDictionary is { } dictionary ? dictionary.Content : default;
+                ReadOnlySpan<byte> history = History();
                 try
                 {
                     _out += _engine.DecodeStreamBlock(block, _window.AsSpan(0, _capacity), _out, _frame.BlockSizeMax, history);
@@ -630,6 +637,34 @@ public sealed class ZstdDecoder
         {
             _checksum!.Append(_window.AsSpan(start, produced));
         }
+    }
+
+    /// <summary>
+    /// What the next block may reach back into before the start of the window: the dictionary, or
+    /// after a restart, the window before it. Once a window of content is decoded, only as much of it
+    /// as the frame's window leaves beside the content since the start or the restart, as libzstd
+    /// 1.6.0's <c>ZSTD_checkContinuity</c> bounds it.
+    /// </summary>
+    /// <remarks>
+    /// After a restart, the window before it is the very buffer the block is decoded into. Whole, it let
+    /// an offset past the frame's window read ahead of the block's output: bytes the frame wrote before
+    /// the restart, or bytes that copies running past their end had left there, read from the
+    /// literals of an earlier frame or from what an earlier frame left in the window (libzstd 1.5.1 to
+    /// 1.5.7 did the same, until zstd's commit 0c9d2975). Bounded, it starts more than a block and its
+    /// margin past the block's start: the restart leaves more than the window and a block behind it, of
+    /// which the window keeps at most the window less the content since the restart, and a block writes
+    /// at most a block and a copy's overrun.
+    /// </remarks>
+    private ReadOnlySpan<byte> History()
+    {
+        ReadOnlySpan<byte> history = _restarted ? _window.AsSpan(0, _history) : _engine.CreatedDictionary is { } dictionary ? dictionary.Content : default;
+        if (_produced >= _windowSize)
+        {
+            ulong room = (ulong)_out < _windowSize ? _windowSize - (ulong)_out : 0;
+            history = history.Slice(history.Length - (int)Math.Min((ulong)history.Length, room));
+        }
+
+        return history;
     }
 
     /// <summary>After the last block: the content size checked, then the checksum, if any, read.</summary>

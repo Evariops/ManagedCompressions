@@ -45,6 +45,10 @@ a frame with a compressed block of size zero, which it skips as an empty block
 its declared size, which it checks only after a last block that is not empty. The target gives libzstd
 a new context for each stream: a context that decoded a larger window keeps its larger buffer, and lets
 a content overflow its declared size (`regressions/zstd-stream-decompress/content-over-declared-size`).
+Last, libzstd 1.5.7's streaming decoder lets an offset reach past the window: back into what its buffer
+held before it restarted (`regressions/zstd-stream-decompress/offset-past-the-window`), or into the
+dictionary once a window is decoded. libzstd 1.6.0 refuses such an offset (zstd's commit 0c9d2975), and
+so does `ZstdDecoder`.
 
 ## In CI
 
