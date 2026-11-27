@@ -203,7 +203,8 @@ public sealed class ZstdDecoderTests
     /// Valid frames broken by <see cref="FrameMutator"/>: whatever the decoder makes of a stream, libzstd's
     /// streaming decoder must make the same, given the same destination, but for its two leniencies the
     /// fuzz tests document (a Huffman stream overrun by its last symbol, a block over its maximum size,
-    /// in the one-pass shortcut).
+    /// in the one-pass shortcut), and for the offsets libzstd 1.5.7 lets reach past the window, which
+    /// libzstd 1.6.0 refuses as the decoder does (zstd's commit 0c9d2975).
     /// </summary>
     [Theory]
     [InlineData(1)]
@@ -240,7 +241,7 @@ public sealed class ZstdDecoderTests
             else if (theirs)
             {
                 Assert.True(
-                    status == OperationStatus.InvalidData && error is ZstdError.HuffmanStream or ZstdError.BlockTooLarge,
+                    status == OperationStatus.InvalidData && error is ZstdError.HuffmanStream or ZstdError.BlockTooLarge or ZstdError.OffsetTooLarge,
                     $"seed {seed}, mutation {i}: {status} ({error}) for a stream libzstd decodes to {native.Length} bytes");
                 divergences[error] = divergences.GetValueOrDefault(error) + 1;
             }
@@ -289,13 +290,14 @@ public sealed class ZstdDecoderTests
 
     /// <summary>
     /// A frame of a 1 KiB window, cut short, with a sequence that reaches past the window into content
-    /// libzstd's streaming decoder still holds: its buffer keeps the window and two blocks
+    /// libzstd 1.5.7's streaming decoder still holds: its buffer keeps the window and two blocks
     /// (<c>ZSTD_decodingBufferSize_internal</c>), and it refuses an offset only past what the buffer
-    /// holds. The decoder keeps as much, and decodes what libzstd decodes. libFuzzer found it
-    /// (fuzz/regressions/zstd-stream-decompress/offset-past-the-window).
+    /// holds. libzstd 1.6.0 bounds the history to the window (zstd's commit 0c9d2975), and so does the
+    /// decoder: it refuses the offset, having written what libzstd 1.5.7 wrote before it. libFuzzer
+    /// found it (fuzz/regressions/zstd-stream-decompress/offset-past-the-window).
     /// </summary>
     [Fact]
-    public void An_offset_past_the_window_reaches_what_libzstd_keeps()
+    public void An_offset_past_the_window_is_refused_where_libzstd_157_reached_it()
     {
         byte[] stream = Convert.FromHexString(
             "28B52FFD0400540700140E602C155687925BC5D622730F072754669C41C0D85880A8BFF18C7472901C50551A8552A145" +
@@ -310,10 +312,130 @@ public sealed class ZstdDecoderTests
         Assert.Equal(8224, expected.Length);
         foreach ((string name, Func<int> source) in new (string, Func<int>)[] { ("whole", Pieces.Whole), ("a byte at a time", Pieces.One) })
         {
-            (OperationStatus status, byte[] content, _) = Pieces.Decode(new ZstdDecoder(), stream, source, Pieces.Whole);
-            Assert.True(status == OperationStatus.NeedMoreData, $"{name}: {status}");
-            Assert.Equal(expected, content);
+            var decoder = new ZstdDecoder();
+            (OperationStatus status, byte[] content, _) = Pieces.Decode(decoder, stream, source, Pieces.Whole);
+            Assert.True(status == OperationStatus.InvalidData, $"{name}: {status}");
+            Assert.Equal(ZstdError.OffsetTooLarge, decoder.LastError);
+            Assert.True(content.Length < expected.Length, $"{name}: {content.Length} bytes");
+            Assert.Equal(expected.AsSpan(0, content.Length).ToArray(), content);
         }
+    }
+
+    /// <summary>
+    /// After the window restarts, its history is the window before the restart, held in the very
+    /// buffer the next blocks are decoded into. An offset within the frame's window reaches back across
+    /// the restart; one past it is refused, though the buffer still holds the byte it designates, as
+    /// libzstd 1.6.0 refuses it (zstd's commit 0c9d2975), where libzstd 1.5.7, the oracle, decodes it. One
+    /// sequence, which the careful path takes, and several, which the fast loop meets first.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(8)]
+    public void After_a_restart_an_offset_reaches_back_no_further_than_the_window(int sequences)
+    {
+        foreach ((int offset, bool valid) in new[] { (1000, true), (1024, true), (1500, false), (3000, false) })
+        {
+            byte[] frame = FrameAfterRestart(sequences, offset, out byte[] content);
+            string name = $"{sequences} sequences at {offset}";
+            Assert.True(NativeZstd.DecompressStream(frame, content.Length, null, 27, out byte[] native), $"{name}: libzstd 1.5.7 decodes it");
+            Corpus.AssertSameBytes(content, native, name + ", libzstd");
+
+            foreach ((string how, Func<int> source) in new (string, Func<int>)[] { ("whole", Pieces.Whole), ("a byte at a time", Pieces.One) })
+            {
+                var decoder = new ZstdDecoder();
+                (OperationStatus status, byte[] decoded, _) = Pieces.Decode(decoder, frame, source, Pieces.Whole);
+                if (valid)
+                {
+                    Assert.True(status == OperationStatus.Done, $"{name}, {how}: {status} ({decoder.LastError})");
+                    Corpus.AssertSameBytes(content, decoded, $"{name}, {how}");
+                }
+                else
+                {
+                    Assert.True(status == OperationStatus.InvalidData, $"{name}, {how}: {status}");
+                    Assert.Equal(ZstdError.OffsetTooLarge, decoder.LastError);
+                    Assert.Equal(content.AsSpan(0, decoded.Length).ToArray(), decoded);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// A dictionary is history until a window of content is decoded, as libzstd 1.6.0 bounds it: the
+    /// same 100 bytes back into the dictionary decode at the frame's start, and are refused after a
+    /// raw block of a whole window, where libzstd 1.5.7 still decodes them.
+    /// </summary>
+    [Fact]
+    public void The_dictionary_is_out_of_reach_once_a_window_is_decoded()
+    {
+        var random = new Random(11);
+        byte[] dictionary = new byte[2048];
+        random.NextBytes(dictionary);
+        dictionary[0] = 0; // not the magic number of a zstd-format dictionary: raw content
+        byte[] window = new byte[1024];
+        random.NextBytes(window);
+        byte[] literals = [1, 2, 3, 4];
+        byte[] reached = dictionary.AsSpan(dictionary.Length - 100, 16).ToArray();
+        using NativeZstdDictionary native = NativeZstdDictionary.Create(dictionary);
+
+        byte[] early = new FrameBuilder { WindowLog = 10 }
+            .Compressed([.. FrameBuilder.RawLiterals(literals), .. FrameBuilder.RleSequences(new Seq(4, 16, 4 + 100 + 3))])
+            .Raw(window, last: true)
+            .Build();
+        byte[] earlyContent = [.. literals, .. reached, .. window];
+        Assert.True(NativeZstd.DecompressStream(early, earlyContent.Length, native, 27, out byte[] earlyNative));
+        Corpus.AssertSameBytes(earlyContent, earlyNative, "early, libzstd");
+        AssertDecodes(new ZstdDecoder(dictionary), early, earlyContent, Pieces.Whole, Pieces.Whole, "early");
+
+        byte[] late = new FrameBuilder { WindowLog = 10 }
+            .Raw(window)
+            .Compressed([.. FrameBuilder.RawLiterals(literals), .. FrameBuilder.RleSequences(new Seq(4, 16, 1024 + 4 + 100 + 3))])
+            .Raw([], last: true)
+            .Build();
+        byte[] lateContent = [.. window, .. literals, .. reached];
+        Assert.True(NativeZstd.DecompressStream(late, lateContent.Length, native, 27, out byte[] lateNative), "libzstd 1.5.7 decodes it");
+        Corpus.AssertSameBytes(lateContent, lateNative, "late, libzstd");
+        var decoder = new ZstdDecoder(dictionary);
+        (OperationStatus status, byte[] decoded, _) = Pieces.Decode(decoder, late, Pieces.Whole, Pieces.Whole);
+        Assert.True(status == OperationStatus.InvalidData, $"late: {status}");
+        Assert.Equal(ZstdError.OffsetTooLarge, decoder.LastError);
+        Assert.Equal(window, decoded);
+    }
+
+    /// <summary>
+    /// A frame of a 1 KiB window and no declared size: three raw blocks of 1 KiB, after which the
+    /// window, of 1 KiB and two blocks and their margins, restarts; then a compressed block of
+    /// <paramref name="sequences"/> sequences of 4 literals and a match of 16 bytes at
+    /// <paramref name="offset"/>; then an empty last block.
+    /// </summary>
+    /// <param name="content">The content as the offset designates it, whether or not it is in the window.</param>
+    private static byte[] FrameAfterRestart(int sequences, int offset, out byte[] content)
+    {
+        var random = new Random(offset);
+        var builder = new FrameBuilder { WindowLog = 10 };
+        var expected = new List<byte>();
+        for (int i = 0; i < 3; i++)
+        {
+            byte[] raw = new byte[1024];
+            random.NextBytes(raw);
+            builder.Raw(raw);
+            expected.AddRange(raw);
+        }
+
+        byte[] literals = new byte[4 * sequences];
+        random.NextBytes(literals);
+        for (int i = 0; i < sequences; i++)
+        {
+            expected.AddRange(literals.AsSpan(4 * i, 4).ToArray());
+            for (int j = 0; j < 16; j++)
+            {
+                expected.Add(expected[^offset]);
+            }
+        }
+
+        Seq[] seqs = [.. Enumerable.Repeat(new Seq(4, 16, (uint)offset + 3), sequences)];
+        builder.Compressed([.. FrameBuilder.RawLiterals(literals), .. FrameBuilder.RleSequences(seqs)]).Raw([], last: true);
+        content = [.. expected];
+        return builder.Build();
     }
 
     /// <summary>

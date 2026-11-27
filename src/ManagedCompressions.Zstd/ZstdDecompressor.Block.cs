@@ -40,6 +40,14 @@ public sealed partial class ZstdDecompressor
     }
 
     /// <summary>
+    /// Zeroes the <see cref="LiteralsMargin"/> after the <paramref name="count"/> literals just written
+    /// to <paramref name="buffer"/>, as libzstd 1.6.0's <c>ZSTD_zeroLiteralsBufferPadding</c>: the copies
+    /// that read past the last literal then read zeros, not the literals of an earlier block or frame,
+    /// which the buffer, kept from one to the next, still holds there.
+    /// </summary>
+    private static void ClearMargin(byte[] buffer, int count) => buffer.AsSpan(count, LiteralsMargin).Clear();
+
+    /// <summary>
     /// libzstd's <c>ZSTD_decompressBlock_internal</c>: a literals section, then a sequences section
     /// that interleaves those literals with matches into <paramref name="destination"/> from
     /// <paramref name="op"/>.
@@ -156,6 +164,7 @@ public sealed partial class ZstdDecompressor
                     else
                     {
                         source.Slice(start, size).CopyTo(buffer);
+                        ClearMargin(buffer, size);
                         literals = buffer;
                     }
 
@@ -163,6 +172,7 @@ public sealed partial class ZstdDecompressor
                 }
 
                 buffer.AsSpan(0, size).Fill(block[headerSize]);
+                ClearMargin(buffer, size);
                 literals = buffer;
                 return headerSize + 1;
             }
@@ -257,6 +267,7 @@ public sealed partial class ZstdDecompressor
                     table.DecodeFourStreams(compressed, output, table.PrefersDouble(compressed.Length, size));
                 }
 
+                ClearMargin(buffer, size);
                 _literalEntropy = true;
                 if (!ReferenceEquals(_currentHuffman, table))
                 {

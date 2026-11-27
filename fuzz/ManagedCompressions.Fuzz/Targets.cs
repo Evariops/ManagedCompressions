@@ -349,12 +349,15 @@ internal static unsafe class ZstdTargets
     /// frame arrives in pieces; and the two leniencies of libzstd's streaming path that its one-shot
     /// decoder does not share, provided that it refuses the frame: a compressed block of size zero,
     /// skipped as an empty block, and a content size checked only after a last block that is not empty.
+    /// And an offset past the window: libzstd 1.5.7's streaming decoder lets one reach the window
+    /// before its buffer restarts, or the dictionary once a window is decoded, which libzstd 1.6.0
+    /// refuses as the decoder does (zstd's commit 0c9d2975).
     /// </summary>
     private static bool Excused(ZstdError error, ReadOnlySpan<byte> frame, bool dictionary, int windowLogMax)
     {
         ZSTD_DDict_s* native = dictionary ? NativeDictionary : null;
         return IsLegacy(frame)
-            || error is ZstdError.HuffmanStream or ZstdError.BlockTooLarge
+            || error is ZstdError.HuffmanStream or ZstdError.BlockTooLarge or ZstdError.OffsetTooLarge
             || (error == ZstdError.WindowTooLarge && Native.ZstdRefusesWindow(frame, native, windowLogMax))
             || (error is ZstdError.LiteralsHeader or ZstdError.ContentSizeMismatch && Native.ZstdDecompress(frame, OneShot, native, out _) < 0);
     }
